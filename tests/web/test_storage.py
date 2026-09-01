@@ -3,13 +3,9 @@ from pathlib import Path
 import pytest
 
 
-@pytest.fixture
-def storage():
-    from web.backend import storage as storage_module
-    return storage_module
+def test_save_upload_creates_file_and_record():
+    from web.backend import storage
 
-
-def test_save_upload_creates_file_and_record(storage):
     record = storage.save_upload("report.pdf", b"%PDF-1.4 fake content")
 
     assert record["filename"] == "report.pdf"
@@ -18,12 +14,16 @@ def test_save_upload_creates_file_and_record(storage):
     assert storage.resolve_file(record["id"]) == Path(record["path"])
 
 
-def test_resolve_file_unknown_id_raises(storage):
+def test_resolve_file_unknown_id_raises():
+    from web.backend import storage
+
     with pytest.raises(FileNotFoundError):
         storage.resolve_file("does-not-exist")
 
 
-def test_record_output_appends_to_history_newest_first(storage, tmp_path):
+def test_record_output_appends_to_history_newest_first(tmp_path):
+    from web.backend import storage
+
     path_a = tmp_path / "a.pdf"
     path_a.write_text("a")
     path_b = tmp_path / "b.pdf"
@@ -40,7 +40,9 @@ def test_record_output_appends_to_history_newest_first(storage, tmp_path):
     assert storage.resolve_file(record_b["id"]) == path_b
 
 
-def test_delete_output_removes_record_and_file(storage, tmp_path):
+def test_delete_output_removes_record_and_file(tmp_path):
+    from web.backend import storage
+
     path = tmp_path / "out.pdf"
     path.write_text("data")
     record = storage.record_output(path, "Rotate PDF", ["in.pdf"])
@@ -52,11 +54,15 @@ def test_delete_output_removes_record_and_file(storage, tmp_path):
     assert not path.exists()
 
 
-def test_delete_output_unknown_id_returns_false(storage):
+def test_delete_output_unknown_id_returns_false():
+    from web.backend import storage
+
     assert storage.delete_output("nope") is False
 
 
-def test_output_path_for_is_unique_across_calls(storage):
+def test_output_path_for_is_unique_across_calls():
+    from web.backend import storage
+
     first = storage.output_path_for("report", "_merged")
     second = storage.output_path_for("report", "_merged")
 
@@ -65,7 +71,9 @@ def test_output_path_for_is_unique_across_calls(storage):
     assert first.suffix == ".pdf"
 
 
-def test_output_dir_for_creates_a_fresh_directory(storage):
+def test_output_dir_for_creates_a_fresh_directory():
+    from web.backend import storage
+
     out_dir = storage.output_dir_for("report", "_split")
 
     assert out_dir.exists()
