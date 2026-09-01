@@ -79,9 +79,13 @@ class ToolDialog(QDialog):
     def _pick_files(self) -> None:
         if not self.allow_multiple_files:
             self.file_list.clear()
-        paths, _ = QFileDialog.getOpenFileNames(self, "Select file(s)", "", self.file_filter)
-        for path in paths:
-            self.file_list.addItem(path)
+            path, _ = QFileDialog.getOpenFileName(self, "Select file", "", self.file_filter)
+            if path:
+                self.file_list.addItem(path)
+        else:
+            paths, _ = QFileDialog.getOpenFileNames(self, "Select file(s)", "", self.file_filter)
+            for path in paths:
+                self.file_list.addItem(path)
         self.on_files_changed(self.selected_files())
 
     def _run(self) -> None:
