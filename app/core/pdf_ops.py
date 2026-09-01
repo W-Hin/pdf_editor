@@ -139,3 +139,29 @@ def add_watermark(
         doc.save(output_path)
     finally:
         doc.close()
+
+
+def compress_pdf(input_path: str, output_path: str, image_quality: int = 60) -> None:
+    if not 1 <= image_quality <= 100:
+        raise PDFError("Image quality must be between 1 and 100.")
+    doc = open_pdf(input_path)
+    try:
+        for page in doc:
+            for img in page.get_images(full=True):
+                xref = img[0]
+                pix = None
+                try:
+                    pix = fitz.Pixmap(doc, xref)
+                    if pix.colorspace and pix.colorspace.n >= 4:
+                        pix = fitz.Pixmap(fitz.csRGB, pix)
+                    if pix.alpha:
+                        pix = fitz.Pixmap(pix, 0)
+                    jpeg_bytes = pix.tobytes("jpeg", jpg_quality=image_quality)
+                    page.replace_image(xref, stream=jpeg_bytes)
+                except Exception:
+                    continue  # skip images that can't be recompressed (e.g. stencil masks)
+                finally:
+                    pix = None
+        doc.save(output_path, garbage=4, deflate=True)
+    finally:
+        doc.close()

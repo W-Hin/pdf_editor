@@ -1,5 +1,6 @@
 import fitz
 import pytest
+from pathlib import Path
 
 from app.core.errors import PDFError
 from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark
@@ -161,3 +162,47 @@ def test_add_watermark_rejects_empty_text(make_pdf, tmp_path):
     path = make_pdf(num_pages=1)
     with pytest.raises(PDFError):
         add_watermark(path, str(tmp_path / "out.pdf"), "   ")
+
+
+from app.core.pdf_ops import compress_pdf
+
+
+def _make_pdf_with_image(tmp_path):
+    path = tmp_path / "with_image.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    # a small solid-color image, embedded via a Pixmap
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 200, 200))
+    pix.set_rect(pix.irect, (200, 30, 30))
+    page.insert_image(fitz.Rect(0, 0, 200, 200), pixmap=pix)
+    doc.save(str(path))
+    doc.close()
+    return str(path)
+
+
+def test_compress_pdf_keeps_page_count(tmp_path):
+    path = _make_pdf_with_image(tmp_path)
+    out_path = str(tmp_path / "compressed.pdf")
+
+    compress_pdf(path, out_path, image_quality=40)
+
+    doc = fitz.open(out_path)
+    assert doc.page_count == 1
+    doc.close()
+
+
+def test_compress_pdf_reduces_or_maintains_size(tmp_path):
+    path = _make_pdf_with_image(tmp_path)
+    out_path = str(tmp_path / "compressed.pdf")
+
+    compress_pdf(path, out_path, image_quality=10)
+
+    original_size = Path(path).stat().st_size
+    compressed_size = Path(out_path).stat().st_size
+    assert compressed_size <= original_size * 1.1  # aggressive JPEG compression should not bloat the file
+
+
+def test_compress_pdf_rejects_bad_quality(tmp_path):
+    path = _make_pdf_with_image(tmp_path)
+    with pytest.raises(PDFError):
+        compress_pdf(path, str(tmp_path / "out.pdf"), image_quality=150)
