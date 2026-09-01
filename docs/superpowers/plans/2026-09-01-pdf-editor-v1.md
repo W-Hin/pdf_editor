@@ -1704,6 +1704,345 @@ git commit -m "feat: script to create a Desktop shortcut to the packaged app"
 
 ---
 
+## Task 17: Core — render_page_thumbnail, and a universal page-thumbnail strip on ToolDialog
+
+> Added after Task 12, per user request mid-build: "let me view every page" (originally asked for Remove Pages) broadened to "for every feature if possible, add visual on pdf content... let me view the pages for the operations." Scoped down (user's choice, asked via AskUserQuestion) to: every tool dialog shows a thumbnail strip of the SELECTED file's pages — not a preview of the operation's result, just the input content, so you can see what you're about to operate on. This single change to the shared `ToolDialog` base class (Task 8) covers all dialogs built so far (Tasks 10-12) and all dialogs still to come (Tasks 13-14) automatically, since they all subclass it.
+
+**Files:**
+- Modify: `app/core/pdf_ops.py` (append one function)
+- Modify: `tests/test_pdf_ops.py` (append two tests)
+- Modify: `app/ui/dialogs/base.py`
+
+**Interfaces:**
+- Consumes: `open_pdf`, `PDFError` (Task 2).
+- Produces: `render_page_thumbnail(input_path: str, page_number: int, max_size: int = 100) -> bytes` (1-indexed page, returns PNG-encoded image bytes scaled so its longer side is `max_size` pixels). `ToolDialog` gains a `self.thumbnail_strip` widget (auto-populated) and a `_refresh_thumbnails()` method — no changes to any existing public method signature, so Tasks 10-12's dialogs need no changes themselves.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/test_pdf_ops.py`:
+
+```python
+from app.core.pdf_ops import render_page_thumbnail
+
+
+def test_render_page_thumbnail_returns_png_bytes(make_pdf):
+    path = make_pdf(num_pages=2)
+
+    data = render_page_thumbnail(path, 1, max_size=80)
+
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_page_thumbnail_rejects_bad_page(make_pdf):
+    path = make_pdf(num_pages=1)
+    with pytest.raises(PDFError):
+        render_page_thumbnail(path, 5)
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `venv/Scripts/python -m pytest tests/test_pdf_ops.py -v`
+Expected: the 2 new tests FAIL (`AttributeError`/`ImportError`); all prior tests still PASS.
+
+- [ ] **Step 3: Add `render_page_thumbnail` to `app/core/pdf_ops.py`**
+
+```python
+def render_page_thumbnail(input_path: str, page_number: int, max_size: int = 100) -> bytes:
+    doc = open_pdf(input_path)
+    try:
+        if page_number < 1 or page_number > doc.page_count:
+            raise PDFError(f"Page {page_number} does not exist in this document ({doc.page_count} pages).")
+        page = doc[page_number - 1]
+        rect = page.rect
+        scale = max_size / max(rect.width, rect.height)
+        matrix = fitz.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=matrix)
+        return pix.tobytes("png")
+    finally:
+        doc.close()
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `venv/Scripts/python -m pytest tests/test_pdf_ops.py -v`
+Expected: all tests PASS (26 prior + 2 new = 28).
+
+- [ ] **Step 5: Commit the core function**
+
+```bash
+git add app/core/pdf_ops.py tests/test_pdf_ops.py
+git commit -m "feat: render_page_thumbnail"
+```
+
+- [ ] **Step 6: Modify `app/ui/dialogs/base.py` — imports**
+
+Current imports (top of file):
+
+```python
+import os
+from pathlib import Path
+
+from PySide6.QtWidgets import (
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QListWidget,
+    QLabel,
+    QProgressBar,
+    QFileDialog,
+    QMessageBox,
+    QWidget,
+)
+
+from app.ui.workers import Worker
+```
+
+Replace with:
+
+```python
+import os
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import (
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QListWidget,
+    QLabel,
+    QProgressBar,
+    QFileDialog,
+    QMessageBox,
+    QWidget,
+    QScrollArea,
+)
+
+from app.core.errors import PDFError
+from app.core.pdf_ops import get_page_count, render_page_thumbnail
+from app.ui.workers import Worker
+```
+
+- [ ] **Step 7: Modify `app/ui/dialogs/base.py` — add the thumbnail strip widget in `__init__`**
+
+Find this block in `__init__` (right after the file-picker row is added to the layout):
+
+```python
+        file_row = QHBoxLayout()
+        self.file_list = QListWidget()
+        file_row.addWidget(self.file_list)
+        pick_btn = QPushButton("Add file(s)…")
+        pick_btn.clicked.connect(self._pick_files)
+        file_row.addWidget(pick_btn)
+        layout.addLayout(file_row)
+
+        self.options_widget = QWidget()
+```
+
+Insert a new block between `layout.addLayout(file_row)` and `self.options_widget = QWidget()`, so it reads:
+
+```python
+        file_row = QHBoxLayout()
+        self.file_list = QListWidget()
+        file_row.addWidget(self.file_list)
+        pick_btn = QPushButton("Add file(s)…")
+        pick_btn.clicked.connect(self._pick_files)
+        file_row.addWidget(pick_btn)
+        layout.addLayout(file_row)
+
+        self.thumbnail_strip = QScrollArea()
+        self.thumbnail_strip.setWidgetResizable(True)
+        self.thumbnail_strip.setFixedHeight(130)
+        self.thumbnail_strip.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._thumbnail_container = QWidget()
+        self._thumbnail_layout = QHBoxLayout(self._thumbnail_container)
+        self.thumbnail_strip.setWidget(self._thumbnail_container)
+        layout.addWidget(self.thumbnail_strip)
+
+        self.options_widget = QWidget()
+```
+
+- [ ] **Step 8: Modify `app/ui/dialogs/base.py` — refresh thumbnails when files change**
+
+Find `_pick_files`:
+
+```python
+    def _pick_files(self) -> None:
+        if not self.allow_multiple_files:
+            self.file_list.clear()
+            path, _ = QFileDialog.getOpenFileName(self, "Select file", "", self.file_filter)
+            if path:
+                self.file_list.addItem(path)
+        else:
+            paths, _ = QFileDialog.getOpenFileNames(self, "Select file(s)", "", self.file_filter)
+            for path in paths:
+                self.file_list.addItem(path)
+        self.on_files_changed(self.selected_files())
+```
+
+Add one line at the end so it reads:
+
+```python
+    def _pick_files(self) -> None:
+        if not self.allow_multiple_files:
+            self.file_list.clear()
+            path, _ = QFileDialog.getOpenFileName(self, "Select file", "", self.file_filter)
+            if path:
+                self.file_list.addItem(path)
+        else:
+            paths, _ = QFileDialog.getOpenFileNames(self, "Select file(s)", "", self.file_filter)
+            for path in paths:
+                self.file_list.addItem(path)
+        self.on_files_changed(self.selected_files())
+        self._refresh_thumbnails()
+```
+
+- [ ] **Step 9: Modify `app/ui/dialogs/base.py` — add the `_refresh_thumbnails` method**
+
+Add this new method anywhere after `_pick_files` (e.g. right after it):
+
+```python
+    def _refresh_thumbnails(self) -> None:
+        while self._thumbnail_layout.count():
+            item = self._thumbnail_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        paths = self.selected_files()
+        if not paths:
+            return
+        try:
+            count = get_page_count(paths[0])
+        except PDFError:
+            return
+        for i in range(1, count + 1):
+            try:
+                thumb_bytes = render_page_thumbnail(paths[0], i, max_size=100)
+            except PDFError:
+                continue
+            pixmap = QPixmap()
+            pixmap.loadFromData(thumb_bytes)
+            label = QLabel()
+            label.setPixmap(pixmap)
+            label.setToolTip(f"Page {i}")
+            self._thumbnail_layout.addWidget(label)
+```
+
+Note: this renders one thumbnail per page of the first selected file, synchronously, every time the file selection changes. For the v1 document sizes this targets (a few to a few dozen pages) this is fast enough to not need a background thread; it's an accepted tradeoff, not an oversight — don't add threading for this.
+
+- [ ] **Step 10: Manual verification**
+
+Run: `venv/Scripts/python -m app.main`
+- Open any already-built tool (e.g. Merge PDF), add a multi-page PDF, confirm a row of small page-preview thumbnails appears below the file list, matching the PDF's actual page content and count.
+- Confirm the existing dialogs (Merge, Split, Remove/Extract/Reorder pages, Rotate, Watermark) still work exactly as before — this change must not alter any existing behavior, only add the thumbnail strip.
+
+- [ ] **Step 11: Commit the UI change**
+
+```bash
+git add app/ui/dialogs/base.py
+git commit -m "feat: universal page-thumbnail strip on ToolDialog"
+```
+
+---
+
+## Task 18: UI — Merge PDF: choose the output filename before merging
+
+> Added after Task 12, per user request: "For Merge PDF, let me also rename the file before you merge and generate."
+
+**Files:**
+- Modify: `app/ui/dialogs/organize_dialogs.py`
+
+**Interfaces:**
+- Consumes: `merge_pdfs` (Task 2), `ToolDialog.build_options`/`on_files_changed`/`run_operation` (Task 8, extended by Task 17 but with unchanged signatures).
+- Produces: no new interface consumed elsewhere — `MergeDialog`'s behavior changes, its class name/registration is unchanged.
+
+- [ ] **Step 1: Modify `app/ui/dialogs/organize_dialogs.py` — imports**
+
+Current:
+
+```python
+from pathlib import Path
+
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QSpinBox, QLabel
+
+from app.core.pdf_ops import merge_pdfs, split_pdf, get_page_count
+from app.ui.dialogs.base import ToolDialog
+```
+
+Replace with:
+
+```python
+from pathlib import Path
+
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QSpinBox, QLabel, QLineEdit
+
+from app.core.pdf_ops import merge_pdfs, split_pdf, get_page_count
+from app.ui.dialogs.base import ToolDialog
+```
+
+- [ ] **Step 2: Replace the `MergeDialog` class**
+
+Current:
+
+```python
+class MergeDialog(ToolDialog):
+    title = "Merge PDF"
+    allow_multiple_files = True
+
+    def run_operation(self, input_paths: list[str]) -> list[str]:
+        first = Path(input_paths[0])
+        output_path = str(first.with_name(first.stem + "_merged.pdf"))
+        merge_pdfs(input_paths, output_path)
+        return [output_path]
+```
+
+Replace with:
+
+```python
+class MergeDialog(ToolDialog):
+    title = "Merge PDF"
+    allow_multiple_files = True
+
+    def build_options(self, container: QWidget) -> None:
+        layout = QVBoxLayout(container)
+        layout.addWidget(QLabel("Output filename:"))
+        self.filename_input = QLineEdit()
+        layout.addWidget(self.filename_input)
+
+    def on_files_changed(self, paths: list[str]) -> None:
+        if paths and not self.filename_input.text().strip():
+            default_name = Path(paths[0]).stem + "_merged.pdf"
+            self.filename_input.setText(default_name)
+
+    def run_operation(self, input_paths: list[str]) -> list[str]:
+        filename = self.filename_input.text().strip()
+        if not filename:
+            raise ValueError("Enter an output filename.")
+        if not filename.lower().endswith(".pdf"):
+            filename += ".pdf"
+        output_path = str(Path(input_paths[0]).parent / filename)
+        merge_pdfs(input_paths, output_path)
+        return [output_path]
+```
+
+`SplitDialog` in the same file is unchanged — leave it exactly as-is.
+
+- [ ] **Step 3: Manual verification**
+
+Run: `venv/Scripts/python -m app.main`
+Click "Merge PDF", add two PDFs, confirm the "Output filename" field auto-fills with a default name based on the first file, edit it to something custom (with or without `.pdf`), click Run, confirm the output file is created under your chosen name (with `.pdf` appended if you omitted it) in the same folder as the first input file.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add app/ui/dialogs/organize_dialogs.py
+git commit -m "feat: let user choose the output filename before merging"
+```
+
+---
+
 ## Plan complete
 
-At the end of Task 16, `PDF Editor` is a standalone Windows app covering Merge, Split, Remove pages, Extract pages, Reorder pages, Rotate, Add watermark, Compress, PDF→JPG, and PDF→Word, launchable from a Desktop shortcut with no Python installation required. Phase 2 (Crop, page numbers, direct in-PDF text editing, Redact, PDF Forms, Sign, JPG→PDF, Scan to PDF) and Phase 3 (per the spec's roadmap) are separate future plans.
+At the end of Task 18, `PDF Editor` covers Merge (with a user-chosen output filename), Split, Remove pages, Extract pages, Reorder pages, Rotate, Add watermark, Compress, PDF→JPG, and PDF→Word — every tool dialog also shows a thumbnail strip of the selected file's pages so the user can see what they're operating on before running it. Tasks 15 (packaging) and 16 (Desktop shortcut) still need to run after Task 18, since they package whatever is in `app/` at the time they're run — run them last so the shortcut points at a build that includes Tasks 17-18. Phase 2 (Crop, page numbers, direct in-PDF text editing, Redact, PDF Forms, Sign, JPG→PDF, Scan to PDF, and any deeper "preview the operation's result before committing" work) and Phase 3 (per the spec's roadmap) are separate future plans.
