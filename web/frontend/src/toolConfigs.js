@@ -5,6 +5,7 @@ export const TOOL_CONFIGS = {
     multiFile: true,
     mode: "view",
     endpoint: "merge",
+    filenameSuffix: "_merged",
     fields: [{ name: "filename", label: "Output filename", type: "text", default: "" }],
   },
   split: {

@@ -26,26 +26,27 @@ export default function ToolView() {
   async function handleFilePick(e) {
     setError("");
     const picked = Array.from(e.target.files);
-    try {
-      const uploaded = [];
-      for (const file of picked) {
-        uploaded.push(await uploadFile(file));
-      }
-      const nextFiles = config.multiFile ? [...files, ...uploaded] : uploaded;
-      setFiles(nextFiles);
-      const primary = nextFiles[0];
-      if (primary) {
-        setSelected([]);
-        setOrder(Array.from({ length: primary.page_count }, (_, i) => i + 1));
-        if (config.fields.some((f) => f.name === "filename") && !fieldValues.filename) {
-          setFieldValues((v) => ({
-            ...v,
-            filename: primary.filename.replace(/\.pdf$/i, "") + "_merged",
-          }));
+    let accumulated = config.multiFile ? files : [];
+    for (const file of picked) {
+      try {
+        const uploaded = await uploadFile(file);
+        accumulated = config.multiFile ? [...accumulated, uploaded] : [uploaded];
+        setFiles(accumulated);
+        const primary = accumulated[0];
+        if (primary) {
+          setSelected([]);
+          setOrder(Array.from({ length: primary.page_count }, (_, i) => i + 1));
+          if (config.filenameSuffix && !fieldValues.filename) {
+            setFieldValues((v) => ({
+              ...v,
+              filename: primary.filename.replace(/\.pdf$/i, "") + config.filenameSuffix,
+            }));
+          }
         }
+      } catch (err) {
+        setError(err.message);
+        return;
       }
-    } catch (err) {
-      setError(err.message);
     }
   }
 
