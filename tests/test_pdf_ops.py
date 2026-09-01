@@ -2,7 +2,7 @@ import fitz
 import pytest
 
 from app.core.errors import PDFError
-from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs
+from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf
 
 
 def test_open_pdf_missing_file_raises(tmp_path):
@@ -40,3 +40,77 @@ def test_merge_pdfs_requires_two_files(make_pdf, tmp_path):
     pdf_a = make_pdf(num_pages=1)
     with pytest.raises(PDFError):
         merge_pdfs([pdf_a], str(tmp_path / "out.pdf"))
+
+
+def test_extract_pages_selects_in_order(make_pdf, tmp_path):
+    path = make_pdf(num_pages=4)
+    out_path = str(tmp_path / "extracted.pdf")
+
+    extract_pages(path, [3, 1], out_path)
+
+    assert get_page_count(out_path) == 2
+    doc = fitz.open(out_path)
+    assert "Page 3" in doc[0].get_text()
+    assert "Page 1" in doc[1].get_text()
+    doc.close()
+
+
+def test_extract_pages_rejects_out_of_range(make_pdf, tmp_path):
+    path = make_pdf(num_pages=2)
+    with pytest.raises(PDFError):
+        extract_pages(path, [5], str(tmp_path / "out.pdf"))
+
+
+def test_remove_pages_drops_selected(make_pdf, tmp_path):
+    path = make_pdf(num_pages=4)
+    out_path = str(tmp_path / "removed.pdf")
+
+    remove_pages(path, [2, 3], out_path)
+
+    assert get_page_count(out_path) == 2
+    doc = fitz.open(out_path)
+    assert "Page 1" in doc[0].get_text()
+    assert "Page 4" in doc[1].get_text()
+    doc.close()
+
+
+def test_remove_pages_rejects_removing_everything(make_pdf, tmp_path):
+    path = make_pdf(num_pages=2)
+    with pytest.raises(PDFError):
+        remove_pages(path, [1, 2], str(tmp_path / "out.pdf"))
+
+
+def test_reorder_pages(make_pdf, tmp_path):
+    path = make_pdf(num_pages=3)
+    out_path = str(tmp_path / "reordered.pdf")
+
+    reorder_pages(path, [3, 1, 2], out_path)
+
+    doc = fitz.open(out_path)
+    assert "Page 3" in doc[0].get_text()
+    assert "Page 1" in doc[1].get_text()
+    assert "Page 2" in doc[2].get_text()
+    doc.close()
+
+
+def test_reorder_pages_rejects_incomplete_order(make_pdf, tmp_path):
+    path = make_pdf(num_pages=3)
+    with pytest.raises(PDFError):
+        reorder_pages(path, [1, 2], str(tmp_path / "out.pdf"))
+
+
+def test_split_pdf_by_ranges(make_pdf, tmp_path):
+    path = make_pdf(num_pages=4)
+    out_dir = str(tmp_path / "split_out")
+
+    outputs = split_pdf(path, out_dir, [(1, 2), (3, 4)])
+
+    assert len(outputs) == 2
+    assert get_page_count(outputs[0]) == 2
+    assert get_page_count(outputs[1]) == 2
+
+
+def test_split_pdf_rejects_invalid_range(make_pdf, tmp_path):
+    path = make_pdf(num_pages=2)
+    with pytest.raises(PDFError):
+        split_pdf(path, str(tmp_path / "out"), [(1, 5)])
