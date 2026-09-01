@@ -29,6 +29,6 @@ if _frontend_dist.exists():
 
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
-        if full_path.startswith("api/"):
+        if full_path == "api" or full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not Found")
         return FileResponse(str(_frontend_dist / "index.html"))
