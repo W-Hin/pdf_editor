@@ -165,3 +165,27 @@ def compress_pdf(input_path: str, output_path: str, image_quality: int = 60) -> 
         doc.save(output_path, garbage=4, deflate=True)
     finally:
         doc.close()
+
+
+def render_to_images(
+    input_path: str, output_dir: str, dpi: int = 150, image_format: str = "png"
+) -> list[str]:
+    fmt = image_format.lower()
+    if fmt not in ("png", "jpg", "jpeg"):
+        raise PDFError("Image format must be png or jpg.")
+    doc = open_pdf(input_path)
+    try:
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = Path(input_path).stem
+        zoom = dpi / 72
+        matrix = fitz.Matrix(zoom, zoom)
+        output_paths = []
+        for i, page in enumerate(doc, start=1):
+            pix = page.get_pixmap(matrix=matrix)
+            out_path = out_dir / f"{stem}_page{i}.{fmt}"
+            pix.save(str(out_path))
+            output_paths.append(str(out_path))
+        return output_paths
+    finally:
+        doc.close()

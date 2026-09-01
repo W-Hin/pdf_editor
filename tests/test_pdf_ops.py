@@ -206,3 +206,34 @@ def test_compress_pdf_rejects_bad_quality(tmp_path):
     path = _make_pdf_with_image(tmp_path)
     with pytest.raises(PDFError):
         compress_pdf(path, str(tmp_path / "out.pdf"), image_quality=150)
+
+
+from app.core.pdf_ops import render_to_images
+
+
+def test_render_to_images_one_file_per_page(make_pdf, tmp_path):
+    path = make_pdf(num_pages=3)
+    out_dir = str(tmp_path / "images_out")
+
+    outputs = render_to_images(path, out_dir, dpi=72, image_format="png")
+
+    assert len(outputs) == 3
+    for out_path in outputs:
+        assert Path(out_path).exists()
+        assert out_path.endswith(".png")
+
+
+def test_render_to_images_jpg_format(make_pdf, tmp_path):
+    path = make_pdf(num_pages=1)
+    out_dir = str(tmp_path / "images_out")
+
+    outputs = render_to_images(path, out_dir, dpi=72, image_format="jpg")
+
+    assert outputs[0].endswith(".jpg")
+    assert Path(outputs[0]).exists()
+
+
+def test_render_to_images_rejects_bad_format(make_pdf, tmp_path):
+    path = make_pdf(num_pages=1)
+    with pytest.raises(PDFError):
+        render_to_images(path, str(tmp_path / "out"), image_format="bmp")
