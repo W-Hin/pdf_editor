@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QApplication
 from app.ui.main_window import MainWindow
 from app.ui.dialogs.organize_dialogs import MergeDialog, SplitDialog
 from app.ui.dialogs.pages_dialogs import RemovePagesDialog, ExtractPagesDialog, ReorderPagesDialog
+from app.ui.dialogs.edit_dialogs import RotateDialog, WatermarkDialog
 
 
 def main() -> int:
@@ -15,6 +16,8 @@ def main() -> int:
     window.add_tool("Organize", "Remove pages", RemovePagesDialog)
     window.add_tool("Organize", "Extract pages", ExtractPagesDialog)
     window.add_tool("Organize", "Reorder pages", ReorderPagesDialog)
+    window.add_tool("Edit", "Rotate PDF", RotateDialog)
+    window.add_tool("Edit", "Add watermark", WatermarkDialog)
     window.show()
     return app.exec()
 
