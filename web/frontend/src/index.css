@@ -1,0 +1,178 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 16px;
+  background: #f5f5f7;
+  color: #1a1a1a;
+}
+
+.app__header {
+  padding: 16px 24px;
+  background: #202124;
+  color: white;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.app__brand {
+  color: white;
+  text-decoration: none;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.app__nav a {
+  color: #ddd;
+  text-decoration: none;
+  margin-left: 20px;
+  font-size: 15px;
+}
+
+.app__main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+
+.tool-grid__category {
+  margin-bottom: 32px;
+}
+
+.tool-grid__category h2 {
+  font-size: 18px;
+  color: #555;
+  margin-bottom: 12px;
+}
+
+.tool-grid__buttons {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.tool-grid__buttons button {
+  padding: 20px;
+  font-size: 16px;
+  border-radius: 10px;
+  border: 1px solid #ddd;
+  background: white;
+  cursor: pointer;
+  text-align: left;
+}
+
+.tool-grid__buttons button:hover {
+  border-color: #4a7dff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.page-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+  margin: 24px 0;
+}
+
+.page-thumb {
+  position: relative;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  padding: 8px;
+  background: white;
+}
+
+.page-thumb img {
+  width: 100%;
+  display: block;
+  border-radius: 4px;
+}
+
+.page-thumb__label {
+  display: block;
+  text-align: center;
+  font-size: 14px;
+  color: #666;
+  margin-top: 6px;
+}
+
+.page-grid--select .page-thumb,
+.page-grid--reorder .page-thumb {
+  cursor: pointer;
+}
+
+.page-thumb--selected {
+  border-color: #4a7dff;
+  box-shadow: 0 0 0 3px rgba(74, 125, 255, 0.25);
+}
+
+.page-thumb__badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: #4a7dff;
+  color: white;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+.field {
+  display: block;
+  margin: 16px 0;
+  font-size: 15px;
+}
+
+.field input,
+.field select {
+  display: block;
+  margin-top: 6px;
+  padding: 8px;
+  font-size: 15px;
+  width: 100%;
+  max-width: 300px;
+}
+
+.banner {
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin: 16px 0;
+}
+
+.banner--error {
+  background: #fde8e8;
+  color: #a11;
+}
+
+.result {
+  margin-top: 24px;
+  padding: 16px;
+  background: #e8f7ec;
+  border-radius: 8px;
+}
+
+.result a {
+  display: block;
+  margin-top: 8px;
+  color: #226;
+}
+
+.history-list {
+  list-style: none;
+  padding: 0;
+}
+
+.history-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  border-bottom: 1px solid #eee;
+}

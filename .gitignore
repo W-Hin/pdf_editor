@@ -6,3 +6,5 @@ dist/
 build/
 .pytest_cache/
 *.egg-info/
+web/frontend/node_modules/
+web/frontend/dist/
