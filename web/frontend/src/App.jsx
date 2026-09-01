@@ -1,5 +1,6 @@
 import { Routes, Route, Link } from "react-router-dom";
 import ToolGrid from "./components/ToolGrid.jsx";
+import ToolView from "./components/ToolView.jsx";
 
 export default function App() {
   return (
@@ -12,6 +13,7 @@ export default function App() {
       <main className="app__main">
         <Routes>
           <Route path="/" element={<ToolGrid />} />
+          <Route path="/tool/:toolId" element={<ToolView />} />
         </Routes>
       </main>
     </div>
