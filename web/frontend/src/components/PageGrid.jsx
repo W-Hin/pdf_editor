@@ -9,11 +9,16 @@ export default function PageGrid({ fileId, pageCount, mode = "view", selected, o
   const pages = mode === "reorder" && order ? order : Array.from({ length: pageCount }, (_, i) => i + 1);
 
   function handleDragStart(index) {
+    if (mode !== "reorder") return;
     setDragIndex(index);
   }
 
   function handleDrop(index) {
-    if (dragIndex === null || dragIndex === index) return;
+    if (mode !== "reorder") return;
+    if (dragIndex === null || dragIndex === index) {
+      setDragIndex(null);
+      return;
+    }
     const next = [...pages];
     const [moved] = next.splice(dragIndex, 1);
     next.splice(index, 0, moved);
@@ -33,9 +38,10 @@ export default function PageGrid({ fileId, pageCount, mode = "view", selected, o
             onDragStart={() => handleDragStart(index)}
             onDragOver={(e) => e.preventDefault()}
             onDrop={() => handleDrop(index)}
+            onDragEnd={() => setDragIndex(null)}
             onClick={() => mode === "select" && onToggle(pageNumber)}
           >
-            <img src={thumbnailUrl(fileId, pageNumber)} alt={`Page ${pageNumber}`} loading="lazy" />
+            <img draggable={false} src={thumbnailUrl(fileId, pageNumber)} alt={`Page ${pageNumber}`} loading="lazy" />
             <span className="page-thumb__label">Page {pageNumber}</span>
             {isSelected && <span className="page-thumb__badge">✓</span>}
           </div>
