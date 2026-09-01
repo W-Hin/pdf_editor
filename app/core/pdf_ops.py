@@ -93,3 +93,49 @@ def split_pdf(input_path: str, output_dir: str, ranges: list[tuple[int, int]]) -
         extract_pages(input_path, pages, str(out_path))
         output_paths.append(str(out_path))
     return output_paths
+
+
+def rotate_pages(input_path: str, output_path: str, angle: int, page_numbers: list[int] | None = None) -> None:
+    if angle % 90 != 0:
+        raise PDFError("Rotation angle must be a multiple of 90 degrees.")
+    doc = open_pdf(input_path)
+    try:
+        targets = page_numbers if page_numbers is not None else list(range(1, doc.page_count + 1))
+        for n in targets:
+            if n < 1 or n > doc.page_count:
+                raise PDFError(f"Page {n} does not exist in this document ({doc.page_count} pages).")
+            page = doc[n - 1]
+            page.set_rotation((page.rotation + angle) % 360)
+        doc.save(output_path)
+    finally:
+        doc.close()
+
+
+def add_watermark(
+    input_path: str,
+    output_path: str,
+    text: str,
+    opacity: float = 0.3,
+    font_size: int = 40,
+    rotate: int = 0,
+) -> None:
+    if not text.strip():
+        raise PDFError("Watermark text cannot be empty.")
+    if rotate not in (0, 90, 180, 270):
+        raise PDFError("Watermark rotation must be 0, 90, 180, or 270 degrees.")
+    doc = open_pdf(input_path)
+    try:
+        for page in doc:
+            page.insert_textbox(
+                page.rect,
+                text,
+                fontsize=font_size,
+                fontname="helv",
+                color=(0.5, 0.5, 0.5),
+                fill_opacity=opacity,
+                rotate=rotate,
+                align=fitz.TEXT_ALIGN_CENTER,
+            )
+        doc.save(output_path)
+    finally:
+        doc.close()

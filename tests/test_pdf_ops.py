@@ -2,7 +2,7 @@ import fitz
 import pytest
 
 from app.core.errors import PDFError
-from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf
+from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark
 
 
 def test_open_pdf_missing_file_raises(tmp_path):
@@ -114,3 +114,50 @@ def test_split_pdf_rejects_invalid_range(make_pdf, tmp_path):
     path = make_pdf(num_pages=2)
     with pytest.raises(PDFError):
         split_pdf(path, str(tmp_path / "out"), [(1, 5)])
+
+
+def test_rotate_pages_all(make_pdf, tmp_path):
+    path = make_pdf(num_pages=2)
+    out_path = str(tmp_path / "rotated.pdf")
+
+    rotate_pages(path, out_path, 90)
+
+    doc = fitz.open(out_path)
+    assert doc[0].rotation == 90
+    assert doc[1].rotation == 90
+    doc.close()
+
+
+def test_rotate_pages_specific(make_pdf, tmp_path):
+    path = make_pdf(num_pages=2)
+    out_path = str(tmp_path / "rotated.pdf")
+
+    rotate_pages(path, out_path, 180, page_numbers=[1])
+
+    doc = fitz.open(out_path)
+    assert doc[0].rotation == 180
+    assert doc[1].rotation == 0
+    doc.close()
+
+
+def test_rotate_pages_rejects_non_multiple_of_90(make_pdf, tmp_path):
+    path = make_pdf(num_pages=1)
+    with pytest.raises(PDFError):
+        rotate_pages(path, str(tmp_path / "out.pdf"), 45)
+
+
+def test_add_watermark_inserts_text(make_pdf, tmp_path):
+    path = make_pdf(num_pages=1)
+    out_path = str(tmp_path / "watermarked.pdf")
+
+    add_watermark(path, out_path, "CONFIDENTIAL")
+
+    doc = fitz.open(out_path)
+    assert "CONFIDENTIAL" in doc[0].get_text()
+    doc.close()
+
+
+def test_add_watermark_rejects_empty_text(make_pdf, tmp_path):
+    path = make_pdf(num_pages=1)
+    with pytest.raises(PDFError):
+        add_watermark(path, str(tmp_path / "out.pdf"), "   ")
