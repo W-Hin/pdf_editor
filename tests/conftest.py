@@ -4,8 +4,11 @@ import pytest
 
 @pytest.fixture
 def make_pdf(tmp_path):
+    counter = 0
     def _make(num_pages=3, text_prefix="Page"):
-        path = tmp_path / "sample.pdf"
+        nonlocal counter
+        counter += 1
+        path = tmp_path / f"sample_{counter}.pdf"
         doc = fitz.open()
         for i in range(num_pages):
             page = doc.new_page()
