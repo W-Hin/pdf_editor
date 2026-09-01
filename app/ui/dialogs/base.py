@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -12,8 +14,11 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QWidget,
+    QScrollArea,
 )
 
+from app.core.errors import PDFError
+from app.core.pdf_ops import get_page_count, render_page_thumbnail
 from app.ui.workers import Worker
 
 
@@ -40,6 +45,15 @@ class ToolDialog(QDialog):
         pick_btn.clicked.connect(self._pick_files)
         file_row.addWidget(pick_btn)
         layout.addLayout(file_row)
+
+        self.thumbnail_strip = QScrollArea()
+        self.thumbnail_strip.setWidgetResizable(True)
+        self.thumbnail_strip.setFixedHeight(130)
+        self.thumbnail_strip.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._thumbnail_container = QWidget()
+        self._thumbnail_layout = QHBoxLayout(self._thumbnail_container)
+        self.thumbnail_strip.setWidget(self._thumbnail_container)
+        layout.addWidget(self.thumbnail_strip)
 
         self.options_widget = QWidget()
         self.build_options(self.options_widget)
@@ -87,6 +101,32 @@ class ToolDialog(QDialog):
             for path in paths:
                 self.file_list.addItem(path)
         self.on_files_changed(self.selected_files())
+        self._refresh_thumbnails()
+
+    def _refresh_thumbnails(self) -> None:
+        while self._thumbnail_layout.count():
+            item = self._thumbnail_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        paths = self.selected_files()
+        if not paths:
+            return
+        try:
+            count = get_page_count(paths[0])
+        except PDFError:
+            return
+        for i in range(1, count + 1):
+            try:
+                thumb_bytes = render_page_thumbnail(paths[0], i, max_size=100)
+            except PDFError:
+                continue
+            pixmap = QPixmap()
+            pixmap.loadFromData(thumb_bytes)
+            label = QLabel()
+            label.setPixmap(pixmap)
+            label.setToolTip(f"Page {i}")
+            self._thumbnail_layout.addWidget(label)
 
     def _run(self) -> None:
         input_paths = self.selected_files()
