@@ -1,8 +1,5 @@
 import { Routes, Route, Link } from "react-router-dom";
-
-function Home() {
-  return <h1>PDF Editor</h1>;
-}
+import ToolGrid from "./components/ToolGrid.jsx";
 
 export default function App() {
   return (
@@ -14,7 +11,7 @@ export default function App() {
       </header>
       <main className="app__main">
         <Routes>
-          <Route path="/" element={<Home />} />
+          <Route path="/" element={<ToolGrid />} />
         </Routes>
       </main>
     </div>
