@@ -167,6 +167,21 @@ def compress_pdf(input_path: str, output_path: str, image_quality: int = 60) -> 
         doc.close()
 
 
+def render_page_thumbnail(input_path: str, page_number: int, max_size: int = 100) -> bytes:
+    doc = open_pdf(input_path)
+    try:
+        if page_number < 1 or page_number > doc.page_count:
+            raise PDFError(f"Page {page_number} does not exist in this document ({doc.page_count} pages).")
+        page = doc[page_number - 1]
+        rect = page.rect
+        scale = max_size / max(rect.width, rect.height)
+        matrix = fitz.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=matrix)
+        return pix.tobytes("png")
+    finally:
+        doc.close()
+
+
 def render_to_images(
     input_path: str, output_dir: str, dpi: int = 150, image_format: str = "png"
 ) -> list[str]:

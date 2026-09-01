@@ -237,3 +237,20 @@ def test_render_to_images_rejects_bad_format(make_pdf, tmp_path):
     path = make_pdf(num_pages=1)
     with pytest.raises(PDFError):
         render_to_images(path, str(tmp_path / "out"), image_format="bmp")
+
+
+from app.core.pdf_ops import render_page_thumbnail
+
+
+def test_render_page_thumbnail_returns_png_bytes(make_pdf):
+    path = make_pdf(num_pages=2)
+
+    data = render_page_thumbnail(path, 1, max_size=80)
+
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_page_thumbnail_rejects_bad_page(make_pdf):
+    path = make_pdf(num_pages=1)
+    with pytest.raises(PDFError):
+        render_page_thumbnail(path, 5)
