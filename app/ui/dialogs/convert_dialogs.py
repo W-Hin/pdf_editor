@@ -17,16 +17,19 @@ class ToImagesDialog(ToolDialog):
         self.format_box.addItems(["png", "jpg"])
         layout.addWidget(self.format_box)
 
-    def run_operation(self, input_paths: list[str]) -> list[str]:
+    def gather_params(self) -> dict:
+        return {"image_format": self.format_box.currentText()}
+
+    def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         input_path = input_paths[0]
         output_dir = str(Path(input_path).parent)
-        return render_to_images(input_path, output_dir, image_format=self.format_box.currentText())
+        return render_to_images(input_path, output_dir, image_format=params["image_format"])
 
 
 class ToWordDialog(ToolDialog):
     title = "PDF to Word"
 
-    def run_operation(self, input_paths: list[str]) -> list[str]:
+    def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         input_path = input_paths[0]
         out_path = str(Path(input_path).with_name(Path(input_path).stem + ".docx"))
         convert_to_word(input_path, out_path)

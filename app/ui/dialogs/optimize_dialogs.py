@@ -18,8 +18,11 @@ class CompressDialog(ToolDialog):
         self.quality_slider.setValue(60)
         layout.addWidget(self.quality_slider)
 
-    def run_operation(self, input_paths: list[str]) -> list[str]:
+    def gather_params(self) -> dict:
+        return {"image_quality": self.quality_slider.value()}
+
+    def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         input_path = input_paths[0]
         out_path = str(Path(input_path).with_name(Path(input_path).stem + "_compressed.pdf"))
-        compress_pdf(input_path, out_path, image_quality=self.quality_slider.value())
+        compress_pdf(input_path, out_path, image_quality=params["image_quality"])
         return [out_path]

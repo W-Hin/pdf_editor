@@ -83,8 +83,17 @@ class ToolDialog(QDialog):
     def on_files_changed(self, paths: list[str]) -> None:
         """Override in subclasses to react when the selected file list changes."""
 
-    def run_operation(self, input_paths: list[str]) -> list[str]:
-        """Override in subclasses: perform the operation, return output path(s)."""
+    def gather_params(self) -> dict:
+        """Override in subclasses to snapshot option-widget values on the GUI thread,
+        before the background worker starts. `run_operation` must read only from the
+        returned dict, never from `self.<widget>`, since it runs on a worker thread and
+        Qt widgets are not safe to touch off the GUI thread."""
+        return {}
+
+    def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
+        """Override in subclasses: perform the operation, return output path(s).
+        Runs on a background thread — read only from `params` (see `gather_params`),
+        never from `self.<widget>`."""
         raise NotImplementedError
 
     def selected_files(self) -> list[str]:
@@ -100,7 +109,13 @@ class ToolDialog(QDialog):
             paths, _ = QFileDialog.getOpenFileNames(self, "Select file(s)", "", self.file_filter)
             for path in paths:
                 self.file_list.addItem(path)
-        self.on_files_changed(self.selected_files())
+        try:
+            self.on_files_changed(self.selected_files())
+        except PDFError as exc:
+            QMessageBox.warning(self, "Could not read file", str(exc))
+            self.file_list.clear()
+            self._refresh_thumbnails()
+            return
         self._refresh_thumbnails()
 
     def _refresh_thumbnails(self) -> None:
@@ -133,11 +148,12 @@ class ToolDialog(QDialog):
         if not input_paths:
             QMessageBox.warning(self, "No file selected", "Add at least one file first.")
             return
+        params = self.gather_params()
         self.run_button.setEnabled(False)
         self.open_folder_button.setEnabled(False)
         self.progress.setVisible(True)
         self.status_label.setText("Working…")
-        self._worker = Worker(self.run_operation, input_paths)
+        self._worker = Worker(self.run_operation, input_paths, params)
         self._worker.finished_ok.connect(self._on_success)
         self._worker.failed.connect(self._on_failure)
         self._worker.start()

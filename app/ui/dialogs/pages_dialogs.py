@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QLabel,
 )
 
+from app.core.errors import PDFError
 from app.core.pdf_ops import get_page_count, remove_pages, extract_pages, reorder_pages
 from app.ui.dialogs.base import ToolDialog
 
@@ -45,11 +46,14 @@ class RemovePagesDialog(ToolDialog):
         if paths:
             self.page_list.populate(get_page_count(paths[0]))
 
-    def run_operation(self, input_paths: list[str]) -> list[str]:
+    def gather_params(self) -> dict:
+        return {"pages": self.page_list.checked_pages()}
+
+    def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         input_path = input_paths[0]
-        pages = self.page_list.checked_pages()
+        pages = params["pages"]
         if not pages:
-            raise ValueError("Check at least one page to remove.")
+            raise PDFError("Check at least one page to remove.")
         out_path = str(Path(input_path).with_name(Path(input_path).stem + "_removed.pdf"))
         remove_pages(input_path, pages, out_path)
         return [out_path]
@@ -68,11 +72,14 @@ class ExtractPagesDialog(ToolDialog):
         if paths:
             self.page_list.populate(get_page_count(paths[0]))
 
-    def run_operation(self, input_paths: list[str]) -> list[str]:
+    def gather_params(self) -> dict:
+        return {"pages": self.page_list.checked_pages()}
+
+    def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         input_path = input_paths[0]
-        pages = self.page_list.checked_pages()
+        pages = params["pages"]
         if not pages:
-            raise ValueError("Check at least one page to extract.")
+            raise PDFError("Check at least one page to extract.")
         out_path = str(Path(input_path).with_name(Path(input_path).stem + "_extracted.pdf"))
         extract_pages(input_path, pages, out_path)
         return [out_path]
@@ -98,9 +105,13 @@ class ReorderPagesDialog(ToolDialog):
             item.setData(Qt.UserRole, i)
             self.page_list.addItem(item)
 
-    def run_operation(self, input_paths: list[str]) -> list[str]:
-        input_path = input_paths[0]
+    def gather_params(self) -> dict:
         order = [self.page_list.item(i).data(Qt.UserRole) for i in range(self.page_list.count())]
+        return {"order": order}
+
+    def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
+        input_path = input_paths[0]
+        order = params["order"]
         out_path = str(Path(input_path).with_name(Path(input_path).stem + "_reordered.pdf"))
         reorder_pages(input_path, order, out_path)
         return [out_path]
