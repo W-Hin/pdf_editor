@@ -61,9 +61,11 @@ def crop_pdf(input_path: str, output_path: str, top: float, right: float, bottom
 ```
 
 `top`/`right`/`bottom`/`left` are fractions (0–1) of each page's height/width/height/width
-respectively, describing how much to trim from each edge. Validates `0 <= value < 0.5` for each
-(a crop can't consume the whole page) and that the resulting box has positive area, raising
-`PDFError` otherwise.
+respectively, describing how much to trim from each edge. Validates `0 <= value < 0.5` for each.
+That bound is sufficient on its own to guarantee a positive-area result: since `top + bottom < 1`
+and `left + right < 1` whenever each individual value is `< 0.5`, the remaining width/height
+fraction (`1 - left - right` / `1 - top - bottom`) is always strictly positive — no separate
+"positive area" check is needed or possible to reach.
 
 ### Add page numbers — backend technique
 
@@ -104,8 +106,12 @@ Page Numbers, keep the existing `PageGrid` thumbnail-grid preview).
   `getBoundingClientRect()` dimensions once the drag ends. This conversion is what makes the
   fraction resolution-independent of both the preview's display size and the actual PDF page
   size.
-- If no rectangle has been drawn, the Run button stays disabled (mirroring how Remove/Extract
-  pages disable Run with nothing selected).
+- If no rectangle has been drawn, the Run button stays disabled. This is new behavior for
+  `ToolView.jsx` — today Run is only disabled on `busy || files.length === 0`; page-selection
+  tools (Remove/Extract pages) don't actually gate Run on a non-empty selection, they rely on the
+  backend's `PDFError` for that. Crop needs its own extra precondition since drawing a box is the
+  entire input — `ToolView.jsx` gains a small generic hook for this (e.g. an optional
+  `canRun(state)` check surfaced per-preview-type) rather than a crop-only special case bolted on.
 
 ### Frontend — Add Page Numbers
 
@@ -121,20 +127,22 @@ of only centered — Watermark keeps using the (now-default) centered behavior u
 
 - `POST /tools/crop` — body `{file_id, top, right, bottom, left}` (floats, 0–1). Returns the
   standard `{outputs: [{id, filename, download_url}]}` shape every tool endpoint already returns.
-- `POST /tools/add-page-numbers` — body `{file_id, position, format}` (strings, validated against
-  the enums above via Pydantic). Same response shape.
+- `POST /tools/add-page-numbers` — body `{file_id, position, format}` (plain strings). Same
+  response shape.
 
 Both are added to `web/backend/routes/tools.py` alongside the existing ten tool routes, following
 the exact same `_output_response()` helper pattern.
 
 ## Error handling
 
-- Crop: a degenerate rectangle (any fraction outside `[0, 0.5)`, or a resulting width/height ≤ 0)
-  raises `PDFError` → existing 422 banner. This covers both a genuinely empty drag (click without
-  moving) and a malformed/tampered request.
-- Add page numbers: no new failure modes — invalid `position`/`format` values are rejected by
-  Pydantic's enum validation before reaching the core function (422, same as any other bad-enum
-  request today).
+- Crop: any fraction outside `[0, 0.5)` raises `PDFError` → existing 422 banner (see Architecture
+  above for why this single check is sufficient to also guarantee positive area). This covers
+  both a malformed/tampered request and the frontend's own guard against a genuinely empty drag
+  (click without moving) — see Frontend section.
+- Add page numbers: `position`/`format` are plain strings in the request model (matching the
+  existing `ToImagesRequest.image_format` precedent, not a Pydantic enum/`Literal`); invalid
+  values are rejected by `add_page_numbers()` itself raising `PDFError` → the existing 422
+  banner, the same path every other invalid-enum-style input in this app already takes.
 - Both reuse the existing app-level `FileNotFoundError` → 404 handler for a stale/unknown
   `file_id`, same as every other tool.
 
