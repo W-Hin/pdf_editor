@@ -24,12 +24,14 @@ async def upload_file(file: UploadFile):
 
 
 @router.get("/files/{file_id}/pages/{page_number}/thumbnail")
-def get_thumbnail(file_id: str, page_number: int):
+def get_thumbnail(file_id: str, page_number: int, max_size: int = 220):
+    if not 50 <= max_size <= 2000:
+        raise HTTPException(status_code=422, detail="max_size must be between 50 and 2000.")
     try:
         path = storage.resolve_file(file_id)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="File not found")
-    thumb_bytes = render_page_thumbnail(str(path), page_number, max_size=220)
+    thumb_bytes = render_page_thumbnail(str(path), page_number, max_size=max_size)
     return Response(content=thumb_bytes, media_type="image/png")
 
 

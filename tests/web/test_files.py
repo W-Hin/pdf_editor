@@ -72,3 +72,41 @@ def test_download_returns_file_content():
 def test_download_unknown_file_id_returns_404():
     response = client.get("/api/files/nope/download")
     assert response.status_code == 404
+
+
+def test_thumbnail_default_max_size_is_220():
+    pdf_bytes = _make_pdf_bytes(num_pages=1)
+    upload = client.post(
+        "/api/files", files={"file": ("sample.pdf", pdf_bytes, "application/pdf")}
+    ).json()
+
+    response = client.get(f"/api/files/{upload['id']}/pages/1/thumbnail")
+
+    pix = fitz.Pixmap(response.content)
+    # Off-by-one is possible from floating-point rounding in the render
+    # pipeline's scale computation — assert closeness, not exact equality.
+    assert abs(max(pix.width, pix.height) - 220) <= 1
+
+
+def test_thumbnail_respects_custom_max_size():
+    pdf_bytes = _make_pdf_bytes(num_pages=1)
+    upload = client.post(
+        "/api/files", files={"file": ("sample.pdf", pdf_bytes, "application/pdf")}
+    ).json()
+
+    response = client.get(f"/api/files/{upload['id']}/pages/1/thumbnail?max_size=700")
+
+    assert response.status_code == 200
+    pix = fitz.Pixmap(response.content)
+    assert abs(max(pix.width, pix.height) - 700) <= 1
+
+
+def test_thumbnail_rejects_max_size_out_of_bounds():
+    pdf_bytes = _make_pdf_bytes(num_pages=1)
+    upload = client.post(
+        "/api/files", files={"file": ("sample.pdf", pdf_bytes, "application/pdf")}
+    ).json()
+
+    response = client.get(f"/api/files/{upload['id']}/pages/1/thumbnail?max_size=10")
+
+    assert response.status_code == 422
