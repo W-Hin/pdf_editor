@@ -38,6 +38,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Run the test suite
+        run: pytest -q
+
       - name: Build the frontend
         working-directory: web/frontend
         run: |
@@ -55,7 +58,15 @@ jobs:
       - name: Build the installer (Inno Setup)
         shell: pwsh
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=${{ steps.version.outputs.version }}" installer.iss
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Output "ISCC.exe not found at the expected preinstalled path — installing via choco..."
+            choco install innosetup --no-progress -y
+          }
+          if (-not (Test-Path $iscc)) {
+            throw "ISCC.exe still not found at $iscc after the choco install attempt."
+          }
+          & $iscc "/DMyAppVersion=${{ steps.version.outputs.version }}" installer.iss
 
       - name: Publish the GitHub Release
         uses: softprops/action-gh-release@v2
