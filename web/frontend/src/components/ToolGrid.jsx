@@ -10,6 +10,7 @@ import {
   Drop,
   ArrowsInSimple,
   Image,
+  FileImage,
   FileDoc,
   Crop,
   ListNumbers,
@@ -33,6 +34,7 @@ const TOOL_ICONS = {
   "add-page-numbers": ListNumbers,
   "to-images": Image,
   "to-word": FileDoc,
+  "images-to-pdf": FileImage,
 };
 
 export default function ToolGrid() {

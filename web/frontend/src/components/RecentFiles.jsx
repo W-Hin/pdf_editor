@@ -1,20 +1,19 @@
 import { useEffect, useState } from "react";
 import { ClockCounterClockwise, FilePdf, FileDoc, FileImage, DownloadSimple, Trash, WarningCircle } from "@phosphor-icons/react";
 import { fetchHistory, deleteHistoryEntry, downloadUrl, thumbnailUrl } from "../api";
-
-const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png"];
+import { isImageFilename } from "../fileTypes";
 
 function coverPreviewSrc(entry) {
   const name = entry.filename.toLowerCase();
   if (name.endsWith(".pdf")) return thumbnailUrl(entry.id, 1);
-  if (IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext))) return downloadUrl(entry.id);
+  if (isImageFilename(name)) return downloadUrl(entry.id);
   return null; // no cheap preview possible (e.g. .docx) — fall back to an icon
 }
 
 function FallbackIcon({ filename }) {
   const name = filename.toLowerCase();
   if (name.endsWith(".docx")) return <FileDoc size={22} weight="fill" />;
-  if (IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext))) return <FileImage size={22} weight="fill" />;
+  if (isImageFilename(name)) return <FileImage size={22} weight="fill" />;
   return <FilePdf size={22} weight="fill" />;
 }
 

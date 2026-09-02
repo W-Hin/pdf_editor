@@ -1,9 +1,9 @@
 # PDF Editor
 
 A personal, offline, open-source PDF toolkit — merge, split, remove/extract/reorder
-pages, rotate, crop, add page numbers, watermark, compress, and convert PDFs to
-images or Word, all running locally on your own machine. No internet connection is
-used or required.
+pages, rotate, crop, add page numbers, watermark, compress, convert PDFs to images
+or Word, and build a PDF from images, all running locally on your own machine. No
+internet connection is used or required.
 
 There are two ways to use it:
 
@@ -81,7 +81,8 @@ server runs — close it to stop the app.
 **Using it:**
 
 - Pick a tool from the home screen (grouped into Organize / Edit / Optimize / Convert).
-- Drop in a PDF — you'll see a real thumbnail grid of its pages.
+- Drop in a PDF (or image files, for **Images to PDF**) — you'll see a real
+  thumbnail grid of its pages.
   - **Remove pages** / **Extract pages**: click a page thumbnail to select it (checkmark
     badge appears), click again to deselect.
   - **Reorder pages**: drag thumbnails into the order you want.

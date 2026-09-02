@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   UploadSimple,
   FilePdf,
+  FileImage,
   Play,
   CircleNotch,
   WarningCircle,
@@ -14,6 +15,7 @@ import {
 } from "@phosphor-icons/react";
 import { TOOL_CONFIGS } from "../toolConfigs";
 import { uploadFile, runTool, downloadUrl } from "../api";
+import { isImageFilename } from "../fileTypes";
 import PageGrid from "./PageGrid";
 import CropSelector from "./CropSelector";
 import ImagePagePreview from "./ImagePagePreview";
@@ -243,7 +245,11 @@ export default function ToolView() {
       return files.map((f) => (
         <div key={f.id} className="preview-group">
           <div className="preview-group__label">
-            <FilePdf size={14} weight="fill" />
+            {isImageFilename(f.filename) ? (
+              <FileImage size={14} weight="fill" />
+            ) : (
+              <FilePdf size={14} weight="fill" />
+            )}
             {f.filename}
           </div>
           <ImagePagePreview fileId={f.id} fitMode={fitMode} />
@@ -292,7 +298,11 @@ export default function ToolView() {
         <div className="tool-view__file-list">
           {files.map((f) => (
             <div key={f.id} className="tool-view__file-chip">
-              <FilePdf size={16} weight="fill" />
+              {isImageFilename(f.filename) ? (
+                <FileImage size={16} weight="fill" />
+              ) : (
+                <FilePdf size={16} weight="fill" />
+              )}
               {f.filename} — {f.page_count} page{f.page_count === 1 ? "" : "s"}
             </div>
           ))}
