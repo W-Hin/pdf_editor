@@ -529,3 +529,58 @@ def test_images_to_pdf_rejects_empty_list(tmp_path):
     output_path = tmp_path / "combined.pdf"
     with pytest.raises(PDFError):
         images_to_pdf([], str(output_path), fit_mode="fit")
+
+
+def test_images_to_pdf_accepts_real_jpeg(tmp_path):
+    # JPG is the headline format for this tool, but every other fixture here is
+    # a PNG — this exercises the actual JPEG decode path end to end.
+    doc = fitz.open()
+    jpeg_bytes = doc.new_page(width=400, height=300).get_pixmap().tobytes("jpg")
+    doc.close()
+    img_path = tmp_path / "photo.jpg"
+    img_path.write_bytes(jpeg_bytes)
+
+    output_path = tmp_path / "combined.pdf"
+    images_to_pdf([str(img_path)], str(output_path), fit_mode="fit")
+
+    result = fitz.open(str(output_path))
+    assert result.page_count == 1
+    assert result[0].rect.width > result[0].rect.height  # landscape image -> landscape page
+    result.close()
+
+
+# A JPEG container MuPDF happily *opens* (SOI + a well-formed JFIF APP0 header,
+# so fitz.open() and .page_count both succeed) but cannot decode — the bytes
+# after the header are garbage, with no SOF/SOS segment. fitz.open() on an image
+# is lazy, so the failure only surfaces on the first real page access. This is
+# the exact shape that used to escape as a raw FzErrorLibrary -> HTTP 500.
+UNDECODABLE_JPEG = (
+    b"\xff\xd8"  # SOI
+    b"\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"  # APP0/JFIF
+    + b"\x00" * 200  # garbage where the image data should be
+)
+
+
+def test_undecodable_image_still_opens_and_reports_a_page(tmp_path):
+    """Guards the premise of the two tests below: the failure really is lazy."""
+    img_path = tmp_path / "broken.jpg"
+    img_path.write_bytes(UNDECODABLE_JPEG)
+
+    assert get_page_count(str(img_path)) == 1
+
+
+def test_render_page_thumbnail_raises_pdferror_for_undecodable_image(tmp_path):
+    img_path = tmp_path / "broken.jpg"
+    img_path.write_bytes(UNDECODABLE_JPEG)
+
+    with pytest.raises(PDFError):
+        render_page_thumbnail(str(img_path), 1)
+
+
+def test_images_to_pdf_raises_pdferror_for_undecodable_image(tmp_path):
+    img_path = tmp_path / "broken.jpg"
+    img_path.write_bytes(UNDECODABLE_JPEG)
+    output_path = tmp_path / "combined.pdf"
+
+    with pytest.raises(PDFError):
+        images_to_pdf([str(img_path)], str(output_path), fit_mode="fit")

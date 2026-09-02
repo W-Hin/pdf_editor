@@ -39,6 +39,18 @@ def _output_response(paths: list[Path], tool: str, source_filenames: list[str]) 
     return {"outputs": outputs}
 
 
+def _sanitize_output_filename(filename: str) -> str:
+    """Validate a user-supplied output name and strip a redundant .pdf suffix."""
+    filename = filename.strip()
+    if not filename:
+        raise PDFError("Enter an output filename.")
+    if any(sep in filename for sep in ("/", "\\", ":")):
+        raise PDFError("Output filename must be a plain file name, not a path.")
+    if filename.lower().endswith(".pdf"):
+        filename = filename[: -len(".pdf")]
+    return filename
+
+
 class MergeRequest(BaseModel):
     file_ids: list[str]
     filename: str
@@ -47,13 +59,7 @@ class MergeRequest(BaseModel):
 @router.post("/merge")
 def merge(req: MergeRequest):
     input_paths = [str(storage.resolve_file(fid)) for fid in req.file_ids]
-    filename = req.filename.strip()
-    if not filename:
-        raise PDFError("Enter an output filename.")
-    if any(sep in filename for sep in ("/", "\\", ":")):
-        raise PDFError("Output filename must be a plain file name, not a path.")
-    if filename.lower().endswith(".pdf"):
-        filename = filename[: -len(".pdf")]
+    filename = _sanitize_output_filename(req.filename)
     output_path = storage.output_path_for(filename, "")
     merge_pdfs(input_paths, str(output_path))
     source_names = [Path(p).name for p in input_paths]
@@ -240,13 +246,7 @@ class ImagesToPdfRequest(BaseModel):
 @router.post("/images-to-pdf")
 def images_to_pdf_route(req: ImagesToPdfRequest):
     input_paths = [str(storage.resolve_file(fid)) for fid in req.file_ids]
-    filename = req.filename.strip()
-    if not filename:
-        raise PDFError("Enter an output filename.")
-    if any(sep in filename for sep in ("/", "\\", ":")):
-        raise PDFError("Output filename must be a plain file name, not a path.")
-    if filename.lower().endswith(".pdf"):
-        filename = filename[: -len(".pdf")]
+    filename = _sanitize_output_filename(req.filename)
     output_path = storage.output_path_for(filename, "")
     images_to_pdf(input_paths, str(output_path), fit_mode=req.fit_mode)
     source_names = [Path(p).name for p in input_paths]

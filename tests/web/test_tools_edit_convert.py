@@ -140,6 +140,15 @@ def _upload_image(width=400, height=300, filename="photo.png"):
     ).json()
 
 
+def _upload_jpeg(width=400, height=300, filename="photo.jpg"):
+    doc = fitz.open()
+    img_bytes = doc.new_page(width=width, height=height).get_pixmap().tobytes("jpg")
+    doc.close()
+    return client.post(
+        "/api/files", files={"file": (filename, img_bytes, "image/jpeg")}
+    ).json()
+
+
 def test_images_to_pdf_returns_one_output():
     upload1 = _upload_image(filename="a.png")
     upload2 = _upload_image(filename="b.png")
@@ -151,6 +160,58 @@ def test_images_to_pdf_returns_one_output():
     outputs = response.json()["outputs"]
     assert len(outputs) == 1
     assert outputs[0]["filename"].endswith(".pdf")
+
+    download = client.get(outputs[0]["download_url"])
+    assert download.status_code == 200
+    result = fitz.open(stream=download.content, filetype="pdf")
+    assert result.page_count == 2  # one page per uploaded image
+    result.close()
+
+
+def test_images_to_pdf_accepts_jpeg_images():
+    upload = _upload_jpeg()
+    response = client.post(
+        "/api/tools/images-to-pdf",
+        json={"file_ids": [upload["id"]], "filename": "from-jpeg", "fit_mode": "fit"},
+    )
+    assert response.status_code == 200
+    outputs = response.json()["outputs"]
+    assert len(outputs) == 1
+
+    download = client.get(outputs[0]["download_url"])
+    result = fitz.open(stream=download.content, filetype="pdf")
+    assert result.page_count == 1
+    result.close()
+
+
+def test_images_to_pdf_unknown_file_id_returns_404():
+    response = client.post(
+        "/api/tools/images-to-pdf",
+        json={"file_ids": ["nope"], "filename": "combined", "fit_mode": "fit"},
+    )
+    assert response.status_code == 404
+
+
+def test_images_to_pdf_undecodable_image_returns_422_not_500():
+    # SOI + a valid JFIF APP0 header, then garbage: MuPDF opens it lazily (so
+    # upload succeeds and reports 1 page) but cannot decode it. Regression test
+    # for this escaping as a raw exception -> HTTP 500.
+    broken = (
+        b"\xff\xd8"
+        b"\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" + b"\x00" * 200
+    )
+    upload = client.post("/api/files", files={"file": ("broken.jpg", broken, "image/jpeg")})
+    assert upload.status_code == 200
+
+    file_id = upload.json()["id"]
+    thumbnail = client.get(f"/api/files/{file_id}/pages/1/thumbnail")
+    assert thumbnail.status_code == 422
+
+    response = client.post(
+        "/api/tools/images-to-pdf",
+        json={"file_ids": [file_id], "filename": "combined", "fit_mode": "fit"},
+    )
+    assert response.status_code == 422
 
 
 def test_images_to_pdf_rejects_empty_file_ids():

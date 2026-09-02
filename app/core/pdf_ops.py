@@ -11,11 +11,16 @@ def open_pdf(path: str) -> fitz.Document:
         raise PDFError(f"File not found: {path}")
     try:
         doc = fitz.open(path)
+        # Reading is_encrypted inside the try on purpose: fitz.open() on an image
+        # container is lazy, so the first real property access is where a corrupt
+        # file's decode failure can actually surface.
+        if doc.is_encrypted:
+            doc.close()
+            raise PDFError(f"'{p.name}' is password-protected. Unlock it before using this tool.")
+    except PDFError:
+        raise
     except Exception as exc:
-        raise PDFError(f"Could not open '{p.name}' — it may not be a valid PDF.") from exc
-    if doc.is_encrypted:
-        doc.close()
-        raise PDFError(f"'{p.name}' is password-protected. Unlock it before using this tool.")
+        raise PDFError(f"Could not open '{p.name}' — it may not be a valid PDF or image.") from exc
     return doc
 
 
@@ -263,11 +268,16 @@ def render_page_thumbnail(input_path: str, page_number: int, max_size: int = 100
     try:
         if page_number < 1 or page_number > doc.page_count:
             raise PDFError(f"Page {page_number} does not exist in this document ({doc.page_count} pages).")
-        page = doc[page_number - 1]
-        rect = page.rect
-        scale = max_size / max(rect.width, rect.height)
-        matrix = fitz.Matrix(scale, scale)
-        pix = page.get_pixmap(matrix=matrix)
+        # Page access and rendering are where a lazily-opened image container
+        # actually decodes its pixels — and so where a corrupt file blows up.
+        try:
+            page = doc[page_number - 1]
+            rect = page.rect
+            scale = max_size / max(rect.width, rect.height)
+            matrix = fitz.Matrix(scale, scale)
+            pix = page.get_pixmap(matrix=matrix)
+        except Exception as exc:
+            raise PDFError(f"Could not render a preview of '{Path(input_path).name}'.") from exc
         return pix.tobytes("png")
     finally:
         doc.close()
@@ -307,7 +317,11 @@ def images_to_pdf(image_paths: list[str], output_path: str, fit_mode: str) -> No
         for path in image_paths:
             doc = open_pdf(path)
             try:
+                # doc[0].rect is the first access that forces a real decode of a
+                # lazily-opened image, so a corrupt file surfaces here.
                 img_rect = doc[0].rect
+            except Exception as exc:
+                raise PDFError(f"Could not read image '{Path(path).name}'.") from exc
             finally:
                 doc.close()
             img_w, img_h = img_rect.width, img_rect.height
@@ -321,13 +335,20 @@ def images_to_pdf(image_paths: list[str], output_path: str, fit_mode: str) -> No
                 else:
                     target_h, target_w = page_h, page_h * img_aspect
             else:
+                # Fill: the overflowing part of the image is only *visually*
+                # clipped at render time — the full-resolution image is still
+                # embedded in the PDF, so Fill neither shrinks the file nor
+                # removes the cropped-away pixel data.
                 if img_aspect > page_aspect:
                     target_h, target_w = page_h, page_h * img_aspect
                 else:
                     target_w, target_h = page_w, page_w / img_aspect
             x0 = (page_w - target_w) / 2
             y0 = (page_h - target_h) / 2
-            page.insert_image(fitz.Rect(x0, y0, x0 + target_w, y0 + target_h), filename=path)
+            try:
+                page.insert_image(fitz.Rect(x0, y0, x0 + target_w, y0 + target_h), filename=path)
+            except Exception as exc:
+                raise PDFError(f"Could not insert image '{Path(path).name}' into the PDF.") from exc
         result.save(output_path)
     finally:
         result.close()
