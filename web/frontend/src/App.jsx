@@ -2,7 +2,6 @@ import { Routes, Route, Link } from "react-router-dom";
 import { FilePdf, ClockCounterClockwise } from "@phosphor-icons/react";
 import ToolGrid from "./components/ToolGrid.jsx";
 import ToolView from "./components/ToolView.jsx";
-import RecentFiles from "./components/RecentFiles.jsx";
 import UpdateBanner from "./components/UpdateBanner.jsx";
 
 export default function App() {
@@ -14,7 +13,7 @@ export default function App() {
           PDF Editor
         </Link>
         <nav className="app__nav">
-          <Link to="/recent">
+          <Link to="/#recent-files">
             <ClockCounterClockwise size={18} weight="regular" />
             Recent Files
           </Link>
@@ -25,7 +24,6 @@ export default function App() {
         <Routes>
           <Route path="/" element={<ToolGrid />} />
           <Route path="/tool/:toolId" element={<ToolView />} />
-          <Route path="/recent" element={<RecentFiles />} />
         </Routes>
       </main>
     </div>

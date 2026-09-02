@@ -1,10 +1,27 @@
 import { useEffect, useState } from "react";
-import { ClockCounterClockwise, FilePdf, DownloadSimple, Trash, WarningCircle } from "@phosphor-icons/react";
-import { fetchHistory, deleteHistoryEntry, downloadUrl } from "../api";
+import { ClockCounterClockwise, FilePdf, FileDoc, FileImage, DownloadSimple, Trash, WarningCircle } from "@phosphor-icons/react";
+import { fetchHistory, deleteHistoryEntry, downloadUrl, thumbnailUrl } from "../api";
+
+const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png"];
+
+function coverPreviewSrc(entry) {
+  const name = entry.filename.toLowerCase();
+  if (name.endsWith(".pdf")) return thumbnailUrl(entry.id, 1);
+  if (IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext))) return downloadUrl(entry.id);
+  return null; // no cheap preview possible (e.g. .docx) — fall back to an icon
+}
+
+function FallbackIcon({ filename }) {
+  const name = filename.toLowerCase();
+  if (name.endsWith(".docx")) return <FileDoc size={22} weight="fill" />;
+  if (IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext))) return <FileImage size={22} weight="fill" />;
+  return <FilePdf size={22} weight="fill" />;
+}
 
 export default function RecentFiles() {
   const [entries, setEntries] = useState([]);
   const [error, setError] = useState("");
+  const [failedPreviews, setFailedPreviews] = useState(() => new Set());
 
   useEffect(() => {
     load();
@@ -29,46 +46,64 @@ export default function RecentFiles() {
     }
   }
 
+  function markPreviewFailed(id) {
+    setFailedPreviews((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+  }
+
   return (
-    <div className="recent-files">
-      <h1>Recent Files</h1>
+    <section id="recent-files" className="recent-files">
+      <h2>Recent Files</h2>
       {error && (
         <div className="banner banner--error">
           <WarningCircle size={18} weight="fill" />
           {error}
         </div>
       )}
-      {entries.length === 0 && (
+      {entries.length === 0 && !error && (
         <div className="recent-files__empty">
           <ClockCounterClockwise size={40} weight="thin" />
           <p>No files produced yet.</p>
         </div>
       )}
       <ul className="history-list">
-        {entries.map((entry) => (
-          <li key={entry.id}>
-            <div className="history-list__info">
-              <FilePdf size={22} weight="fill" />
-              <div>
-                <div className="history-list__filename">{entry.filename}</div>
-                <div className="history-list__meta">
-                  {entry.tool} — {entry.created_at}
+        {entries.map((entry) => {
+          const previewSrc = !failedPreviews.has(entry.id) ? coverPreviewSrc(entry) : null;
+          return (
+            <li key={entry.id}>
+              <div className="history-list__info">
+                <div className="history-list__thumb">
+                  {previewSrc ? (
+                    <img
+                      src={previewSrc}
+                      alt=""
+                      loading="lazy"
+                      onError={() => markPreviewFailed(entry.id)}
+                    />
+                  ) : (
+                    <FallbackIcon filename={entry.filename} />
+                  )}
+                </div>
+                <div>
+                  <div className="history-list__filename">{entry.filename}</div>
+                  <div className="history-list__meta">
+                    {entry.tool} — {entry.created_at}
+                  </div>
                 </div>
               </div>
-            </div>
-            <div className="history-list__actions">
-              <a className="icon-button" href={downloadUrl(entry.id)} download>
-                <DownloadSimple size={15} weight="regular" />
-                Download
-              </a>
-              <button className="icon-button icon-button--danger" onClick={() => handleDelete(entry.id)}>
-                <Trash size={15} weight="regular" />
-                Delete
-              </button>
-            </div>
-          </li>
-        ))}
+              <div className="history-list__actions">
+                <a className="icon-button" href={downloadUrl(entry.id)} download>
+                  <DownloadSimple size={15} weight="regular" />
+                  Download
+                </a>
+                <button className="icon-button icon-button--danger" onClick={() => handleDelete(entry.id)}>
+                  <Trash size={15} weight="regular" />
+                  Delete
+                </button>
+              </div>
+            </li>
+          );
+        })}
       </ul>
-    </div>
+    </section>
   );
 }
