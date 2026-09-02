@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from app.core.errors import PDFError
-from web.backend.routes import files, history, tools
+from web.backend.routes import files, history, tools, version
 
 app = FastAPI(title="PDF Editor")
 
@@ -23,6 +23,7 @@ async def missing_file_handler(request, exc: FileNotFoundError):
 app.include_router(files.router, prefix="/api")
 app.include_router(history.router, prefix="/api")
 app.include_router(tools.router, prefix="/api")
+app.include_router(version.router, prefix="/api")
 
 if hasattr(sys, "_MEIPASS"):
     # Running from a PyInstaller bundle (onedir or onefile) — data files

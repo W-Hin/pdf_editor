@@ -3,6 +3,7 @@ import { FilePdf, ClockCounterClockwise } from "@phosphor-icons/react";
 import ToolGrid from "./components/ToolGrid.jsx";
 import ToolView from "./components/ToolView.jsx";
 import RecentFiles from "./components/RecentFiles.jsx";
+import UpdateBanner from "./components/UpdateBanner.jsx";
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
           </Link>
         </nav>
       </header>
+      <UpdateBanner />
       <main className="app__main">
         <Routes>
           <Route path="/" element={<ToolGrid />} />

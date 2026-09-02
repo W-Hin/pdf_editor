@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('web/frontend/dist', 'frontend/dist')]
+datas = [('web/frontend/dist', 'frontend/dist'), ('VERSION', '.')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('uvicorn')
