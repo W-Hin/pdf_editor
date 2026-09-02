@@ -21,7 +21,10 @@ def create_shortcut(target_exe: str, shortcut_name: str = "PDF Editor") -> Path:
 
 
 if __name__ == "__main__":
-    default_target = str(Path("dist/PDFEditor/PDFEditor.exe").resolve())
+    # Points at the web app (the primary way to use PDF Editor) by default.
+    # Pass an explicit path as argv[1] to point at something else, e.g. the
+    # desktop app: dist/PDFEditor/PDFEditor.exe
+    default_target = str(Path("dist/PDFEditorWeb/PDFEditorWeb.exe").resolve())
     target = sys.argv[1] if len(sys.argv) > 1 else default_target
     path = create_shortcut(target)
     print(f"Shortcut created at {path}")
