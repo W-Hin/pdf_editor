@@ -19,6 +19,7 @@ import { isImageFilename } from "../fileTypes";
 import PageGrid from "./PageGrid";
 import CropSelector from "./CropSelector";
 import ImagePagePreview from "./ImagePagePreview";
+import RedactSelector from "./RedactSelector";
 
 // Number fields (e.g. split's "pages per file") must be a whole number no
 // smaller than field.min — used by both the preview and the actual submitted
@@ -48,6 +49,7 @@ export default function ToolView() {
   const [selected, setSelected] = useState([]);
   const [order, setOrder] = useState(null);
   const [cropRect, setCropRect] = useState(null);
+  const [redactions, setRedactions] = useState([]);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -70,6 +72,7 @@ export default function ToolView() {
         if (primary) {
           setSelected([]);
           setCropRect(null);
+          setRedactions([]);
           setOrder(Array.from({ length: primary.page_count }, (_, i) => i + 1));
           if (config.filenameSuffix && !fieldValues.filename) {
             setFieldValues((v) => ({
@@ -96,6 +99,10 @@ export default function ToolView() {
       setError("Drag a box on the page preview to select the area to keep.");
       return;
     }
+    if (config.preview === "redact" && redactions.length === 0) {
+      setError("Draw at least one box on the page preview to mark an area for redaction.");
+      return;
+    }
     setBusy(true);
     try {
       const body = {};
@@ -111,6 +118,7 @@ export default function ToolView() {
       if (config.mode === "select") body.pages = selected;
       if (config.mode === "reorder") body.order = order;
       if (config.preview === "crop") Object.assign(body, cropRect);
+      if (config.preview === "redact") body.redactions = redactions;
       const data = await runTool(config.endpoint, body);
       setResult(data.outputs);
     } catch (err) {
@@ -257,6 +265,13 @@ export default function ToolView() {
       ));
     }
 
+    if (config.preview === "redact") {
+      if (!primaryFile) return null;
+      return (
+        <RedactSelector fileId={primaryFile.id} pageCount={primaryFile.page_count} onChange={setRedactions} />
+      );
+    }
+
     // Default: select/reorder tools (Remove/Extract/Reorder pages) and
     // plain view-only tools (PDF to Image) — same as before this feature.
     if (!primaryFile) return null;
@@ -367,7 +382,12 @@ export default function ToolView() {
 
       <button
         className="run-button"
-        disabled={busy || files.length === 0 || (config.preview === "crop" && !cropRect)}
+        disabled={
+          busy ||
+          files.length === 0 ||
+          (config.preview === "crop" && !cropRect) ||
+          (config.preview === "redact" && redactions.length === 0)
+        }
         onClick={handleRun}
       >
         {busy ? <CircleNotch size={17} weight="bold" className="spin" /> : <Play size={16} weight="fill" />}
