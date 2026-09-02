@@ -4,6 +4,7 @@ export const TOOL_CONFIGS = {
     category: "Organize",
     multiFile: true,
     mode: "view",
+    preview: "merge",
     endpoint: "merge",
     filenameSuffix: "_merged",
     fields: [{ name: "filename", label: "Output filename", type: "text", default: "" }],
@@ -13,6 +14,7 @@ export const TOOL_CONFIGS = {
     category: "Organize",
     multiFile: false,
     mode: "view",
+    preview: "split",
     endpoint: "split",
     fields: [
       { name: "pages_per_file", label: "Pages per output file", type: "number", default: 1, min: 1 },
@@ -47,6 +49,7 @@ export const TOOL_CONFIGS = {
     category: "Edit",
     multiFile: false,
     mode: "view",
+    preview: "rotate",
     endpoint: "rotate",
     fields: [
       { name: "angle", label: "Rotate by", type: "select", options: [90, 180, 270], default: 90 },
@@ -57,6 +60,7 @@ export const TOOL_CONFIGS = {
     category: "Edit",
     multiFile: false,
     mode: "view",
+    preview: "watermark",
     endpoint: "watermark",
     fields: [
       { name: "text", label: "Watermark text", type: "text", default: "" },
@@ -76,6 +80,11 @@ export const TOOL_CONFIGS = {
     category: "Optimize",
     multiFile: false,
     mode: "view",
+    // Compression only re-encodes embedded images — it doesn't change how
+    // a page looks, so there's nothing meaningful to show visually. The
+    // page grid still renders (as input context); this note explains why
+    // it looks identical before and after.
+    previewNote: "Compression changes file size, not appearance — pages will look the same.",
     endpoint: "compress",
     fields: [
       { name: "image_quality", label: "Image quality", type: "range", min: 10, max: 100, default: 60 },
@@ -96,6 +105,10 @@ export const TOOL_CONFIGS = {
     category: "Convert",
     multiFile: false,
     mode: "view",
+    // A real preview would mean actually running the conversion — Word's
+    // layout engine doesn't render in a browser, so there's no cheap way
+    // to show this before committing. See the file's own note in the app.
+    previewNote: "Word documents can't be previewed here — conversion quality depends on the PDF's layout.",
     endpoint: "to-word",
     fields: [],
   },

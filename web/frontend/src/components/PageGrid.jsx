@@ -2,12 +2,30 @@ import { useState } from "react";
 import { Check, DotsSixVertical } from "@phosphor-icons/react";
 import { thumbnailUrl } from "../api";
 
-export default function PageGrid({ fileId, pageCount, mode = "view", selected, onToggle, order, onReorder }) {
+export default function PageGrid({
+  fileId,
+  pageCount,
+  mode = "view",
+  selected,
+  onToggle,
+  order,
+  onReorder,
+  pageRange,
+  rotateAngle,
+  overlay,
+}) {
   const [dragIndex, setDragIndex] = useState(null);
+  const [naturalSizes, setNaturalSizes] = useState({});
 
   if (!fileId || !pageCount) return null;
 
-  const pages = mode === "reorder" && order ? order : Array.from({ length: pageCount }, (_, i) => i + 1);
+  const fullPages = Array.from({ length: pageCount }, (_, i) => i + 1);
+  const pages =
+    mode === "reorder" && order
+      ? order
+      : pageRange
+        ? fullPages.filter((n) => n >= pageRange[0] && n <= pageRange[1])
+        : fullPages;
 
   function handleDragStart(index) {
     if (mode !== "reorder") return;
@@ -27,6 +45,27 @@ export default function PageGrid({ fileId, pageCount, mode = "view", selected, o
     setDragIndex(null);
   }
 
+  function handleImageLoad(pageNumber, e) {
+    const { naturalWidth: w, naturalHeight: h } = e.target;
+    if (!w || !h) return;
+    setNaturalSizes((prev) =>
+      prev[pageNumber]?.w === w && prev[pageNumber]?.h === h ? prev : { ...prev, [pageNumber]: { w, h } }
+    );
+  }
+
+  function rotationStyleFor(pageNumber) {
+    if (!rotateAngle) return undefined;
+    const normalized = ((rotateAngle % 360) + 360) % 360;
+    const swapsDimensions = normalized === 90 || normalized === 270;
+    const size = naturalSizes[pageNumber];
+    // Rotating a portrait thumbnail 90/270 swaps its visual bounding box,
+    // which would spill past the (still-portrait) container and get clipped.
+    // Scaling by the image's own width/height ratio shrinks it back to fit
+    // inside the original box instead of cropping it.
+    const scale = swapsDimensions && size ? size.w / size.h : 1;
+    return { transform: `rotate(${rotateAngle}deg) scale(${scale})` };
+  }
+
   return (
     <div className={`page-grid page-grid--${mode}`}>
       {pages.map((pageNumber, index) => {
@@ -42,7 +81,21 @@ export default function PageGrid({ fileId, pageCount, mode = "view", selected, o
             onDragEnd={() => setDragIndex(null)}
             onClick={() => mode === "select" && onToggle(pageNumber)}
           >
-            <img draggable={false} src={thumbnailUrl(fileId, pageNumber)} alt={`Page ${pageNumber}`} loading="lazy" />
+            <div className="page-thumb__image-wrap">
+              <img
+                draggable={false}
+                src={thumbnailUrl(fileId, pageNumber)}
+                alt={`Page ${pageNumber}`}
+                loading="lazy"
+                onLoad={(e) => handleImageLoad(pageNumber, e)}
+                style={rotationStyleFor(pageNumber)}
+              />
+              {overlay && (
+                <div className="page-thumb__overlay" aria-hidden="true">
+                  {overlay(pageNumber)}
+                </div>
+              )}
+            </div>
             <span className="page-thumb__label">Page {pageNumber}</span>
             {isSelected && (
               <span className="page-thumb__badge">

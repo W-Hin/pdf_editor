@@ -366,11 +366,37 @@ h1 {
   transition: border-color var(--transition), box-shadow var(--transition);
 }
 
+.page-thumb__image-wrap {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--color-muted);
+}
+
 .page-thumb img {
   width: 100%;
   display: block;
-  border-radius: var(--radius-sm);
-  background: var(--color-muted);
+  transition: transform var(--transition);
+}
+
+.page-thumb__overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  text-align: center;
+  padding: var(--space-1);
+}
+
+.page-thumb__watermark-preview {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--color-secondary);
+  word-break: break-word;
 }
 
 .page-thumb__label {
@@ -426,6 +452,34 @@ h1 {
 
 .page-thumb:hover .page-thumb__drag-handle {
   opacity: 1;
+}
+
+/* ---------- Result preview (merge file groups, split part groups) ---------- */
+
+.preview-group {
+  margin-top: var(--space-4);
+}
+
+.preview-group__label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-muted-foreground);
+  margin-bottom: var(--space-2);
+}
+
+.preview-note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  margin: var(--space-4) 0;
+  background: var(--color-muted);
+  border-radius: var(--radius-sm);
+  color: var(--color-muted-foreground);
+  font-size: 13px;
 }
 
 /* ---------- Fields ---------- */
