@@ -14,6 +14,17 @@ There are two ways to use it:
 Both share the same underlying PDF engine (`app/core/`), so results are identical
 either way — they just differ in the UI.
 
+## Easiest way to get it (Windows, no setup required)
+
+Download and run the installer from the
+[latest release](https://github.com/W-Hin/pdf_editor/releases/latest) —
+`PDFEditorSetup.exe`. It installs to your user folder (no admin rights needed),
+adds a Start Menu entry, and optionally a Desktop shortcut. No Python, no Node,
+nothing else to install. The app checks for newer releases on launch and shows a
+banner if one's available — updating just means running the newer installer.
+
+Everything below is for building it from source instead.
+
 ## Requirements
 
 - **Python 3.11+**
