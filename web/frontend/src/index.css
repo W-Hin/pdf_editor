@@ -506,6 +506,32 @@ h1 {
   pointer-events: none;
 }
 
+/* ---------- Image page preview (Images to PDF) ---------- */
+
+.image-page-preview {
+  width: 220px;
+  max-width: 100%;
+  margin: 0 auto;
+  background: white;
+  border: 1.5px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.image-page-preview--portrait {
+  aspect-ratio: 595 / 842;
+}
+
+.image-page-preview--landscape {
+  aspect-ratio: 842 / 595;
+}
+
+.image-page-preview img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
 /* ---------- Result preview (merge file groups, split part groups) ---------- */
 
 .preview-group {

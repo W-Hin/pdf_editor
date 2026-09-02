@@ -16,6 +16,7 @@ import { TOOL_CONFIGS } from "../toolConfigs";
 import { uploadFile, runTool, downloadUrl } from "../api";
 import PageGrid from "./PageGrid";
 import CropSelector from "./CropSelector";
+import ImagePagePreview from "./ImagePagePreview";
 
 // Number fields (e.g. split's "pages per file") must be a whole number no
 // smaller than field.min — used by both the preview and the actual submitted
@@ -234,6 +235,20 @@ export default function ToolView() {
           <CropSelector fileId={primaryFile.id} onChange={setCropRect} />
         </>
       );
+    }
+
+    if (config.preview === "images-to-pdf") {
+      if (files.length === 0) return null;
+      const fitMode = fieldValues.fit_mode ?? "fit";
+      return files.map((f) => (
+        <div key={f.id} className="preview-group">
+          <div className="preview-group__label">
+            <FilePdf size={14} weight="fill" />
+            {f.filename}
+          </div>
+          <ImagePagePreview fileId={f.id} fitMode={fitMode} />
+        </div>
+      ));
     }
 
     // Default: select/reorder tools (Remove/Extract/Reorder pages) and
