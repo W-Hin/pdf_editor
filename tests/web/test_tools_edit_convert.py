@@ -73,3 +73,41 @@ def test_to_word_returns_one_output():
     outputs = response.json()["outputs"]
     assert len(outputs) == 1
     assert outputs[0]["filename"].endswith(".docx")
+
+
+def test_crop_returns_one_output():
+    upload = _upload_pdf()
+    response = client.post(
+        "/api/tools/crop",
+        json={"file_id": upload["id"], "top": 0.1, "right": 0.1, "bottom": 0.1, "left": 0.1},
+    )
+    assert response.status_code == 200
+    assert len(response.json()["outputs"]) == 1
+
+
+def test_crop_rejects_out_of_range_fraction():
+    upload = _upload_pdf()
+    response = client.post(
+        "/api/tools/crop",
+        json={"file_id": upload["id"], "top": 0.6, "right": 0.1, "bottom": 0.1, "left": 0.1},
+    )
+    assert response.status_code == 422
+
+
+def test_add_page_numbers_returns_one_output():
+    upload = _upload_pdf()
+    response = client.post(
+        "/api/tools/add-page-numbers",
+        json={"file_id": upload["id"], "position": "bottom-center", "format": "number"},
+    )
+    assert response.status_code == 200
+    assert len(response.json()["outputs"]) == 1
+
+
+def test_add_page_numbers_rejects_unknown_position():
+    upload = _upload_pdf()
+    response = client.post(
+        "/api/tools/add-page-numbers",
+        json={"file_id": upload["id"], "position": "middle", "format": "number"},
+    )
+    assert response.status_code == 422
