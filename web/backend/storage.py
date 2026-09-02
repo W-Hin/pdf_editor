@@ -25,7 +25,10 @@ def save_upload(filename: str, content: bytes) -> dict:
 def load_history() -> list[dict]:
     if not HISTORY_FILE.exists():
         return []
-    return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+    try:
+        return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
 
 
 def _save_history(records: list[dict]) -> None:
@@ -55,7 +58,14 @@ def delete_output(file_id: str) -> bool:
         return False
     deleted = next(r for r in records if r["id"] == file_id)
     _save_history(remaining)
-    Path(deleted["path"]).unlink(missing_ok=True)
+    deleted_path = Path(deleted["path"])
+    deleted_path.unlink(missing_ok=True)
+    parent = deleted_path.parent
+    try:
+        if parent != OUTPUT_DIR and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+    except OSError:
+        pass
     return True
 
 

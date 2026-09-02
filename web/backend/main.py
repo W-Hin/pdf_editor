@@ -14,6 +14,11 @@ async def pdf_error_handler(request, exc: PDFError):
     return JSONResponse(status_code=422, content={"detail": str(exc)})
 
 
+@app.exception_handler(FileNotFoundError)
+async def missing_file_handler(request, exc: FileNotFoundError):
+    return JSONResponse(status_code=404, content={"detail": "File not found — please re-upload."})
+
+
 app.include_router(files.router, prefix="/api")
 app.include_router(history.router, prefix="/api")
 app.include_router(tools.router, prefix="/api")

@@ -64,6 +64,8 @@ class SplitRequest(BaseModel):
 
 @router.post("/split")
 def split(req: SplitRequest):
+    if req.pages_per_file < 1:
+        raise PDFError("Pages per file must be at least 1.")
     input_path = str(storage.resolve_file(req.file_id))
     total = get_page_count(input_path)
     step = req.pages_per_file

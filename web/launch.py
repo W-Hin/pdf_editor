@@ -1,6 +1,7 @@
 import threading
 import time
 import webbrowser
+from pathlib import Path
 
 import uvicorn
 
@@ -16,6 +17,12 @@ def _open_browser_when_ready() -> None:
 
 
 def main() -> None:
+    dist_dir = Path(__file__).resolve().parent / "frontend" / "dist"
+    if not dist_dir.exists():
+        print(
+            "Frontend build not found — the app will start but the browser tab will show "
+            "an error page. Run `cd web/frontend && npm run build` first, then relaunch."
+        )
     threading.Thread(target=_open_browser_when_ready, daemon=True).start()
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")
 

@@ -25,6 +25,7 @@ export default function ToolView() {
 
   async function handleFilePick(e) {
     setError("");
+    setResult(null);
     const picked = Array.from(e.target.files);
     let accumulated = config.multiFile ? files : [];
     for (const file of picked) {
@@ -107,7 +108,13 @@ export default function ToolView() {
         <label key={field.name} className="field">
           {field.label}
           {field.type === "select" ? (
-            <select value={fieldValues[field.name]} onChange={(e) => updateField(field.name, e.target.value)}>
+            <select
+              value={fieldValues[field.name]}
+              onChange={(e) => {
+                const raw = e.target.value;
+                updateField(field.name, typeof field.default === "number" ? Number(raw) : raw);
+              }}
+            >
               {field.options.map((opt) => (
                 <option key={opt} value={opt}>
                   {opt}

@@ -12,6 +12,7 @@ export default function RecentFiles() {
   async function load() {
     try {
       setEntries(await fetchHistory());
+      setError("");
     } catch (err) {
       setError(err.message);
     }
@@ -21,6 +22,7 @@ export default function RecentFiles() {
     try {
       await deleteHistoryEntry(id);
       setEntries((prev) => prev.filter((e) => e.id !== id));
+      setError("");
     } catch (err) {
       setError(err.message);
     }
