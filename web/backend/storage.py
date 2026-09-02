@@ -78,16 +78,22 @@ def resolve_file(file_id: str) -> Path:
     raise FileNotFoundError(f"No file found for id '{file_id}'")
 
 
+def _unique_output_stamp() -> str:
+    # Wall-clock microseconds alone can collide: on some platforms (notably
+    # Windows) time.time()'s effective resolution is much coarser than a
+    # microsecond, so two calls made back-to-back can produce the same
+    # timestamp. A short uuid suffix guarantees uniqueness regardless of
+    # clock resolution, while the timestamp prefix stays for readability.
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    return f"{timestamp}-{uuid.uuid4().hex[:8]}"
+
+
 def output_path_for(stem: str, suffix: str, ext: str = ".pdf") -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    microseconds = int(time.time() * 1000000) % 1000000
-    return OUTPUT_DIR / f"{stem}{suffix}_{timestamp}-{microseconds:06d}{ext}"
+    return OUTPUT_DIR / f"{stem}{suffix}_{_unique_output_stamp()}{ext}"
 
 
 def output_dir_for(stem: str, suffix: str) -> Path:
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    microseconds = int(time.time() * 1000000) % 1000000
-    out_dir = OUTPUT_DIR / f"{stem}{suffix}_{timestamp}-{microseconds:06d}"
+    out_dir = OUTPUT_DIR / f"{stem}{suffix}_{_unique_output_stamp()}"
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
