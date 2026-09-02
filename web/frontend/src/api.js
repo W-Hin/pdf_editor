@@ -22,8 +22,9 @@ export async function uploadFile(file) {
   return res.json();
 }
 
-export function thumbnailUrl(fileId, pageNumber) {
-  return `${BASE}/files/${fileId}/pages/${pageNumber}/thumbnail`;
+export function thumbnailUrl(fileId, pageNumber, maxSize) {
+  const query = maxSize ? `?max_size=${maxSize}` : "";
+  return `${BASE}/files/${fileId}/pages/${pageNumber}/thumbnail${query}`;
 }
 
 export function downloadUrl(fileId) {
