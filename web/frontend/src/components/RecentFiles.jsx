@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ClockCounterClockwise, FilePdf, DownloadSimple, Trash, WarningCircle } from "@phosphor-icons/react";
 import { fetchHistory, deleteHistoryEntry, downloadUrl } from "../api";
 
 export default function RecentFiles() {
@@ -31,22 +32,39 @@ export default function RecentFiles() {
   return (
     <div className="recent-files">
       <h1>Recent Files</h1>
-      {error && <div className="banner banner--error">{error}</div>}
-      {entries.length === 0 && <p>No files produced yet.</p>}
+      {error && (
+        <div className="banner banner--error">
+          <WarningCircle size={18} weight="fill" />
+          {error}
+        </div>
+      )}
+      {entries.length === 0 && (
+        <div className="recent-files__empty">
+          <ClockCounterClockwise size={40} weight="thin" />
+          <p>No files produced yet.</p>
+        </div>
+      )}
       <ul className="history-list">
         {entries.map((entry) => (
           <li key={entry.id}>
-            <div>
-              <strong>{entry.filename}</strong>
+            <div className="history-list__info">
+              <FilePdf size={22} weight="fill" />
               <div>
-                {entry.tool} — {entry.created_at}
+                <div className="history-list__filename">{entry.filename}</div>
+                <div className="history-list__meta">
+                  {entry.tool} — {entry.created_at}
+                </div>
               </div>
             </div>
-            <div>
-              <a href={downloadUrl(entry.id)} download>
+            <div className="history-list__actions">
+              <a className="icon-button" href={downloadUrl(entry.id)} download>
+                <DownloadSimple size={15} weight="regular" />
                 Download
-              </a>{" "}
-              <button onClick={() => handleDelete(entry.id)}>Delete</button>
+              </a>
+              <button className="icon-button icon-button--danger" onClick={() => handleDelete(entry.id)}>
+                <Trash size={15} weight="regular" />
+                Delete
+              </button>
             </div>
           </li>
         ))}

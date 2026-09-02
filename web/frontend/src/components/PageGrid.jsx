@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Check, DotsSixVertical } from "@phosphor-icons/react";
 import { thumbnailUrl } from "../api";
 
 export default function PageGrid({ fileId, pageCount, mode = "view", selected, onToggle, order, onReorder }) {
@@ -43,7 +44,16 @@ export default function PageGrid({ fileId, pageCount, mode = "view", selected, o
           >
             <img draggable={false} src={thumbnailUrl(fileId, pageNumber)} alt={`Page ${pageNumber}`} loading="lazy" />
             <span className="page-thumb__label">Page {pageNumber}</span>
-            {isSelected && <span className="page-thumb__badge">✓</span>}
+            {isSelected && (
+              <span className="page-thumb__badge">
+                <Check size={14} weight="bold" />
+              </span>
+            )}
+            {mode === "reorder" && (
+              <span className="page-thumb__drag-handle">
+                <DotsSixVertical size={18} weight="bold" />
+              </span>
+            )}
           </div>
         );
       })}

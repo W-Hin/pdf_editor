@@ -1,5 +1,15 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import {
+  ArrowLeft,
+  UploadSimple,
+  FilePdf,
+  Play,
+  CircleNotch,
+  WarningCircle,
+  CheckCircle,
+  DownloadSimple,
+} from "@phosphor-icons/react";
 import { TOOL_CONFIGS } from "../toolConfigs";
 import { uploadFile, runTool, downloadUrl } from "../api";
 import PageGrid from "./PageGrid";
@@ -85,12 +95,35 @@ export default function ToolView() {
 
   return (
     <div className="tool-view">
-      <button onClick={() => navigate("/")}>&larr; Back</button>
+      <button className="tool-view__back" onClick={() => navigate("/")}>
+        <ArrowLeft size={16} weight="bold" />
+        Back
+      </button>
       <h1>{config.title}</h1>
 
-      <input type="file" accept=".pdf" multiple={config.multiFile} onChange={handleFilePick} />
+      <label className="tool-view__upload">
+        <UploadSimple size={18} weight="regular" />
+        {config.multiFile ? "Add PDF file(s)…" : "Choose a PDF file…"}
+        <input type="file" accept=".pdf" multiple={config.multiFile} onChange={handleFilePick} />
+      </label>
 
-      {error && <div className="banner banner--error">{error}</div>}
+      {files.length > 0 && (
+        <div className="tool-view__file-list">
+          {files.map((f) => (
+            <div key={f.id} className="tool-view__file-chip">
+              <FilePdf size={16} weight="fill" />
+              {f.filename} — {f.page_count} page{f.page_count === 1 ? "" : "s"}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {error && (
+        <div className="banner banner--error">
+          <WarningCircle size={18} weight="fill" />
+          {error}
+        </div>
+      )}
 
       {primaryFile && (
         <PageGrid
@@ -146,15 +179,20 @@ export default function ToolView() {
         </label>
       ))}
 
-      <button disabled={busy || files.length === 0} onClick={handleRun}>
+      <button className="run-button" disabled={busy || files.length === 0} onClick={handleRun}>
+        {busy ? <CircleNotch size={17} weight="bold" className="spin" /> : <Play size={16} weight="fill" />}
         {busy ? "Working…" : "Run"}
       </button>
 
       {result && (
         <div className="result">
-          <p>Done — {result.length} file(s) created.</p>
+          <p className="result__title">
+            <CheckCircle size={18} weight="fill" />
+            Done — {result.length} file{result.length === 1 ? "" : "s"} created.
+          </p>
           {result.map((out) => (
             <a key={out.id} href={downloadUrl(out.id)} download>
+              <DownloadSimple size={16} weight="regular" />
               Download {out.filename}
             </a>
           ))}
