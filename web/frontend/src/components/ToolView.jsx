@@ -268,7 +268,16 @@ export default function ToolView() {
     if (config.preview === "redact") {
       if (!primaryFile) return null;
       return (
-        <RedactSelector fileId={primaryFile.id} pageCount={primaryFile.page_count} onChange={setRedactions} />
+        // key={primaryFile.id} forces a full unmount/remount when the user picks
+        // a different file, discarding RedactSelector's internal redactions and
+        // currentPage state. Without it those boxes survive the file switch and
+        // get applied to the NEW document, destroying unmarked content.
+        <RedactSelector
+          key={primaryFile.id}
+          fileId={primaryFile.id}
+          pageCount={primaryFile.page_count}
+          onChange={setRedactions}
+        />
       );
     }
 

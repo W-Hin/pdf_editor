@@ -43,6 +43,22 @@ multi-page navigation and multiple boxes per page, each removable via a small ×
 - No new frontend automated test infrastructure — frontend behavior is verified by manual browser
   testing at the end, matching every prior UI feature this project has shipped.
 
+## Post-implementation note (added during the final whole-branch review fix wave)
+
+The task text below is preserved as a historical record and is **not** rewritten. One correction
+for future readers:
+
+- **Task 1's reference code is wrong as written.** It calls
+  `page.add_redact_annot(redact_rect, fill=(0, 0, 0))`, but `redact_rect` is derived from
+  `page.rect` — the *displayed*, rotation-aware rectangle — while `add_redact_annot` interprets
+  coordinates in *unrotated mediabox* space. The shipped code therefore differs from the sample: it
+  passes `redact_rect * page.derotation_matrix`, mirroring what `crop_pdf` already does before
+  `set_cropbox`. Without it, redacting a rotated page reported success while leaving the marked
+  text intact and extractable, and blacked out an unrelated region instead. This was a defect in
+  the plan itself (not implementation drift) and was caught only by the final whole-branch review;
+  `tests/test_pdf_ops.py::test_redact_pdf_handles_rotated_page` now guards it. See the design
+  spec's Architecture section for the full explanation.
+
 ---
 
 ### Task 1: `redact_pdf` — core function

@@ -14,6 +14,7 @@ import {
   FileDoc,
   Crop,
   ListNumbers,
+  Eraser,
   File,
 } from "@phosphor-icons/react";
 import { TOOL_CONFIGS } from "../toolConfigs";
@@ -35,7 +36,19 @@ const TOOL_ICONS = {
   "to-images": Image,
   "to-word": FileDoc,
   "images-to-pdf": FileImage,
+  redact: Eraser,
 };
+
+// Development-time early warning: a tool added to TOOL_CONFIGS without a
+// matching TOOL_ICONS entry silently ships with the generic `?? File` fallback
+// icon, which has slipped through review three times. console.error (not throw)
+// keeps the fallback as the runtime safety net while making the gap loud in dev.
+if (import.meta.env.DEV) {
+  const missing = Object.keys(TOOL_CONFIGS).filter((id) => !(id in TOOL_ICONS));
+  if (missing.length > 0) {
+    console.error(`TOOL_ICONS is missing entries for: ${missing.join(", ")}`);
+  }
+}
 
 export default function ToolGrid() {
   const navigate = useNavigate();

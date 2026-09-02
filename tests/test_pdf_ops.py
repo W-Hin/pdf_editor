@@ -655,6 +655,62 @@ def test_redact_pdf_multiple_pages(tmp_path):
     result.close()
 
 
+def test_redact_pdf_handles_rotated_page(tmp_path):
+    """A box the user drew over text they could SEE must redact that text.
+
+    On a rotated page, page.rect is the *displayed* rectangle the user drew on,
+    but add_redact_annot interprets its argument in *unrotated mediabox* space —
+    so the rect must be mapped back through page.derotation_matrix (the same
+    step crop_pdf does before set_cropbox). Without it, the redaction lands in
+    the wrong place: the marked text survives and unrelated text is destroyed.
+    """
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    # Unrotated bottom-left; after a 90 degree rotation this is DISPLAYED top-left.
+    page.insert_text((72, 700), "OMEGA SECRET")
+    # Unrotated top-left; after rotation this is DISPLAYED top-right (must survive).
+    page.insert_text((72, 72), "ALPHA KEEP")
+    page.set_rotation(90)
+    input_path = tmp_path / "rotated.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    # Work out where "OMEGA SECRET" actually appears on screen. search_for
+    # reports unrotated coordinates, so rotation_matrix maps them into the
+    # displayed space the user (and the frontend selector) sees.
+    src = fitz.open(str(input_path))
+    src_page = src[0]
+    displayed_page = src_page.rect
+    hits = src_page.search_for("OMEGA")
+    assert hits, "test setup: OMEGA text not found"
+    displayed = hits[0] * src_page.rotation_matrix
+    src.close()
+
+    # Sanity-check the premise: this text really is in the displayed top-left quadrant.
+    assert displayed.x1 < displayed_page.x0 + displayed_page.width / 2
+    assert displayed.y1 < displayed_page.y0 + displayed_page.height / 2
+
+    # Invert redact_pdf's own fraction-to-rect arithmetic, so the fractions below
+    # are exactly what the UI would send for a box drawn over that visible text.
+    pad = 4
+    target = fitz.Rect(displayed.x0 - pad, displayed.y0 - pad, displayed.x1 + pad, displayed.y1 + pad)
+    fractions = {
+        "left": (target.x0 - displayed_page.x0) / displayed_page.width,
+        "top": (target.y0 - displayed_page.y0) / displayed_page.height,
+        "right": (displayed_page.x1 - target.x1) / displayed_page.width,
+        "bottom": (displayed_page.y1 - target.y1) / displayed_page.height,
+    }
+
+    output_path = tmp_path / "redacted.pdf"
+    redact_pdf(str(input_path), str(output_path), [{"page": 1, **fractions}])
+
+    result = fitz.open(str(output_path))
+    text = result[0].get_text()
+    result.close()
+    assert "OMEGA" not in text, "text under the drawn box survived redaction"
+    assert "ALPHA KEEP" in text, "redaction destroyed text outside the drawn box"
+
+
 def test_redact_pdf_rejects_empty_list(tmp_path):
     doc = fitz.open()
     doc.new_page(width=595, height=842)

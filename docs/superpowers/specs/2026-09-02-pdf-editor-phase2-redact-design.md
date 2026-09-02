@@ -79,7 +79,21 @@ Processing:
 3. Validate every box's fractions using Crop's exact bound.
 4. For each redaction: convert its fractions to an absolute `fitz.Rect` on that specific page
    (identical conversion arithmetic to `crop_pdf`, just per-box instead of per-document-uniform),
-   then `page.add_redact_annot(rect, fill=(0, 0, 0))` — queuing it, not applying yet.
+   then `page.add_redact_annot(rect * page.derotation_matrix, fill=(0, 0, 0))` — queuing it, not
+   applying yet.
+
+   > **The derotation multiply is not optional, and "identical to `crop_pdf`" means *including*
+   > this step.** `page.rect` is the *displayed* (rotation-aware) rectangle — the one the user
+   > actually drew their box on — but `add_redact_annot` (like `set_cropbox`) interprets its
+   > argument in *unrotated mediabox* space. `crop_pdf` already handles this by multiplying by
+   > `page.derotation_matrix` before calling `set_cropbox` (identity when rotation is 0). The
+   > original implementation of `redact_pdf` reused Crop's fraction arithmetic but **omitted this
+   > derotation step**, and the gap was only caught by the final whole-branch review: on a
+   > 90°-rotated page the tool reported success while leaving the marked text fully intact and
+   > extractable, *and* destroyed an unrelated region instead. It is fixed now, and
+   > `tests/test_pdf_ops.py::test_redact_pdf_handles_rotated_page` locks it in. Any future tool
+   > that cites this "identical conversion arithmetic to `crop_pdf`" claim must verify the
+   > derotation step specifically — it is the part that is easy to read past.
 5. After all boxes are queued, call `page.apply_redactions()` once per page that has at least one
    annotation — this is what actually strips the content and paints the black fill.
 6. Save.

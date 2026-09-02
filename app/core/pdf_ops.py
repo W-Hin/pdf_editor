@@ -380,7 +380,13 @@ def redact_pdf(input_path: str, output_path: str, redactions: list[dict]) -> Non
                 rect.x1 - r["right"] * rect.width,
                 rect.y1 - r["bottom"] * rect.height,
             )
-            page.add_redact_annot(redact_rect, fill=(0, 0, 0))
+            # page.rect is the *displayed* (rotated) rectangle the user drew on,
+            # but add_redact_annot interprets coordinates in the unrotated
+            # mediabox — derotation_matrix maps the former back into the latter
+            # (identity when rotation is 0). Same step as crop_pdf/set_cropbox:
+            # without it a rotated page's marked text survives untouched while
+            # an unrelated region gets destroyed.
+            page.add_redact_annot(redact_rect * page.derotation_matrix, fill=(0, 0, 0))
             pages_with_annots.add(r["page"])
         for page_num in pages_with_annots:
             doc[page_num - 1].apply_redactions()
