@@ -61,22 +61,27 @@ def crop_pdf(input_path: str, output_path: str, top: float, right: float, bottom
 ```
 
 `top`/`right`/`bottom`/`left` are fractions (0–1) of each page's height/width/height/width
-respectively, describing how much to trim from each edge. Validates `0 <= value < 0.5` for each.
-That bound is sufficient on its own to guarantee a positive-area result: since `top + bottom < 1`
-and `left + right < 1` whenever each individual value is `< 0.5`, the remaining width/height
-fraction (`1 - left - right` / `1 - top - bottom`) is always strictly positive — no separate
-"positive area" check is needed or possible to reach.
+respectively, describing how much to trim from each edge. Validates `0 <= value < 1` for each,
+plus an explicit positive-area check: `left + right < 1` and `top + bottom < 1`.
+
+The original design used a tighter per-edge bound (`0 <= value < 0.5`), under which the sums were
+implied and no separate positive-area check was reachable. That bound was relaxed during the final
+whole-branch review because it rejected a large class of ordinary crops: keeping just the right
+half of a page (`left = 0.5`), or the headline "zoom in on a small region" use case, which
+necessarily pushes several margins past 50%. `CropSelector.jsx` lets the user drag *any* rectangle,
+so those drags were 422ing. The actual mathematical requirement for a positive-area crop is the
+pair of sum checks above, not a per-edge 0.5 limit, so the sum checks now carry that guarantee
+explicitly.
 
 ### Add page numbers — backend technique
 
-Uses `page.insert_text()` to draw the formatted page number string into each page's content
-stream. Position is computed from the page's own `page.rect` dimensions: a fixed margin (36pt,
-i.e. 0.5in — the conventional print margin) in from whichever edge(s) the chosen corner touches,
-with the string horizontally centered around that point for the `-center` positions and
-left/right-aligned for the corner positions. This is a different technique from the existing
-Watermark tool, which centers text across the *entire* page via `insert_textbox` — page numbers
-need actual corner/edge placement, which `insert_textbox`'s whole-page-centered layout doesn't
-support.
+Uses `page.insert_textbox()` to draw the formatted page number string into each page's content
+stream. Position is computed from the page's own `page.rect` dimensions: a narrow text band inset
+by a fixed margin (36pt, i.e. 0.5in — the conventional print margin) from whichever edge(s) the
+chosen corner touches, with `align=` set to centre/left/right so the string lands in the right
+corner of that band. This differs from the existing Watermark tool, which passes the *entire*
+`page.rect` as the box and centres the text across the whole page; page numbers need actual
+corner/edge placement, which the narrow band plus `align=` provides.
 
 `app/core/pdf_ops.py` gets a new function:
 
@@ -112,6 +117,11 @@ Page Numbers, keep the existing `PageGrid` thumbnail-grid preview).
   backend's `PDFError` for that. Crop needs its own extra precondition since drawing a box is the
   entire input — `ToolView.jsx` gains a small generic hook for this (e.g. an optional
   `canRun(state)` check surfaced per-preview-type) rather than a crop-only special case bolted on.
+  *As built:* the implementation used an inline `config.preview === "crop" && !cropRect` check in
+  the Run button's `disabled` expression and in `handleRun()`, not the generic `canRun(state)`
+  hook. This was a deliberate simplification — crop is the only tool with such a precondition, so
+  a config-driven indirection would have added a layer with exactly one user. If a second tool
+  ever needs a run precondition, that is the point to introduce the generic hook.
 
 ### Frontend — Add Page Numbers
 
@@ -135,8 +145,8 @@ the exact same `_output_response()` helper pattern.
 
 ## Error handling
 
-- Crop: any fraction outside `[0, 0.5)` raises `PDFError` → existing 422 banner (see Architecture
-  above for why this single check is sufficient to also guarantee positive area). This covers
+- Crop: any fraction outside `[0, 1)`, or a `left + right` / `top + bottom` sum of 1 or more,
+  raises `PDFError` → existing 422 banner (see Architecture above). This covers
   both a malformed/tampered request and the frontend's own guard against a genuinely empty drag
   (click without moving) — see Frontend section.
 - Add page numbers: `position`/`format` are plain strings in the request model (matching the

@@ -1,8 +1,9 @@
 # PDF Editor
 
 A personal, offline, open-source PDF toolkit — merge, split, remove/extract/reorder
-pages, rotate, watermark, compress, and convert PDFs to images or Word, all running
-locally on your own machine. No internet connection is used or required.
+pages, rotate, crop, add page numbers, watermark, compress, and convert PDFs to
+images or Word, all running locally on your own machine. No internet connection is
+used or required.
 
 There are two ways to use it:
 

@@ -89,9 +89,27 @@ def test_crop_rejects_out_of_range_fraction():
     upload = _upload_pdf()
     response = client.post(
         "/api/tools/crop",
-        json={"file_id": upload["id"], "top": 0.6, "right": 0.1, "bottom": 0.1, "left": 0.1},
+        json={"file_id": upload["id"], "top": 1.2, "right": 0.1, "bottom": 0.1, "left": 0.1},
     )
     assert response.status_code == 422
+
+
+def test_crop_rejects_fractions_summing_past_the_page():
+    upload = _upload_pdf()
+    response = client.post(
+        "/api/tools/crop",
+        json={"file_id": upload["id"], "top": 0.6, "right": 0.1, "bottom": 0.6, "left": 0.1},
+    )
+    assert response.status_code == 422
+
+
+def test_crop_accepts_realistic_non_round_fractions():
+    upload = _upload_pdf()
+    response = client.post(
+        "/api/tools/crop",
+        json={"file_id": upload["id"], "top": 0.1857142857, "right": 0.2657142857, "bottom": 0.1142857143, "left": 0.0928571429},
+    )
+    assert response.status_code == 200
 
 
 def test_add_page_numbers_returns_one_output():

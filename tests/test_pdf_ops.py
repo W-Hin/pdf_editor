@@ -300,11 +300,49 @@ def test_crop_pdf_near_boundary_fractions_still_succeed(make_pdf, tmp_path):
     doc.close()
 
 
-def test_crop_pdf_rejects_fraction_at_or_above_half(make_pdf, tmp_path):
+def test_crop_pdf_rejects_fraction_at_or_above_one(make_pdf, tmp_path):
     input_path = make_pdf(num_pages=1)
     output_path = tmp_path / "cropped.pdf"
     with pytest.raises(PDFError):
-        crop_pdf(input_path, str(output_path), top=0.5, right=0.1, bottom=0.1, left=0.1)
+        crop_pdf(input_path, str(output_path), top=1.0, right=0.1, bottom=0.1, left=0.1)
+
+
+def test_crop_pdf_allows_keeping_less_than_half_on_an_axis(make_pdf, tmp_path):
+    input_path = make_pdf(num_pages=1)
+    output_path = tmp_path / "cropped.pdf"
+    original_rect = fitz.open(input_path)[0].rect
+
+    crop_pdf(input_path, str(output_path), top=0.6, right=0.05, bottom=0.05, left=0.05)
+
+    doc = fitz.open(str(output_path))
+    assert doc[0].rect.width == pytest.approx(original_rect.width * 0.9)
+    assert doc[0].rect.height == pytest.approx(original_rect.height * 0.35)
+    doc.close()
+
+
+def test_crop_pdf_rejects_fraction_sum_at_or_above_one(make_pdf, tmp_path):
+    input_path = make_pdf(num_pages=1)
+    output_path = tmp_path / "cropped.pdf"
+    with pytest.raises(PDFError):
+        crop_pdf(input_path, str(output_path), top=0.1, right=0.6, bottom=0.1, left=0.6)
+
+
+def test_crop_pdf_handles_rotated_page(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.set_rotation(90)
+    input_path = tmp_path / "rotated.pdf"
+    doc.save(str(input_path))
+    doc.close()
+    output_path = tmp_path / "cropped.pdf"
+
+    crop_pdf(str(input_path), str(output_path), top=0.1, right=0.1, bottom=0.1, left=0.1)
+
+    result = fitz.open(str(output_path))
+    assert result[0].rotation == 90
+    assert result[0].rect.width > 0
+    assert result[0].rect.height > 0
+    result.close()
 
 
 def test_crop_pdf_rejects_negative_fraction(make_pdf, tmp_path):
@@ -390,3 +428,14 @@ def test_add_page_numbers_rejects_unknown_format(make_pdf, tmp_path):
     output_path = tmp_path / "numbered.pdf"
     with pytest.raises(PDFError):
         add_page_numbers(input_path, str(output_path), position="bottom-center", format="roman")
+
+
+def test_add_page_numbers_raises_pdferror_on_too_narrow_page(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=50, height=200)
+    input_path = tmp_path / "narrow.pdf"
+    doc.save(str(input_path))
+    doc.close()
+    output_path = tmp_path / "numbered.pdf"
+    with pytest.raises(PDFError):
+        add_page_numbers(str(input_path), str(output_path), position="bottom-center", format="number")

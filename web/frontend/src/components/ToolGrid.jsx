@@ -11,6 +11,9 @@ import {
   ArrowsInSimple,
   Image,
   FileDoc,
+  Crop,
+  ListNumbers,
+  File,
 } from "@phosphor-icons/react";
 import { TOOL_CONFIGS } from "../toolConfigs";
 import RecentFiles from "./RecentFiles.jsx";
@@ -26,6 +29,8 @@ const TOOL_ICONS = {
   rotate: ArrowClockwise,
   watermark: Drop,
   compress: ArrowsInSimple,
+  crop: Crop,
+  "add-page-numbers": ListNumbers,
   "to-images": Image,
   "to-word": FileDoc,
 };
@@ -50,7 +55,10 @@ export default function ToolGrid() {
               <h2>{category}</h2>
               <div className="tool-grid__buttons">
                 {tools.map(([toolId, cfg]) => {
-                  const Icon = TOOL_ICONS[toolId];
+                  // Fall back to a generic icon so a tool added to TOOL_CONFIGS
+                  // without a matching TOOL_ICONS entry degrades gracefully
+                  // instead of crashing the whole grid.
+                  const Icon = TOOL_ICONS[toolId] ?? File;
                   return (
                     <button key={toolId} onClick={() => navigate(`/tool/${toolId}`)}>
                       <span className="tool-grid__icon">

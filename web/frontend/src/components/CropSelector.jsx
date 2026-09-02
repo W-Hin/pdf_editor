@@ -14,6 +14,9 @@ export default function CropSelector({ fileId, onChange }) {
 
   function pointFromEvent(e) {
     const rect = containerRef.current.getBoundingClientRect();
+    // The container shrink-wraps the preview image, so it can still be 0x0
+    // before the image has loaded — dividing by that would yield NaN.
+    if (!rect.width || !rect.height) return null;
     const x = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1);
     const y = Math.min(Math.max((e.clientY - rect.top) / rect.height, 0), 1);
     return { x, y };
@@ -21,13 +24,16 @@ export default function CropSelector({ fileId, onChange }) {
 
   function handleMouseDown(e) {
     const point = pointFromEvent(e);
+    if (!point) return;
     setDragStart(point);
     setDragCurrent(point);
   }
 
   function handleMouseMove(e) {
     if (!dragStart) return;
-    setDragCurrent(pointFromEvent(e));
+    const point = pointFromEvent(e);
+    if (!point) return;
+    setDragCurrent(point);
   }
 
   function handleMouseUp() {

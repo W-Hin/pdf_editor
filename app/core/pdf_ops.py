@@ -143,8 +143,10 @@ def add_watermark(
 
 def crop_pdf(input_path: str, output_path: str, top: float, right: float, bottom: float, left: float) -> None:
     for name, value in (("top", top), ("right", right), ("bottom", bottom), ("left", left)):
-        if not (0 <= value < 0.5):
-            raise PDFError(f"Crop '{name}' must be between 0 and 0.5 (got {value}).")
+        if not (0 <= value < 1):
+            raise PDFError(f"Crop '{name}' must be between 0 and 1 (got {value}).")
+    if left + right >= 1 or top + bottom >= 1:
+        raise PDFError("The crop area must have a positive width and height.")
     doc = open_pdf(input_path)
     try:
         for page in doc:
@@ -155,7 +157,13 @@ def crop_pdf(input_path: str, output_path: str, top: float, right: float, bottom
                 rect.x1 - right * rect.width,
                 rect.y1 - bottom * rect.height,
             )
-            page.set_cropbox(new_rect)
+            # page.rect is the *displayed* (rotated) rectangle, but set_cropbox
+            # validates against the unrotated mediabox — derotation_matrix maps
+            # the former back into the latter (identity when rotation is 0).
+            try:
+                page.set_cropbox(new_rect * page.derotation_matrix)
+            except ValueError as exc:
+                raise PDFError(f"Could not apply this crop to '{Path(input_path).name}'.") from exc
         doc.save(output_path)
     finally:
         doc.close()
@@ -208,14 +216,17 @@ def add_page_numbers(input_path: str, output_path: str, position: str, format: s
                     rect.x1 - _PAGE_NUMBER_MARGIN,
                     rect.y0 + _PAGE_NUMBER_MARGIN + _PAGE_NUMBER_BAND_HEIGHT,
                 )
-            page.insert_textbox(
-                band,
-                _format_page_number(format, i, total),
-                fontsize=10,
-                fontname="helv",
-                color=(0, 0, 0),
-                align=_PAGE_NUMBER_ALIGN[position],
-            )
+            try:
+                page.insert_textbox(
+                    band,
+                    _format_page_number(format, i, total),
+                    fontsize=10,
+                    fontname="helv",
+                    color=(0, 0, 0),
+                    align=_PAGE_NUMBER_ALIGN[position],
+                )
+            except ValueError as exc:
+                raise PDFError("This page is too small to add a page number to.") from exc
         doc.save(output_path)
     finally:
         doc.close()

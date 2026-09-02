@@ -220,9 +220,20 @@ export default function ToolView() {
       );
     }
 
+    // Note is rendered inline here rather than via config.previewNote: that
+    // mechanism short-circuits renderPreview() above and would replace the
+    // interactive CropSelector with a plain thumbnail grid.
     if (config.preview === "crop") {
       if (!primaryFile) return null;
-      return <CropSelector fileId={primaryFile.id} onChange={setCropRect} />;
+      return (
+        <>
+          <div className="preview-note">
+            <Info size={16} weight="regular" />
+            The box you draw on page 1 is applied to every page.
+          </div>
+          <CropSelector fileId={primaryFile.id} onChange={setCropRect} />
+        </>
+      );
     }
 
     // Default: select/reorder tools (Remove/Extract/Reorder pages) and
