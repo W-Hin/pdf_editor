@@ -9,10 +9,22 @@ import {
   WarningCircle,
   CheckCircle,
   DownloadSimple,
+  Info,
+  Scissors,
 } from "@phosphor-icons/react";
 import { TOOL_CONFIGS } from "../toolConfigs";
 import { uploadFile, runTool, downloadUrl } from "../api";
 import PageGrid from "./PageGrid";
+
+// Number fields (e.g. split's "pages per file") must be a whole number no
+// smaller than field.min — used by both the preview and the actual submitted
+// request, so what the user sees before running always matches what Run does.
+function clampNumberField(field, rawValue) {
+  let n = Math.round(Number(rawValue));
+  if (!Number.isFinite(n)) n = field.min ?? field.default ?? 0;
+  if (field.min !== undefined) n = Math.max(field.min, n);
+  return n;
+}
 
 export default function ToolView() {
   const { toolId } = useParams();
@@ -72,7 +84,7 @@ export default function ToolView() {
     try {
       const body = {};
       for (const field of config.fields) {
-        const raw = fieldValues[field.name];
+        const raw = field.type === "number" ? clampNumberField(field, fieldValues[field.name]) : fieldValues[field.name];
         body[field.name] = field.scale ? raw * field.scale : raw;
       }
       if (config.multiFile) {
@@ -92,6 +104,103 @@ export default function ToolView() {
   }
 
   const primaryFile = files[0];
+
+  function renderPreview() {
+    // Tools where a visual "before you run" preview isn't meaningful
+    // (compress doesn't change appearance; PDF-to-Word can't be rendered
+    // in a browser) get an explanatory note plus the plain input preview,
+    // instead of a fabricated/misleading transform.
+    if (config.previewNote) {
+      return (
+        <>
+          <div className="preview-note">
+            <Info size={16} weight="regular" />
+            {config.previewNote}
+          </div>
+          {primaryFile && (
+            <PageGrid fileId={primaryFile.id} pageCount={primaryFile.page_count} mode={config.mode} />
+          )}
+        </>
+      );
+    }
+
+    if (config.preview === "merge") {
+      if (files.length === 0) return null;
+      return files.map((f, i) => (
+        <div key={f.id} className="preview-group">
+          <div className="preview-group__label">
+            <FilePdf size={14} weight="fill" />
+            {i + 1}. {f.filename} — this is where its pages land in the merged file
+          </div>
+          <PageGrid fileId={f.id} pageCount={f.page_count} mode="view" />
+        </div>
+      ));
+    }
+
+    if (config.preview === "split") {
+      if (!primaryFile) return null;
+      const step = clampNumberField(config.fields.find((f) => f.name === "pages_per_file"), fieldValues.pages_per_file);
+      const total = primaryFile.page_count;
+      const ranges = [];
+      for (let start = 1; start <= total; start += step) {
+        ranges.push([start, Math.min(start + step - 1, total)]);
+      }
+      return ranges.map(([start, end], i) => (
+        <div key={`${start}-${end}`} className="preview-group">
+          <div className="preview-group__label">
+            <Scissors size={14} weight="regular" />
+            Output file {i + 1} — page{start === end ? "" : "s"} {start === end ? start : `${start}–${end}`}
+          </div>
+          <PageGrid fileId={primaryFile.id} pageCount={total} mode="view" pageRange={[start, end]} />
+        </div>
+      ));
+    }
+
+    if (config.preview === "rotate") {
+      if (!primaryFile) return null;
+      const angle = Number(fieldValues.angle) || 0;
+      return (
+        <PageGrid fileId={primaryFile.id} pageCount={primaryFile.page_count} mode="view" rotateAngle={angle} />
+      );
+    }
+
+    if (config.preview === "watermark") {
+      if (!primaryFile) return null;
+      const text = fieldValues.text?.trim();
+      const opacity = fieldValues.opacity ?? 30;
+      return (
+        <PageGrid
+          fileId={primaryFile.id}
+          pageCount={primaryFile.page_count}
+          mode="view"
+          overlay={
+            text
+              ? () => (
+                  <span className="page-thumb__watermark-preview" style={{ opacity: opacity / 100 }}>
+                    {text}
+                  </span>
+                )
+              : undefined
+          }
+        />
+      );
+    }
+
+    // Default: select/reorder tools (Remove/Extract/Reorder pages) and
+    // plain view-only tools (PDF to Image) — same as before this feature.
+    if (!primaryFile) return null;
+    return (
+      <PageGrid
+        fileId={primaryFile.id}
+        pageCount={primaryFile.page_count}
+        mode={config.mode}
+        selected={selected}
+        onToggle={(n) => setSelected((s) => (s.includes(n) ? s.filter((p) => p !== n) : [...s, n]))}
+        order={order}
+        onReorder={setOrder}
+      />
+    );
+  }
 
   return (
     <div className="tool-view">
@@ -125,17 +234,7 @@ export default function ToolView() {
         </div>
       )}
 
-      {primaryFile && (
-        <PageGrid
-          fileId={primaryFile.id}
-          pageCount={primaryFile.page_count}
-          mode={config.mode}
-          selected={selected}
-          onToggle={(n) => setSelected((s) => (s.includes(n) ? s.filter((p) => p !== n) : [...s, n]))}
-          order={order}
-          onReorder={setOrder}
-        />
-      )}
+      {renderPreview()}
 
       {config.fields.map((field) => (
         <label key={field.name} className="field">
@@ -166,6 +265,7 @@ export default function ToolView() {
             <input
               type="number"
               min={field.min}
+              step={1}
               value={fieldValues[field.name]}
               onChange={(e) => updateField(field.name, Number(e.target.value))}
             />
