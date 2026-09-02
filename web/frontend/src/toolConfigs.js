@@ -110,6 +110,15 @@ export const TOOL_CONFIGS = {
       },
     ],
   },
+  crop: {
+    title: "Crop PDF",
+    category: "Edit",
+    multiFile: false,
+    mode: "view",
+    preview: "crop",
+    endpoint: "crop",
+    fields: [],
+  },
   compress: {
     title: "Compress PDF",
     category: "Optimize",

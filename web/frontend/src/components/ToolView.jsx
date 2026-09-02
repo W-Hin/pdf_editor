@@ -15,6 +15,7 @@ import {
 import { TOOL_CONFIGS } from "../toolConfigs";
 import { uploadFile, runTool, downloadUrl } from "../api";
 import PageGrid from "./PageGrid";
+import CropSelector from "./CropSelector";
 
 // Number fields (e.g. split's "pages per file") must be a whole number no
 // smaller than field.min — used by both the preview and the actual submitted
@@ -43,6 +44,7 @@ export default function ToolView() {
   );
   const [selected, setSelected] = useState([]);
   const [order, setOrder] = useState(null);
+  const [cropRect, setCropRect] = useState(null);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -64,6 +66,7 @@ export default function ToolView() {
         const primary = accumulated[0];
         if (primary) {
           setSelected([]);
+          setCropRect(null);
           setOrder(Array.from({ length: primary.page_count }, (_, i) => i + 1));
           if (config.filenameSuffix && !fieldValues.filename) {
             setFieldValues((v) => ({
@@ -86,6 +89,10 @@ export default function ToolView() {
   async function handleRun() {
     setError("");
     setResult(null);
+    if (config.preview === "crop" && !cropRect) {
+      setError("Drag a box on the page preview to select the area to keep.");
+      return;
+    }
     setBusy(true);
     try {
       const body = {};
@@ -100,6 +107,7 @@ export default function ToolView() {
       }
       if (config.mode === "select") body.pages = selected;
       if (config.mode === "reorder") body.order = order;
+      if (config.preview === "crop") Object.assign(body, cropRect);
       const data = await runTool(config.endpoint, body);
       setResult(data.outputs);
     } catch (err) {
@@ -212,6 +220,11 @@ export default function ToolView() {
       );
     }
 
+    if (config.preview === "crop") {
+      if (!primaryFile) return null;
+      return <CropSelector fileId={primaryFile.id} onChange={setCropRect} />;
+    }
+
     // Default: select/reorder tools (Remove/Extract/Reorder pages) and
     // plain view-only tools (PDF to Image) — same as before this feature.
     if (!primaryFile) return null;
@@ -309,7 +322,11 @@ export default function ToolView() {
         </label>
       ))}
 
-      <button className="run-button" disabled={busy || files.length === 0} onClick={handleRun}>
+      <button
+        className="run-button"
+        disabled={busy || files.length === 0 || (config.preview === "crop" && !cropRect)}
+        onClick={handleRun}
+      >
         {busy ? <CircleNotch size={17} weight="bold" className="spin" /> : <Play size={16} weight="fill" />}
         {busy ? "Working…" : "Run"}
       </button>
