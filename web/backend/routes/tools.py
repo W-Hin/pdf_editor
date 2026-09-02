@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.convert import convert_to_word
 from app.core.errors import PDFError
@@ -14,6 +14,7 @@ from app.core.pdf_ops import (
     get_page_count,
     images_to_pdf,
     merge_pdfs,
+    redact_pdf,
     remove_pages,
     render_to_images,
     reorder_pages,
@@ -194,6 +195,29 @@ def add_page_numbers_route(req: AddPageNumbersRequest):
     output_path = storage.output_path_for(stem, "_numbered")
     add_page_numbers(input_path, str(output_path), position=req.position, format=req.format)
     return _output_response([output_path], "Add page numbers", [Path(input_path).name])
+
+
+class RedactionBox(BaseModel):
+    page: int
+    top: float
+    right: float
+    bottom: float
+    left: float
+
+
+class RedactRequest(BaseModel):
+    file_id: str
+    redactions: list[RedactionBox] = Field(min_length=1)
+
+
+@router.post("/redact")
+def redact(req: RedactRequest):
+    input_path = str(storage.resolve_file(req.file_id))
+    stem = Path(input_path).stem
+    output_path = storage.output_path_for(stem, "_redacted")
+    redactions = [r.model_dump() for r in req.redactions]
+    redact_pdf(input_path, str(output_path), redactions)
+    return _output_response([output_path], "Redact PDF", [Path(input_path).name])
 
 
 class CompressRequest(BaseModel):

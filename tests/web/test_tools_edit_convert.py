@@ -238,3 +238,36 @@ def test_images_to_pdf_rejects_empty_filename():
         json={"file_ids": [upload["id"]], "filename": "  ", "fit_mode": "fit"},
     )
     assert response.status_code == 422
+
+
+def test_redact_returns_one_output():
+    upload = _upload_pdf()
+    response = client.post(
+        "/api/tools/redact",
+        json={
+            "file_id": upload["id"],
+            "redactions": [{"page": 1, "top": 0.1, "right": 0.1, "bottom": 0.1, "left": 0.1}],
+        },
+    )
+    assert response.status_code == 200
+    assert len(response.json()["outputs"]) == 1
+
+
+def test_redact_rejects_empty_redactions():
+    upload = _upload_pdf()
+    response = client.post(
+        "/api/tools/redact",
+        json={"file_id": upload["id"], "redactions": []},
+    )
+    assert response.status_code == 422
+
+
+def test_redact_unknown_file_id_returns_404():
+    response = client.post(
+        "/api/tools/redact",
+        json={
+            "file_id": "nope",
+            "redactions": [{"page": 1, "top": 0.1, "right": 0.1, "bottom": 0.1, "left": 0.1}],
+        },
+    )
+    assert response.status_code == 404
