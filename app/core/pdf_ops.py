@@ -141,6 +141,26 @@ def add_watermark(
         doc.close()
 
 
+def crop_pdf(input_path: str, output_path: str, top: float, right: float, bottom: float, left: float) -> None:
+    for name, value in (("top", top), ("right", right), ("bottom", bottom), ("left", left)):
+        if not (0 <= value < 0.5):
+            raise PDFError(f"Crop '{name}' must be between 0 and 0.5 (got {value}).")
+    doc = open_pdf(input_path)
+    try:
+        for page in doc:
+            rect = page.rect
+            new_rect = fitz.Rect(
+                rect.x0 + left * rect.width,
+                rect.y0 + top * rect.height,
+                rect.x1 - right * rect.width,
+                rect.y1 - bottom * rect.height,
+            )
+            page.set_cropbox(new_rect)
+        doc.save(output_path)
+    finally:
+        doc.close()
+
+
 def compress_pdf(input_path: str, output_path: str, image_quality: int = 60) -> None:
     if not 1 <= image_quality <= 100:
         raise PDFError("Image quality must be between 1 and 100.")

@@ -3,7 +3,7 @@ import pytest
 from pathlib import Path
 
 from app.core.errors import PDFError
-from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark
+from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf
 
 
 def test_open_pdf_missing_file_raises(tmp_path):
@@ -254,3 +254,61 @@ def test_render_page_thumbnail_rejects_bad_page(make_pdf):
     path = make_pdf(num_pages=1)
     with pytest.raises(PDFError):
         render_page_thumbnail(path, 5)
+
+
+def test_crop_pdf_reduces_cropbox_size(make_pdf, tmp_path):
+    input_path = make_pdf(num_pages=1)
+    output_path = tmp_path / "cropped.pdf"
+    original_rect = fitz.open(input_path)[0].rect
+
+    crop_pdf(input_path, str(output_path), top=0.1, right=0.1, bottom=0.1, left=0.1)
+
+    doc = fitz.open(str(output_path))
+    assert doc[0].rect.width == pytest.approx(original_rect.width * 0.8)
+    assert doc[0].rect.height == pytest.approx(original_rect.height * 0.8)
+    doc.close()
+
+
+def test_crop_pdf_applies_same_fraction_across_mixed_page_sizes(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=200, height=300)
+    doc.new_page(width=400, height=600)
+    input_path = tmp_path / "mixed.pdf"
+    doc.save(str(input_path))
+    doc.close()
+    output_path = tmp_path / "cropped.pdf"
+
+    crop_pdf(str(input_path), str(output_path), top=0.1, right=0.1, bottom=0.1, left=0.1)
+
+    result = fitz.open(str(output_path))
+    assert result[0].rect.width == pytest.approx(200 * 0.8)
+    assert result[0].rect.height == pytest.approx(300 * 0.8)
+    assert result[1].rect.width == pytest.approx(400 * 0.8)
+    assert result[1].rect.height == pytest.approx(600 * 0.8)
+    result.close()
+
+
+def test_crop_pdf_near_boundary_fractions_still_succeed(make_pdf, tmp_path):
+    input_path = make_pdf(num_pages=1)
+    output_path = tmp_path / "cropped.pdf"
+
+    crop_pdf(input_path, str(output_path), top=0.49, right=0.49, bottom=0.49, left=0.49)
+
+    doc = fitz.open(str(output_path))
+    assert doc[0].rect.width > 0
+    assert doc[0].rect.height > 0
+    doc.close()
+
+
+def test_crop_pdf_rejects_fraction_at_or_above_half(make_pdf, tmp_path):
+    input_path = make_pdf(num_pages=1)
+    output_path = tmp_path / "cropped.pdf"
+    with pytest.raises(PDFError):
+        crop_pdf(input_path, str(output_path), top=0.5, right=0.1, bottom=0.1, left=0.1)
+
+
+def test_crop_pdf_rejects_negative_fraction(make_pdf, tmp_path):
+    input_path = make_pdf(num_pages=1)
+    output_path = tmp_path / "cropped.pdf"
+    with pytest.raises(PDFError):
+        crop_pdf(input_path, str(output_path), top=0.1, right=0.1, bottom=0.1, left=-0.1)
