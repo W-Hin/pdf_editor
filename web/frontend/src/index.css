@@ -396,6 +396,22 @@ h1 {
   padding: var(--space-1);
 }
 
+.page-thumb__overlay--bottom-center { align-items: flex-end; justify-content: center; }
+.page-thumb__overlay--bottom-right { align-items: flex-end; justify-content: flex-end; }
+.page-thumb__overlay--bottom-left { align-items: flex-end; justify-content: flex-start; }
+.page-thumb__overlay--top-center { align-items: flex-start; justify-content: center; }
+.page-thumb__overlay--top-right { align-items: flex-start; justify-content: flex-end; }
+.page-thumb__overlay--top-left { align-items: flex-start; justify-content: flex-start; }
+
+.page-thumb__page-number-preview {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-secondary);
+  background: rgba(255, 255, 255, 0.85);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
 .page-thumb__watermark-preview {
   font-size: 11px;
   font-weight: 700;

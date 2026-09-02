@@ -13,6 +13,7 @@ export default function PageGrid({
   pageRange,
   rotateAngle,
   overlay,
+  overlayPosition,
 }) {
   const [dragIndex, setDragIndex] = useState(null);
   const [naturalSizes, setNaturalSizes] = useState({});
@@ -91,7 +92,10 @@ export default function PageGrid({
                 style={rotationStyleFor(pageNumber)}
               />
               {overlay && (
-                <div className="page-thumb__overlay" aria-hidden="true">
+                <div
+                  className={`page-thumb__overlay${overlayPosition ? ` page-thumb__overlay--${overlayPosition}` : ""}`}
+                  aria-hidden="true"
+                >
                   {overlay(pageNumber)}
                 </div>
               )}

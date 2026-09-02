@@ -75,6 +75,41 @@ export const TOOL_CONFIGS = {
       },
     ],
   },
+  "add-page-numbers": {
+    title: "Add page numbers",
+    category: "Edit",
+    multiFile: false,
+    mode: "view",
+    preview: "page-numbers",
+    endpoint: "add-page-numbers",
+    fields: [
+      {
+        name: "position",
+        label: "Position",
+        type: "select",
+        options: [
+          { value: "bottom-center", label: "Bottom center" },
+          { value: "bottom-right", label: "Bottom right" },
+          { value: "bottom-left", label: "Bottom left" },
+          { value: "top-center", label: "Top center" },
+          { value: "top-right", label: "Top right" },
+          { value: "top-left", label: "Top left" },
+        ],
+        default: "bottom-center",
+      },
+      {
+        name: "format",
+        label: "Format",
+        type: "select",
+        options: [
+          { value: "number", label: "3" },
+          { value: "number-of-total", label: "3 / 12" },
+          { value: "page-x-of-y", label: "Page 3 of 12" },
+        ],
+        default: "number",
+      },
+    ],
+  },
   compress: {
     title: "Compress PDF",
     category: "Optimize",

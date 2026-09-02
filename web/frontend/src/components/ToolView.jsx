@@ -26,6 +26,12 @@ function clampNumberField(field, rawValue) {
   return n;
 }
 
+function formatPageNumberPreview(format, pageNumber, total) {
+  if (format === "number-of-total") return `${pageNumber} / ${total}`;
+  if (format === "page-x-of-y") return `Page ${pageNumber} of ${total}`;
+  return String(pageNumber);
+}
+
 export default function ToolView() {
   const { toolId } = useParams();
   const navigate = useNavigate();
@@ -186,6 +192,26 @@ export default function ToolView() {
       );
     }
 
+    if (config.preview === "page-numbers") {
+      if (!primaryFile) return null;
+      const position = fieldValues.position ?? "bottom-center";
+      const format = fieldValues.format ?? "number";
+      const total = primaryFile.page_count;
+      return (
+        <PageGrid
+          fileId={primaryFile.id}
+          pageCount={primaryFile.page_count}
+          mode="view"
+          overlayPosition={position}
+          overlay={(pageNumber) => (
+            <span className="page-thumb__page-number-preview">
+              {formatPageNumberPreview(format, pageNumber, total)}
+            </span>
+          )}
+        />
+      );
+    }
+
     // Default: select/reorder tools (Remove/Extract/Reorder pages) and
     // plain view-only tools (PDF to Image) — same as before this feature.
     if (!primaryFile) return null;
@@ -247,11 +273,15 @@ export default function ToolView() {
                 updateField(field.name, typeof field.default === "number" ? Number(raw) : raw);
               }}
             >
-              {field.options.map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt}
-                </option>
-              ))}
+              {field.options.map((opt) => {
+                const optValue = typeof opt === "object" ? opt.value : opt;
+                const optLabel = typeof opt === "object" ? opt.label : opt;
+                return (
+                  <option key={optValue} value={optValue}>
+                    {optLabel}
+                  </option>
+                );
+              })}
             </select>
           ) : field.type === "range" ? (
             <input
