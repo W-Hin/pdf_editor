@@ -3,7 +3,7 @@ import pytest
 from pathlib import Path
 
 from app.core.errors import PDFError
-from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf, add_page_numbers
+from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf, add_page_numbers, images_to_pdf
 
 
 def test_open_pdf_missing_file_raises(tmp_path):
@@ -439,3 +439,93 @@ def test_add_page_numbers_raises_pdferror_on_too_narrow_page(tmp_path):
     output_path = tmp_path / "numbered.pdf"
     with pytest.raises(PDFError):
         add_page_numbers(str(input_path), str(output_path), position="bottom-center", format="number")
+
+
+def test_images_to_pdf_single_image_produces_one_page(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=400, height=300)
+    img_bytes = page.get_pixmap().tobytes("png")
+    doc.close()
+    img_path = tmp_path / "photo.png"
+    img_path.write_bytes(img_bytes)
+
+    output_path = tmp_path / "combined.pdf"
+    images_to_pdf([str(img_path)], str(output_path), fit_mode="fit")
+
+    result = fitz.open(str(output_path))
+    assert result.page_count == 1
+    result.close()
+
+
+def test_images_to_pdf_mixed_orientation_pages(tmp_path):
+    doc = fitz.open()
+    portrait_bytes = doc.new_page(width=300, height=400).get_pixmap().tobytes("png")
+    landscape_bytes = doc.new_page(width=400, height=300).get_pixmap().tobytes("png")
+    doc.close()
+    portrait_path = tmp_path / "portrait.png"
+    landscape_path = tmp_path / "landscape.png"
+    portrait_path.write_bytes(portrait_bytes)
+    landscape_path.write_bytes(landscape_bytes)
+
+    output_path = tmp_path / "combined.pdf"
+    images_to_pdf([str(portrait_path), str(landscape_path)], str(output_path), fit_mode="fit")
+
+    result = fitz.open(str(output_path))
+    assert result.page_count == 2
+    assert result[0].rect.width < result[0].rect.height  # portrait image -> portrait page
+    assert result[1].rect.width > result[1].rect.height  # landscape image -> landscape page
+    result.close()
+
+
+def test_images_to_pdf_fit_mode_does_not_overflow_page(tmp_path):
+    doc = fitz.open()
+    img_bytes = doc.new_page(width=500, height=600).get_pixmap().tobytes("png")
+    doc.close()
+    img_path = tmp_path / "photo.png"
+    img_path.write_bytes(img_bytes)
+
+    output_path = tmp_path / "combined.pdf"
+    images_to_pdf([str(img_path)], str(output_path), fit_mode="fit")
+
+    result = fitz.open(str(output_path))
+    result_page = result[0]
+    bbox = result_page.get_image_bbox(result_page.get_images(full=True)[0])
+    assert bbox.width <= result_page.rect.width + 0.01
+    assert bbox.height <= result_page.rect.height + 0.01
+    result.close()
+
+
+def test_images_to_pdf_fill_mode_covers_page(tmp_path):
+    doc = fitz.open()
+    img_bytes = doc.new_page(width=500, height=600).get_pixmap().tobytes("png")
+    doc.close()
+    img_path = tmp_path / "photo.png"
+    img_path.write_bytes(img_bytes)
+
+    output_path = tmp_path / "combined.pdf"
+    images_to_pdf([str(img_path)], str(output_path), fit_mode="fill")
+
+    result = fitz.open(str(output_path))
+    result_page = result[0]
+    bbox = result_page.get_image_bbox(result_page.get_images(full=True)[0])
+    assert bbox.width >= result_page.rect.width - 0.01
+    assert bbox.height >= result_page.rect.height - 0.01
+    result.close()
+
+
+def test_images_to_pdf_rejects_unknown_fit_mode(tmp_path):
+    doc = fitz.open()
+    img_bytes = doc.new_page(width=400, height=300).get_pixmap().tobytes("png")
+    doc.close()
+    img_path = tmp_path / "photo.png"
+    img_path.write_bytes(img_bytes)
+
+    output_path = tmp_path / "combined.pdf"
+    with pytest.raises(PDFError):
+        images_to_pdf([str(img_path)], str(output_path), fit_mode="stretch")
+
+
+def test_images_to_pdf_rejects_empty_list(tmp_path):
+    output_path = tmp_path / "combined.pdf"
+    with pytest.raises(PDFError):
+        images_to_pdf([], str(output_path), fit_mode="fit")

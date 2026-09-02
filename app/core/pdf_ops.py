@@ -295,3 +295,39 @@ def render_to_images(
         return output_paths
     finally:
         doc.close()
+
+
+def images_to_pdf(image_paths: list[str], output_path: str, fit_mode: str) -> None:
+    if fit_mode not in ("fit", "fill"):
+        raise PDFError(f"Unknown fit mode: {fit_mode}")
+    if not image_paths:
+        raise PDFError("Select at least one image.")
+    result = fitz.open()
+    try:
+        for path in image_paths:
+            doc = open_pdf(path)
+            try:
+                img_rect = doc[0].rect
+            finally:
+                doc.close()
+            img_w, img_h = img_rect.width, img_rect.height
+            page_w, page_h = (842, 595) if img_w > img_h else (595, 842)
+            page = result.new_page(width=page_w, height=page_h)
+            img_aspect = img_w / img_h
+            page_aspect = page_w / page_h
+            if fit_mode == "fit":
+                if img_aspect > page_aspect:
+                    target_w, target_h = page_w, page_w / img_aspect
+                else:
+                    target_h, target_w = page_h, page_h * img_aspect
+            else:
+                if img_aspect > page_aspect:
+                    target_h, target_w = page_h, page_h * img_aspect
+                else:
+                    target_w, target_h = page_w, page_w / img_aspect
+            x0 = (page_w - target_w) / 2
+            y0 = (page_h - target_h) / 2
+            page.insert_image(fitz.Rect(x0, y0, x0 + target_w, y0 + target_h), filename=path)
+        result.save(output_path)
+    finally:
+        result.close()
