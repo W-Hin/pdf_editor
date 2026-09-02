@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.core.convert import convert_to_word
 from app.core.errors import PDFError
@@ -207,7 +207,7 @@ class RedactionBox(BaseModel):
 
 class RedactRequest(BaseModel):
     file_id: str
-    redactions: list[RedactionBox] = Field(min_length=1)
+    redactions: list[RedactionBox]
 
 
 @router.post("/redact")

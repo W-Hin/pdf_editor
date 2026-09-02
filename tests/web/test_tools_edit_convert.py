@@ -260,6 +260,7 @@ def test_redact_rejects_empty_redactions():
         json={"file_id": upload["id"], "redactions": []},
     )
     assert response.status_code == 422
+    assert isinstance(response.json()["detail"], str)
 
 
 def test_redact_unknown_file_id_returns_404():
