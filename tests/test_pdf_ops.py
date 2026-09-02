@@ -3,7 +3,7 @@ import pytest
 from pathlib import Path
 
 from app.core.errors import PDFError
-from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf, add_page_numbers, images_to_pdf
+from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf, add_page_numbers, images_to_pdf, redact_pdf
 
 
 def test_open_pdf_missing_file_raises(tmp_path):
@@ -584,3 +584,112 @@ def test_images_to_pdf_raises_pdferror_for_undecodable_image(tmp_path):
 
     with pytest.raises(PDFError):
         images_to_pdf([str(img_path)], str(output_path), fit_mode="fit")
+
+
+def test_redact_pdf_removes_covered_text(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 72), "REMOVE THIS")
+    page.insert_text((72, 150), "KEEP THIS")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "redacted.pdf"
+    redact_pdf(str(input_path), str(output_path), [
+        {"page": 1, "top": 0.05, "right": 0.4, "bottom": 0.85, "left": 0.1},
+    ])
+
+    result = fitz.open(str(output_path))
+    text = result[0].get_text()
+    assert "REMOVE THIS" not in text
+    assert "KEEP THIS" in text
+    result.close()
+
+
+def test_redact_pdf_multiple_boxes_same_page(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 72), "FIRST SECRET")
+    page.insert_text((72, 150), "SECOND SECRET")
+    page.insert_text((72, 250), "KEPT TEXT")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "redacted.pdf"
+    redact_pdf(str(input_path), str(output_path), [
+        {"page": 1, "top": 0.05, "right": 0.4, "bottom": 0.85, "left": 0.1},
+        {"page": 1, "top": 0.13, "right": 0.35, "bottom": 0.77, "left": 0.1},
+    ])
+
+    result = fitz.open(str(output_path))
+    text = result[0].get_text()
+    assert "FIRST SECRET" not in text
+    assert "SECOND SECRET" not in text
+    assert "KEPT TEXT" in text
+    result.close()
+
+
+def test_redact_pdf_multiple_pages(tmp_path):
+    doc = fitz.open()
+    p1 = doc.new_page(width=595, height=842)
+    p1.insert_text((72, 72), "PAGE ONE SECRET")
+    p2 = doc.new_page(width=595, height=842)
+    p2.insert_text((72, 72), "PAGE TWO SECRET")
+    p2.insert_text((72, 150), "PAGE TWO KEPT")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "redacted.pdf"
+    redact_pdf(str(input_path), str(output_path), [
+        {"page": 1, "top": 0.05, "right": 0.4, "bottom": 0.85, "left": 0.1},
+        {"page": 2, "top": 0.05, "right": 0.4, "bottom": 0.85, "left": 0.1},
+    ])
+
+    result = fitz.open(str(output_path))
+    assert "PAGE ONE SECRET" not in result[0].get_text()
+    assert "PAGE TWO SECRET" not in result[1].get_text()
+    assert "PAGE TWO KEPT" in result[1].get_text()
+    result.close()
+
+
+def test_redact_pdf_rejects_empty_list(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "redacted.pdf"
+    with pytest.raises(PDFError):
+        redact_pdf(str(input_path), str(output_path), [])
+
+
+def test_redact_pdf_rejects_out_of_range_page(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "redacted.pdf"
+    with pytest.raises(PDFError):
+        redact_pdf(str(input_path), str(output_path), [
+            {"page": 2, "top": 0.1, "right": 0.1, "bottom": 0.1, "left": 0.1},
+        ])
+
+
+def test_redact_pdf_rejects_invalid_fraction(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "redacted.pdf"
+    with pytest.raises(PDFError):
+        redact_pdf(str(input_path), str(output_path), [
+            {"page": 1, "top": 1.0, "right": 0.1, "bottom": 0.1, "left": 0.1},
+        ])

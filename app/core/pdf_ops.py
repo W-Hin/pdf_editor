@@ -352,3 +352,38 @@ def images_to_pdf(image_paths: list[str], output_path: str, fit_mode: str) -> No
         result.save(output_path)
     finally:
         result.close()
+
+
+def redact_pdf(input_path: str, output_path: str, redactions: list[dict]) -> None:
+    if not redactions:
+        raise PDFError("Select at least one area to redact.")
+    doc = open_pdf(input_path)
+    try:
+        for r in redactions:
+            page_num = r["page"]
+            if page_num < 1 or page_num > doc.page_count:
+                raise PDFError(f"Page {page_num} does not exist in this document ({doc.page_count} pages).")
+        for r in redactions:
+            for name in ("top", "right", "bottom", "left"):
+                value = r[name]
+                if not (0 <= value < 1):
+                    raise PDFError(f"Redaction '{name}' must be between 0 and 1 (got {value}).")
+            if r["left"] + r["right"] >= 1 or r["top"] + r["bottom"] >= 1:
+                raise PDFError("Each redaction area must have a positive width and height.")
+        pages_with_annots = set()
+        for r in redactions:
+            page = doc[r["page"] - 1]
+            rect = page.rect
+            redact_rect = fitz.Rect(
+                rect.x0 + r["left"] * rect.width,
+                rect.y0 + r["top"] * rect.height,
+                rect.x1 - r["right"] * rect.width,
+                rect.y1 - r["bottom"] * rect.height,
+            )
+            page.add_redact_annot(redact_rect, fill=(0, 0, 0))
+            pages_with_annots.add(r["page"])
+        for page_num in pages_with_annots:
+            doc[page_num - 1].apply_redactions()
+        doc.save(output_path)
+    finally:
+        doc.close()
