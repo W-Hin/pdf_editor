@@ -119,6 +119,15 @@ export const TOOL_CONFIGS = {
     endpoint: "crop",
     fields: [],
   },
+  redact: {
+    title: "Redact PDF",
+    category: "Edit",
+    multiFile: false,
+    mode: "view",
+    preview: "redact",
+    endpoint: "redact",
+    fields: [],
+  },
   compress: {
     title: "Compress PDF",
     category: "Optimize",
