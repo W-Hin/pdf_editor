@@ -53,6 +53,19 @@ This starts a local server at `http://127.0.0.1:8756` and opens it in your defau
 browser automatically. Leave the terminal window open while you use the app — closing
 it stops the server. To stop it manually, press `Ctrl+C` in that terminal.
 
+**Or use the packaged version** — no Python/Node needed at runtime once built:
+
+```bash
+venv/Scripts/pyinstaller --name PDFEditorWeb --onedir --console \
+  --collect-all uvicorn --collect-all fastapi --collect-all starlette \
+  --add-data "web/frontend/dist;frontend/dist" -y web/launch.py
+```
+
+This produces `dist/PDFEditorWeb/PDFEditorWeb.exe`. Run it directly, or create a
+Desktop shortcut to it with `venv/Scripts/python scripts/create_desktop_shortcut.py`
+(this is also the script's default target). A console window stays open while the
+server runs — close it to stop the app.
+
 **Using it:**
 
 - Pick a tool from the home screen (grouped into Organize / Edit / Optimize / Convert).
