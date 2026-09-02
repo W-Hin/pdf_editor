@@ -161,6 +161,66 @@ def crop_pdf(input_path: str, output_path: str, top: float, right: float, bottom
         doc.close()
 
 
+_PAGE_NUMBER_ALIGN = {
+    "bottom-left": fitz.TEXT_ALIGN_LEFT,
+    "bottom-center": fitz.TEXT_ALIGN_CENTER,
+    "bottom-right": fitz.TEXT_ALIGN_RIGHT,
+    "top-left": fitz.TEXT_ALIGN_LEFT,
+    "top-center": fitz.TEXT_ALIGN_CENTER,
+    "top-right": fitz.TEXT_ALIGN_RIGHT,
+}
+
+_PAGE_NUMBER_FORMATS = {"number", "number-of-total", "page-x-of-y"}
+
+_PAGE_NUMBER_MARGIN = 36  # points; 0.5in, the conventional print margin
+_PAGE_NUMBER_BAND_HEIGHT = 20  # points
+
+
+def _format_page_number(fmt: str, page_num: int, total: int) -> str:
+    if fmt == "number":
+        return str(page_num)
+    if fmt == "number-of-total":
+        return f"{page_num} / {total}"
+    return f"Page {page_num} of {total}"
+
+
+def add_page_numbers(input_path: str, output_path: str, position: str, format: str) -> None:
+    if position not in _PAGE_NUMBER_ALIGN:
+        raise PDFError(f"Unknown page number position: {position}")
+    if format not in _PAGE_NUMBER_FORMATS:
+        raise PDFError(f"Unknown page number format: {format}")
+    doc = open_pdf(input_path)
+    try:
+        total = doc.page_count
+        for i, page in enumerate(doc, start=1):
+            rect = page.rect
+            if position.startswith("bottom"):
+                band = fitz.Rect(
+                    rect.x0 + _PAGE_NUMBER_MARGIN,
+                    rect.y1 - _PAGE_NUMBER_MARGIN - _PAGE_NUMBER_BAND_HEIGHT,
+                    rect.x1 - _PAGE_NUMBER_MARGIN,
+                    rect.y1 - _PAGE_NUMBER_MARGIN,
+                )
+            else:
+                band = fitz.Rect(
+                    rect.x0 + _PAGE_NUMBER_MARGIN,
+                    rect.y0 + _PAGE_NUMBER_MARGIN,
+                    rect.x1 - _PAGE_NUMBER_MARGIN,
+                    rect.y0 + _PAGE_NUMBER_MARGIN + _PAGE_NUMBER_BAND_HEIGHT,
+                )
+            page.insert_textbox(
+                band,
+                _format_page_number(format, i, total),
+                fontsize=10,
+                fontname="helv",
+                color=(0, 0, 0),
+                align=_PAGE_NUMBER_ALIGN[position],
+            )
+        doc.save(output_path)
+    finally:
+        doc.close()
+
+
 def compress_pdf(input_path: str, output_path: str, image_quality: int = 60) -> None:
     if not 1 <= image_quality <= 100:
         raise PDFError("Image quality must be between 1 and 100.")

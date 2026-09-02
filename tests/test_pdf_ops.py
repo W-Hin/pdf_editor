@@ -3,7 +3,7 @@ import pytest
 from pathlib import Path
 
 from app.core.errors import PDFError
-from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf
+from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf, add_page_numbers
 
 
 def test_open_pdf_missing_file_raises(tmp_path):
@@ -312,3 +312,81 @@ def test_crop_pdf_rejects_negative_fraction(make_pdf, tmp_path):
     output_path = tmp_path / "cropped.pdf"
     with pytest.raises(PDFError):
         crop_pdf(input_path, str(output_path), top=0.1, right=0.1, bottom=0.1, left=-0.1)
+
+
+def test_add_page_numbers_page_x_of_y_format(make_pdf, tmp_path):
+    input_path = make_pdf(num_pages=3)
+    output_path = tmp_path / "numbered.pdf"
+
+    add_page_numbers(input_path, str(output_path), position="bottom-center", format="page-x-of-y")
+
+    doc = fitz.open(str(output_path))
+    assert "Page 1 of 3" in doc[0].get_text()
+    assert "Page 2 of 3" in doc[1].get_text()
+    assert "Page 3 of 3" in doc[2].get_text()
+    doc.close()
+
+
+def test_add_page_numbers_number_of_total_format(make_pdf, tmp_path):
+    input_path = make_pdf(num_pages=2)
+    output_path = tmp_path / "numbered.pdf"
+
+    add_page_numbers(input_path, str(output_path), position="bottom-center", format="number-of-total")
+
+    doc = fitz.open(str(output_path))
+    assert "1 / 2" in doc[0].get_text()
+    doc.close()
+
+
+def test_add_page_numbers_plain_number_appears_at_bottom(make_pdf, tmp_path):
+    # make_pdf's own fixture text ("Page N") sits near the top-left (72, 72).
+    # Checking for a standalone "1" token in the page's bottom half proves
+    # add_page_numbers actually added something there — a plain substring
+    # check on the whole page's text couldn't distinguish our output from
+    # the fixture's own pre-existing "Page 1" text.
+    input_path = make_pdf(num_pages=1)
+    output_path = tmp_path / "numbered.pdf"
+
+    add_page_numbers(input_path, str(output_path), position="bottom-center", format="number")
+
+    doc = fitz.open(str(output_path))
+    page = doc[0]
+    page_height = page.rect.height
+    bottom_words = [w[4] for w in page.get_text("words") if w[1] > page_height / 2]
+    assert "1" in bottom_words
+    doc.close()
+
+
+def test_add_page_numbers_top_position_places_text_in_top_half(make_pdf, tmp_path):
+    input_path = make_pdf(num_pages=1)
+    output_path = tmp_path / "numbered.pdf"
+
+    add_page_numbers(input_path, str(output_path), position="top-right", format="number-of-total")
+
+    doc = fitz.open(str(output_path))
+    page = doc[0]
+    page_height = page.rect.height
+    page_width = page.rect.width
+    top_right_words = [
+        w[4] for w in page.get_text("words")
+        if w[1] < page_height / 2 and w[0] > page_width / 2
+    ]
+    # A 1-page document formatted as "number-of-total" renders "1 / 1",
+    # tokenized as separate words "1" and "/" — either confirms the text
+    # landed in the top-right quadrant.
+    assert any(w in ("1", "/") for w in top_right_words)
+    doc.close()
+
+
+def test_add_page_numbers_rejects_unknown_position(make_pdf, tmp_path):
+    input_path = make_pdf(num_pages=1)
+    output_path = tmp_path / "numbered.pdf"
+    with pytest.raises(PDFError):
+        add_page_numbers(input_path, str(output_path), position="middle", format="number")
+
+
+def test_add_page_numbers_rejects_unknown_format(make_pdf, tmp_path):
+    input_path = make_pdf(num_pages=1)
+    output_path = tmp_path / "numbered.pdf"
+    with pytest.raises(PDFError):
+        add_page_numbers(input_path, str(output_path), position="bottom-center", format="roman")
