@@ -119,6 +119,50 @@ h1 {
   padding: var(--space-6) var(--space-6) var(--space-8);
 }
 
+/* ---------- Update banner ---------- */
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-6);
+  background: #eff6ff;
+  border-bottom: 1px solid #bfdbfe;
+  color: #1e40af;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.update-banner__link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.update-banner__link:hover {
+  text-decoration: underline;
+}
+
+.update-banner__dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: #1e40af;
+  padding: var(--space-1);
+  border-radius: var(--radius-sm);
+  transition: background var(--transition);
+}
+
+.update-banner__dismiss:hover {
+  background: rgba(30, 64, 175, 0.1);
+}
+
 /* ---------- Tool grid (home) ---------- */
 
 .tool-grid__category {

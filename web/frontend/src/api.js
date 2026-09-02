@@ -47,3 +47,11 @@ export async function fetchHistory() {
 export async function deleteHistoryEntry(fileId) {
   await request(`/history/${fileId}`, { method: "DELETE" });
 }
+
+export async function fetchVersionInfo() {
+  // Best-effort: /api/version never errors (it swallows its own network
+  // failures server-side), so a plain fetch is enough — no error banner
+  // to show if this fails, the update check just silently does nothing.
+  const res = await fetch(`${BASE}/version`);
+  return res.json();
+}
