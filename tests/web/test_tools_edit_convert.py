@@ -129,3 +129,51 @@ def test_add_page_numbers_rejects_unknown_position():
         json={"file_id": upload["id"], "position": "middle", "format": "number"},
     )
     assert response.status_code == 422
+
+
+def _upload_image(width=400, height=300, filename="photo.png"):
+    doc = fitz.open()
+    img_bytes = doc.new_page(width=width, height=height).get_pixmap().tobytes("png")
+    doc.close()
+    return client.post(
+        "/api/files", files={"file": (filename, img_bytes, "image/png")}
+    ).json()
+
+
+def test_images_to_pdf_returns_one_output():
+    upload1 = _upload_image(filename="a.png")
+    upload2 = _upload_image(filename="b.png")
+    response = client.post(
+        "/api/tools/images-to-pdf",
+        json={"file_ids": [upload1["id"], upload2["id"]], "filename": "combined", "fit_mode": "fit"},
+    )
+    assert response.status_code == 200
+    outputs = response.json()["outputs"]
+    assert len(outputs) == 1
+    assert outputs[0]["filename"].endswith(".pdf")
+
+
+def test_images_to_pdf_rejects_empty_file_ids():
+    response = client.post(
+        "/api/tools/images-to-pdf",
+        json={"file_ids": [], "filename": "combined", "fit_mode": "fit"},
+    )
+    assert response.status_code == 422
+
+
+def test_images_to_pdf_rejects_unknown_fit_mode():
+    upload = _upload_image()
+    response = client.post(
+        "/api/tools/images-to-pdf",
+        json={"file_ids": [upload["id"]], "filename": "combined", "fit_mode": "stretch"},
+    )
+    assert response.status_code == 422
+
+
+def test_images_to_pdf_rejects_empty_filename():
+    upload = _upload_image()
+    response = client.post(
+        "/api/tools/images-to-pdf",
+        json={"file_ids": [upload["id"]], "filename": "  ", "fit_mode": "fit"},
+    )
+    assert response.status_code == 422

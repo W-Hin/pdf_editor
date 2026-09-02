@@ -12,6 +12,7 @@ from app.core.pdf_ops import (
     crop_pdf,
     extract_pages,
     get_page_count,
+    images_to_pdf,
     merge_pdfs,
     remove_pages,
     render_to_images,
@@ -228,3 +229,25 @@ def to_word(req: ToWordRequest):
     output_path = storage.output_path_for(stem, "", ".docx")
     convert_to_word(input_path, str(output_path))
     return _output_response([output_path], "PDF to Word", [Path(input_path).name])
+
+
+class ImagesToPdfRequest(BaseModel):
+    file_ids: list[str]
+    filename: str
+    fit_mode: str
+
+
+@router.post("/images-to-pdf")
+def images_to_pdf_route(req: ImagesToPdfRequest):
+    input_paths = [str(storage.resolve_file(fid)) for fid in req.file_ids]
+    filename = req.filename.strip()
+    if not filename:
+        raise PDFError("Enter an output filename.")
+    if any(sep in filename for sep in ("/", "\\", ":")):
+        raise PDFError("Output filename must be a plain file name, not a path.")
+    if filename.lower().endswith(".pdf"):
+        filename = filename[: -len(".pdf")]
+    output_path = storage.output_path_for(filename, "")
+    images_to_pdf(input_paths, str(output_path), fit_mode=req.fit_mode)
+    source_names = [Path(p).name for p in input_paths]
+    return _output_response([output_path], "Images to PDF", source_names)
