@@ -156,4 +156,28 @@ export const TOOL_CONFIGS = {
     endpoint: "to-word",
     fields: [],
   },
+  "images-to-pdf": {
+    title: "Images to PDF",
+    category: "Convert",
+    multiFile: true,
+    mode: "view",
+    preview: "images-to-pdf",
+    endpoint: "images-to-pdf",
+    fileAccept: ".jpg,.jpeg,.png",
+    fileTypeLabel: "image",
+    filenameSuffix: "_combined",
+    fields: [
+      { name: "filename", label: "Output filename", type: "text", default: "" },
+      {
+        name: "fit_mode",
+        label: "Fit mode",
+        type: "select",
+        options: [
+          { value: "fit", label: "Fit (show the whole image)" },
+          { value: "fill", label: "Fill (crop to fill the page)" },
+        ],
+        default: "fit",
+      },
+    ],
+  },
 };

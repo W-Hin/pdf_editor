@@ -71,7 +71,7 @@ export default function ToolView() {
           if (config.filenameSuffix && !fieldValues.filename) {
             setFieldValues((v) => ({
               ...v,
-              filename: primary.filename.replace(/\.pdf$/i, "") + config.filenameSuffix,
+              filename: primary.filename.replace(/\.[^.]+$/, "") + config.filenameSuffix,
             }));
           }
         }
@@ -262,8 +262,15 @@ export default function ToolView() {
 
       <label className="tool-view__upload">
         <UploadSimple size={18} weight="regular" />
-        {config.multiFile ? "Add PDF file(s)…" : "Choose a PDF file…"}
-        <input type="file" accept=".pdf" multiple={config.multiFile} onChange={handleFilePick} />
+        {config.multiFile
+          ? `Add ${config.fileTypeLabel ?? "PDF"} file(s)…`
+          : `Choose a ${config.fileTypeLabel ?? "PDF"} file…`}
+        <input
+          type="file"
+          accept={config.fileAccept ?? ".pdf"}
+          multiple={config.multiFile}
+          onChange={handleFilePick}
+        />
       </label>
 
       {files.length > 0 && (
