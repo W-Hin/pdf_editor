@@ -14,6 +14,9 @@ const MODES = [
 
 const FAMILY_OPTIONS = ["helvetica", "times", "courier"];
 
+const MARKUP_COLORS = ["#1f2937", "#e03131", "#f08c00", "#2f9e44", "#1971c2", "#9c36b5"];
+const STROKE_WIDTHS = { thin: 1, medium: 3, thick: 6 };
+
 export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   const stageRef = useRef(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -24,6 +27,9 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   const [editingRunIndex, setEditingRunIndex] = useState(null);
   const [draftText, setDraftText] = useState("");
   const [draftOverride, setDraftOverride] = useState(null);
+  const [drawColor, setDrawColor] = useState(MARKUP_COLORS[0]);
+  const [drawWidth, setDrawWidth] = useState("medium");
+  const [activeStroke, setActiveStroke] = useState(null);
 
   useEffect(() => {
     if (!fileId) return;
@@ -61,9 +67,28 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
   // Stubs — replaced (body only) by later tasks. Kept here so the stage's
   // dispatcher below never needs to change as modes are filled in.
-  function handleDrawMouseDown() {}
-  function handleDrawMouseMove() {}
-  function handleDrawMouseUp() {}
+  function handleDrawMouseDown(e) {
+    const point = pointFromEvent(e);
+    if (!point) return;
+    setActiveStroke([point]);
+  }
+
+  function handleDrawMouseMove(e) {
+    if (!activeStroke) return;
+    const point = pointFromEvent(e);
+    if (!point) return;
+    setActiveStroke((pts) => [...pts, point]);
+  }
+
+  function handleDrawMouseUp() {
+    if (!activeStroke || activeStroke.length === 0) return;
+    const next = [
+      ...elements,
+      { id: newElementId(), type: "stroke", page: currentPage, points: activeStroke, color: drawColor, width: STROKE_WIDTHS[drawWidth] },
+    ];
+    commitElements(next);
+    setActiveStroke(null);
+  }
   function handleShapeMouseDown() {}
   function handleShapeMouseMove() {}
   function handleShapeMouseUp() {}
@@ -149,6 +174,31 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
         ))}
       </div>
 
+      {activeMode === "draw" && (
+        <div className="edit-pdf-canvas__style-bar">
+          {MARKUP_COLORS.map((c) => (
+            <button
+              key={c}
+              type="button"
+              className={c === drawColor ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active" : "edit-pdf-canvas__color-swatch"}
+              style={{ background: c }}
+              onClick={() => setDrawColor(c)}
+              aria-label={`Color ${c}`}
+            />
+          ))}
+          {Object.keys(STROKE_WIDTHS).map((w) => (
+            <button
+              key={w}
+              type="button"
+              className={w === drawWidth ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+              onClick={() => setDrawWidth(w)}
+            >
+              {w}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="edit-pdf-canvas__nav">
         <button type="button" onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1}>
           <CaretLeft size={14} weight="bold" />
@@ -177,6 +227,54 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
           alt={`Page ${currentPage} preview`}
           draggable={false}
         />
+
+        <svg className="edit-pdf-canvas__strokes" viewBox="0 0 100 100" preserveAspectRatio="none">
+          {elements
+            .filter((el) => el.type === "stroke" && el.page === currentPage)
+            .map((el) => (
+              <g key={el.id} onClick={() => setSelectedId(el.id)}>
+                <polyline
+                  points={el.points.map((p) => `${p.x * 100},${p.y * 100}`).join(" ")}
+                  fill="none"
+                  stroke={el.color}
+                  strokeWidth={el.width / 3}
+                  vectorEffect="non-scaling-stroke"
+                  className={el.id === selectedId ? "edit-pdf-canvas__stroke edit-pdf-canvas__stroke--selected" : "edit-pdf-canvas__stroke"}
+                />
+              </g>
+            ))}
+          {activeStroke && (
+            <polyline
+              points={activeStroke.map((p) => `${p.x * 100},${p.y * 100}`).join(" ")}
+              fill="none"
+              stroke={drawColor}
+              strokeWidth={STROKE_WIDTHS[drawWidth] / 3}
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
+        </svg>
+
+        {elements
+          .filter((el) => el.type === "stroke" && el.page === currentPage)
+          .map((el) => {
+            const xs = el.points.map((p) => p.x);
+            const ys = el.points.map((p) => p.y);
+            const left = Math.min(...xs);
+            const top = Math.min(...ys);
+            return (
+              <button
+                key={`${el.id}-remove`}
+                type="button"
+                className="edit-pdf-canvas__element-remove"
+                style={{ left: `${left * 100}%`, top: `${top * 100}%` }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => commitElements(elements.filter((e) => e.id !== el.id))}
+                aria-label="Remove this stroke"
+              >
+                <X size={12} weight="bold" />
+              </button>
+            );
+          })}
 
         {activeMode === "text" &&
           runs.map((run) => {

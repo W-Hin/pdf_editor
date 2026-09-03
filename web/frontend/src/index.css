@@ -691,6 +691,67 @@ h1 {
   gap: var(--space-2);
 }
 
+.edit-pdf-canvas__strokes {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.edit-pdf-canvas__stroke--selected {
+  filter: drop-shadow(0 0 2px var(--color-accent));
+}
+
+.edit-pdf-canvas__element-remove {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.edit-pdf-canvas__style-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.edit-pdf-canvas__color-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+
+.edit-pdf-canvas__color-swatch--active {
+  border-color: var(--color-accent);
+}
+
+.edit-pdf-canvas__width-button {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-card);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.edit-pdf-canvas__width-button--active {
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+  border-color: var(--color-accent);
+}
+
 /* ---------- Image page preview (Images to PDF) ---------- */
 
 .image-page-preview {
