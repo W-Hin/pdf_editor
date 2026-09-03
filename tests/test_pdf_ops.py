@@ -1460,24 +1460,32 @@ def test_extract_form_fields_bbox_fractions_are_displayed_space(tmp_path):
 def test_extract_form_fields_skips_unsupported_types(tmp_path):
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
-    widget = fitz.Widget()
-    widget.field_name = "full_name"
-    widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
-    widget.rect = fitz.Rect(72, 100, 300, 120)
-    page.add_widget(widget)
+
+    text_widget = fitz.Widget()
+    text_widget.field_name = "full_name"
+    text_widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    text_widget.rect = fitz.Rect(72, 100, 300, 120)
+    page.add_widget(text_widget)
+
+    listbox_widget = fitz.Widget()
+    listbox_widget.field_name = "options"
+    listbox_widget.field_type = fitz.PDF_WIDGET_TYPE_LISTBOX
+    listbox_widget.rect = fitz.Rect(72, 220, 250, 260)
+    listbox_widget.choice_values = ["A", "B", "C"]
+    page.add_widget(listbox_widget)
+
     input_path = tmp_path / "form.pdf"
     doc.save(str(input_path))
     doc.close()
 
     fields = extract_form_fields(str(input_path))
 
-    # Only the one supported (Text) widget is present — this test's real
-    # purpose is documenting the filter exists; a RadioButton/ListBox widget
-    # is not constructed here since building one requires additional setup
-    # unrelated to this function's own logic, but the type-set filter in the
-    # implementation is what Step 3 must include.
+    # A ListBox widget was also added above — its absence here is what proves
+    # the type-set filter genuinely excludes unsupported types, not just that
+    # it happens to only see supported ones.
     assert len(fields) == 1
     assert fields[0]["type"] == "text"
+    assert fields[0]["label"] == "full_name"
 
 
 def test_extract_form_fields_no_fields_returns_empty_list(tmp_path):
