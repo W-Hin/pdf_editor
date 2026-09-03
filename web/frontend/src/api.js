@@ -27,6 +27,11 @@ export function thumbnailUrl(fileId, pageNumber, maxSize) {
   return `${BASE}/files/${fileId}/pages/${pageNumber}/thumbnail${query}`;
 }
 
+export async function fetchTextRuns(fileId, pageNumber) {
+  const res = await request(`/files/${fileId}/pages/${pageNumber}/text-runs`);
+  return res.json();
+}
+
 export function downloadUrl(fileId) {
   return `${BASE}/files/${fileId}/download`;
 }
