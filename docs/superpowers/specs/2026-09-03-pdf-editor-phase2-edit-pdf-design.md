@@ -86,6 +86,16 @@ before writing this spec, not assumed from documentation:
   native aspect ratio) with corner resize handles (aspect-ratio locked) and body-drag to reposition.
   No explicit "commit" step — placing it adds the element immediately, and handle drags update that
   same element in place.
+- **Selection, clipboard, undo/redo:** clicking an element's body (not its × corner) selects it —
+  shown via a highlight outline — enabling copy/cut; `text_edit` elements aren't selectable this
+  way (clicking one keeps reopening it for re-editing, since copying a text edit to another
+  position doesn't make sense). Ctrl+C/Ctrl+X/Ctrl+V copy, cut, and paste the selected
+  stroke/shape/highlight/image element (paste lands on the currently-viewed page, offset +3%
+  x/y). Ctrl+Z/Ctrl+Y undo/redo the whole `elements` array via a snapshot history, one gesture
+  (a full drag, not each mousemove) per undo step; Undo/Redo also get toolbar buttons (disabled
+  when their stack is empty), but copy/cut/paste stay keyboard-only. All five shortcuts are
+  scoped to the canvas being mounted and focus not being inside a text input, so they don't
+  hijack native copy/paste in the Edit Text inline box or elsewhere in the app.
 
 ## Architecture
 
@@ -93,16 +103,21 @@ before writing this spec, not assumed from documentation:
 
 One flat array `elements` for the whole document (page + navigation conventions identical to
 Redact — Previous/Next buttons, "Page X of N (K pages have elements)"), each entry tagged by
-`type`, all position/size fields as fractions of the page's own displayed dimensions (matching
-Crop/Redact's existing convention):
+`type` and carrying a stable `id` (a frontend-generated identifier, not the array index, so
+selection/undo/copy stay correct across removals and reorders — never sent to the backend), all
+position/size fields as fractions of the page's own displayed dimensions (matching Crop/Redact's
+existing convention):
 
 ```js
-{type: "text_edit", page, run_index, text, font_override}  // font_override: {family, bold, italic, size} | null
-{type: "stroke",    page, points: [{x, y}, ...], color, width}
-{type: "shape",     page, shape: "rectangle" | "ellipse" | "line" | "arrow", x0, y0, x1, y1, color, width, filled}
-{type: "highlight", page, top, left, right, bottom, color}
-{type: "image",     page, file_id, x, y, width, height}
+{id, type: "text_edit", page, run_index, text, font_override}  // font_override: {family, bold, italic, size} | null
+{id, type: "stroke",    page, points: [{x, y}, ...], color, width}
+{id, type: "shape",     page, shape: "rectangle" | "ellipse" | "line" | "arrow", x0, y0, x1, y1, color, width, filled}
+{id, type: "highlight", page, top, left, right, bottom, color}
+{id, type: "image",     page, file_id, x, y, width, height}
 ```
+
+`id` is stripped before the array is serialized into the `POST /tools/edit-pdf` request body —
+the backend never sees it, since element identity only matters for frontend interaction state.
 
 ### Backend
 
@@ -181,6 +196,15 @@ over the same ~700px `thumbnailUrl` preview Crop/Redact use, `key={primaryFile.i
   updated in place by further handle drags.
 - **Removal:** every rendered element (strokes via their point-array bounding box) shows a small ×
   at its bounding box corner in any mode; clicking it removes that entry from `elements`.
+- **Selection, clipboard, undo/redo:** clicking an element's body (any type except `text_edit`)
+  toggles it selected, rendered with a distinct outline; clicking empty canvas or pressing Escape
+  deselects. A `history` ref holds `{undoStack, redoStack}` (arrays of full `elements` snapshots);
+  every mutation (add/remove/edit/paste, and drag-based edits captured once at gesture-start, not
+  per mousemove) pushes the pre-mutation snapshot onto `undoStack` and clears `redoStack`. A
+  document-level keydown listener (active only while this canvas is mounted, ignored when
+  `document.activeElement` is a text input) handles Ctrl+C/X/V against the selected element and
+  Ctrl+Z/Y against the history stacks; the toolbar's Undo/Redo buttons call the same handlers and
+  are disabled when their stack is empty.
 - **Run button:** disabled until `elements.length > 0`, following the same inline
   `config.preview === "edit-pdf" && elements.length === 0` gate pattern already established in
   `ToolView.jsx`'s shared `handleRun`/disabled-clause by Crop and Redact — no other tool's behavior
@@ -226,7 +250,9 @@ over the same ~700px `thumbnailUrl` preview Crop/Redact use, `key={primaryFile.i
 - No new frontend test infrastructure — `EditPdfCanvas`'s per-mode add/remove/re-edit/navigate
   behavior verified via manual browser testing at the end of implementation, per this project's
   established convention, covering: each mode's interaction, cross-mode element visibility and
-  removal, page navigation preserving per-page elements, and the file-switch reset.
+  removal, page navigation preserving per-page elements, the file-switch reset, and the
+  selection/clipboard/undo/redo shortcuts (including that they don't fire while typing in the
+  Edit Text inline box or the app's filename field).
 
 ## Out of scope (for this spec)
 
@@ -235,6 +261,9 @@ over the same ~700px `thumbnailUrl` preview Crop/Redact use, `key={primaryFile.i
 - Background-aware erase fill for text editing (documented limitation instead — see Error
   handling).
 - Any additional shape types beyond Rectangle/Ellipse/Line/Arrow.
-- Undo/redo beyond per-element removal (no history stack, no keyboard-shortcut undo).
+- Copy/cut/paste of `text_edit` elements (doesn't make sense — they're anchored to a specific
+  existing run on a specific page, not a freeform position).
+- Toolbar buttons for copy/cut/paste (keyboard-only, per explicit user choice — only Undo/Redo get
+  buttons).
 - Merging adjacent text runs into one editable unit — each click-to-edit targets exactly one
   `get_text` span, matching "text run," not a paragraph or sentence.
