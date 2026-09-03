@@ -208,6 +208,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     imageDragRef.current = { id: el.id, mode, start: point, startElement: { ...el } };
     window.addEventListener("mousemove", handleImageDragMove);
     window.addEventListener("mouseup", handleImageDragEnd);
+    window.addEventListener("blur", handleImageDragEnd);
   }
 
   function handleImageDragMove(e) {
@@ -224,9 +225,11 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
       const y = Math.min(Math.max(startElement.y + dy, 0), 1 - startElement.height);
       updated = { ...startElement, x, y };
     } else {
-      const scale = Math.max(0.05, startElement.width + dx) / startElement.width;
-      const width = Math.min(1 - startElement.x, startElement.width * scale);
-      const height = width * (startElement.height / startElement.width);
+      const aspect = startElement.height / startElement.width;
+      const widthCap = Math.min(1 - startElement.x, (1 - startElement.y) / aspect);
+      const desiredWidth = Math.max(0.05, startElement.width + dx);
+      const width = Math.min(desiredWidth, widthCap);
+      const height = width * aspect;
       updated = { ...startElement, width, height };
     }
     setElements((prev) => prev.map((el) => (el.id === drag.id ? updated : el)));
@@ -235,6 +238,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   function handleImageDragEnd() {
     window.removeEventListener("mousemove", handleImageDragMove);
     window.removeEventListener("mouseup", handleImageDragEnd);
+    window.removeEventListener("blur", handleImageDragEnd);
     imageDragRef.current = null;
     setElements((current) => {
       onChange(current);
