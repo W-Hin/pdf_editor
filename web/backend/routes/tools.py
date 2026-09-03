@@ -344,8 +344,28 @@ class ImageElement(BaseModel):
     height: float
 
 
+class NewTextElement(BaseModel):
+    type: Literal["new_text"]
+    page: int
+    x: float
+    y: float
+    width: float
+    height: float
+    text: str
+    family: str
+    bold: bool
+    italic: bool
+    underline: bool
+    # A blanked number input arrives as 0 from the frontend; insert_text()
+    # accepts fontsize=0 silently, rendering the text invisibly. Reject it
+    # here, matching FontOverride.size's identical guard above.
+    size: float = Field(gt=0)
+    color: str
+    align: str
+
+
 EditElement = Annotated[
-    Union[TextEditElement, StrokeElement, ShapeElement, HighlightElement, ImageElement],
+    Union[TextEditElement, StrokeElement, ShapeElement, HighlightElement, ImageElement, NewTextElement],
     Field(discriminator="type"),
 ]
 

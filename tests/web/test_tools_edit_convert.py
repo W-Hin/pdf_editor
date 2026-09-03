@@ -351,6 +351,46 @@ def test_edit_pdf_image_element_unknown_file_id_returns_422():
     assert response.status_code == 422
 
 
+def test_edit_pdf_new_text_element_succeeds():
+    upload = _upload_pdf()
+    response = client.post(
+        "/api/tools/edit-pdf",
+        json={
+            "file_id": upload["id"],
+            "elements": [
+                {
+                    "type": "new_text", "page": 1,
+                    "x": 0.1, "y": 0.1, "width": 0.3, "height": 0.1,
+                    "text": "Hello", "family": "helvetica", "bold": False,
+                    "italic": False, "underline": False, "size": 14,
+                    "color": "#000000", "align": "left",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200
+
+
+def test_edit_pdf_new_text_rejects_non_positive_size():
+    upload = _upload_pdf()
+    response = client.post(
+        "/api/tools/edit-pdf",
+        json={
+            "file_id": upload["id"],
+            "elements": [
+                {
+                    "type": "new_text", "page": 1,
+                    "x": 0.1, "y": 0.1, "width": 0.3, "height": 0.1,
+                    "text": "Hello", "family": "helvetica", "bold": False,
+                    "italic": False, "underline": False, "size": 0,
+                    "color": "#000000", "align": "left",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 422
+
+
 def test_get_form_fields_returns_fields():
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
