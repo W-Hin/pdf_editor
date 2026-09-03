@@ -319,7 +319,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     e.stopPropagation();
     const point = pointFromEvent(e);
     if (!point) return;
-    imageDragRef.current = { id: el.id, mode, start: point, startElement: { ...el }, startElementsSnapshot: elements };
+    imageDragRef.current = { id: el.id, mode, start: point, startElement: { ...el }, startElementsSnapshot: elements, moved: false };
     window.addEventListener("mousemove", handleImageDragMove);
     window.addEventListener("mouseup", handleImageDragEnd);
     window.addEventListener("blur", handleImageDragEnd);
@@ -330,6 +330,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     if (!drag) return;
     const point = pointFromEvent(e);
     if (!point) return;
+    drag.moved = true;
     const dx = point.x - drag.start.x;
     const dy = point.y - drag.start.y;
     const { startElement } = drag;
@@ -346,6 +347,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
       const height = width * aspect;
       updated = { ...startElement, width, height };
     }
+    drag.latestElement = updated;
     setElements((prev) => prev.map((el) => (el.id === drag.id ? updated : el)));
   }
 
@@ -355,10 +357,13 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     window.removeEventListener("blur", handleImageDragEnd);
     const drag = imageDragRef.current;
     imageDragRef.current = null;
-    if (!drag) return;
+    if (!drag || !drag.moved) return;
     historyRef.current = { undoStack: [...historyRef.current.undoStack, drag.startElementsSnapshot], redoStack: [] };
     setHistoryVersion((v) => v + 1);
-    onChange(elementsRef.current);
+    const finalElements = drag.latestElement
+      ? elementsRef.current.map((el) => (el.id === drag.id ? drag.latestElement : el))
+      : elementsRef.current;
+    onChange(finalElements);
   }
 
   function handleStageMouseDown(e) {
