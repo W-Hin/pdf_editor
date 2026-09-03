@@ -1,7 +1,8 @@
 from pathlib import Path
+from typing import Annotated, Literal, Union
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.convert import convert_to_word
 from app.core.errors import PDFError
@@ -10,6 +11,7 @@ from app.core.pdf_ops import (
     add_watermark,
     compress_pdf,
     crop_pdf,
+    edit_pdf,
     extract_pages,
     get_page_count,
     images_to_pdf,
@@ -275,3 +277,92 @@ def images_to_pdf_route(req: ImagesToPdfRequest):
     images_to_pdf(input_paths, str(output_path), fit_mode=req.fit_mode)
     source_names = [Path(p).name for p in input_paths]
     return _output_response([output_path], "Images to PDF", source_names)
+
+
+class FontOverride(BaseModel):
+    family: str
+    bold: bool
+    italic: bool
+    size: float
+
+
+class TextEditElement(BaseModel):
+    type: Literal["text_edit"]
+    page: int
+    run_index: int
+    text: str
+    font_override: FontOverride | None = None
+
+
+class StrokePoint(BaseModel):
+    x: float
+    y: float
+
+
+class StrokeElement(BaseModel):
+    type: Literal["stroke"]
+    page: int
+    points: list[StrokePoint]
+    color: str
+    width: float
+
+
+class ShapeElement(BaseModel):
+    type: Literal["shape"]
+    page: int
+    shape: str
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    color: str
+    width: float
+    filled: bool = False
+
+
+class HighlightElement(BaseModel):
+    type: Literal["highlight"]
+    page: int
+    top: float
+    right: float
+    bottom: float
+    left: float
+    color: str
+
+
+class ImageElement(BaseModel):
+    type: Literal["image"]
+    page: int
+    file_id: str
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+EditElement = Annotated[
+    Union[TextEditElement, StrokeElement, ShapeElement, HighlightElement, ImageElement],
+    Field(discriminator="type"),
+]
+
+
+class EditPdfRequest(BaseModel):
+    file_id: str
+    elements: list[EditElement]
+
+
+@router.post("/edit-pdf")
+def edit_pdf_route(req: EditPdfRequest):
+    input_path = str(storage.resolve_file(req.file_id))
+    stem = Path(input_path).stem
+    output_path = storage.output_path_for(stem, "_edited")
+    image_file_ids = {el.file_id for el in req.elements if el.type == "image"}
+    image_paths = {}
+    for fid in image_file_ids:
+        try:
+            image_paths[fid] = str(storage.resolve_file(fid))
+        except FileNotFoundError:
+            pass  # left out of image_paths; edit_pdf raises a PDFError (422) for it
+    elements = [el.model_dump() for el in req.elements]
+    edit_pdf(input_path, str(output_path), elements, image_paths)
+    return _output_response([output_path], "Edit PDF", [Path(input_path).name])

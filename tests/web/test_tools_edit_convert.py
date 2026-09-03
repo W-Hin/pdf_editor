@@ -286,3 +286,66 @@ def test_get_text_runs_returns_runs():
 def test_get_text_runs_unknown_file_id_returns_404():
     response = client.get("/api/files/nope/pages/1/text-runs")
     assert response.status_code == 404
+
+
+def test_edit_pdf_returns_one_output():
+    upload = _upload_pdf()
+    response = client.post(
+        "/api/tools/edit-pdf",
+        json={
+            "file_id": upload["id"],
+            "elements": [
+                {"type": "highlight", "page": 1, "top": 0.1, "right": 0.1, "bottom": 0.1, "left": 0.1, "color": "#ffff00"}
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert len(response.json()["outputs"]) == 1
+
+
+def test_edit_pdf_text_edit_element_succeeds():
+    upload = _upload_pdf()
+    response = client.post(
+        "/api/tools/edit-pdf",
+        json={
+            "file_id": upload["id"],
+            "elements": [
+                {"type": "text_edit", "page": 1, "run_index": 0, "text": "Replaced", "font_override": None}
+            ],
+        },
+    )
+    assert response.status_code == 200
+
+
+def test_edit_pdf_rejects_empty_elements():
+    upload = _upload_pdf()
+    response = client.post("/api/tools/edit-pdf", json={"file_id": upload["id"], "elements": []})
+    assert response.status_code == 422
+    assert isinstance(response.json()["detail"], str)
+
+
+def test_edit_pdf_unknown_file_id_returns_404():
+    response = client.post(
+        "/api/tools/edit-pdf",
+        json={
+            "file_id": "nope",
+            "elements": [
+                {"type": "highlight", "page": 1, "top": 0.1, "right": 0.1, "bottom": 0.1, "left": 0.1, "color": "#ffff00"}
+            ],
+        },
+    )
+    assert response.status_code == 404
+
+
+def test_edit_pdf_image_element_unknown_file_id_returns_422():
+    upload = _upload_pdf()
+    response = client.post(
+        "/api/tools/edit-pdf",
+        json={
+            "file_id": upload["id"],
+            "elements": [
+                {"type": "image", "page": 1, "file_id": "missing-image", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.1}
+            ],
+        },
+    )
+    assert response.status_code == 422
