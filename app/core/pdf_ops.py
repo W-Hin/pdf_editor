@@ -1,4 +1,5 @@
 import math
+import re
 from pathlib import Path
 
 import fitz
@@ -482,12 +483,25 @@ def _closest_base14_family(font_name: str) -> str:
     return "helvetica"
 
 
+_SUBSET_PREFIX_RE = re.compile(r"^[A-Z]{6}\+")
+
+
 def _extract_embedded_font(doc: fitz.Document, page: fitz.Page, span_font_name: str) -> bytes | None:
     """Real font-file bytes for span_font_name if it's actually embedded on
-    this page, else None (base-14 fonts have nothing to extract)."""
+    this page, else None (base-14 fonts have nothing to extract).
+
+    get_page_fonts() reports a subset-prefixed basefont for subset-embedded
+    fonts (e.g. "AAAAAA+Garet-Bold" — six uppercase letters, a "+", then the
+    real name), which is how the overwhelming majority of real-world PDFs
+    (Word/LaTeX exports) embed fonts. get_text("dict")'s span "font" value
+    never carries that prefix, so an exact-match comparison against the raw
+    basefont silently misses every subset-embedded font. Strip the prefix
+    before comparing (verified empirically via doc.subset_fonts()).
+    """
     for f in doc.get_page_fonts(page.number, full=True):
         xref, basefont = f[0], f[3]
-        if basefont == span_font_name:
+        normalized = _SUBSET_PREFIX_RE.sub("", basefont)
+        if basefont == span_font_name or normalized == span_font_name:
             try:
                 extracted = doc.extract_font(xref)
                 buf = extracted[3]
@@ -515,6 +529,7 @@ def _validate_stroke(el: dict) -> None:
     for pt in el["points"]:
         if not (0 <= pt["x"] <= 1) or not (0 <= pt["y"] <= 1):
             raise PDFError("Stroke points must be within the page.")
+    _hex_to_rgb(el["color"])  # raises PDFError up front on a malformed hex
 
 
 def _validate_shape(el: dict) -> None:
@@ -527,6 +542,7 @@ def _validate_shape(el: dict) -> None:
             raise PDFError("The shape must have a positive width and height.")
     elif el["x0"] == el["x1"] and el["y0"] == el["y1"]:
         raise PDFError("A line or arrow must have two distinct points.")
+    _hex_to_rgb(el["color"])  # raises PDFError up front on a malformed hex
 
 
 def _validate_highlight(el: dict) -> None:
@@ -536,6 +552,7 @@ def _validate_highlight(el: dict) -> None:
             raise PDFError(f"Highlight '{name}' must be between 0 and 1 (got {value}).")
     if el["left"] + el["right"] >= 1 or el["top"] + el["bottom"] >= 1:
         raise PDFError("The highlight area must have a positive width and height.")
+    _hex_to_rgb(el["color"])  # raises PDFError up front on a malformed hex
 
 
 def _validate_image_element(el: dict, image_paths: dict[str, str]) -> None:
@@ -551,7 +568,8 @@ def _validate_image_element(el: dict, image_paths: dict[str, str]) -> None:
 
 def _apply_text_edit(doc: fitz.Document, page: fitz.Page, span: dict, replacement_text: str, font_override: dict | None, internal_fontname: str) -> tuple:
     """Adds the redact annotation for this run's original text and returns the
-    (origin, text, fontname, size) needed to insert its replacement.
+    (origin, text, fontname, size, embedded_buf) needed to insert its
+    replacement.
 
     Verified empirically: inserting the replacement text right away (before
     page.apply_redactions() has actually run) does NOT work in this PyMuPDF
@@ -561,6 +579,14 @@ def _apply_text_edit(doc: fitz.Document, page: fitz.Page, span: dict, replacemen
     the moment it runs, not just what was there when the annotation was
     added. The caller must call page.apply_redactions() first and only then
     insert the text this function returns.
+
+    Also verified empirically: page.apply_redactions() wipes the page's font
+    resources, so registering an embedded font via page.insert_font() here
+    (before apply_redactions runs) is pointless — by the time the deferred
+    insert_text() call happens, that font is gone and insert_text() raises
+    "need font file or buffer". embedded_buf is therefore returned uncommitted
+    so the caller can call page.insert_font() again immediately before the
+    matching insert_text(), AFTER apply_redactions() has already run.
     """
     raw_bbox = fitz.Rect(span["bbox"])
     page.add_redact_annot(raw_bbox, fill=(1, 1, 1))
@@ -568,25 +594,33 @@ def _apply_text_edit(doc: fitz.Document, page: fitz.Page, span: dict, replacemen
     detected_bold = bool(span["flags"] & 16)
     detected_italic = bool(span["flags"] & 2)
 
+    embedded_buf = None
     if font_override:
         fontname = _base14_alias(font_override["family"], font_override["bold"], font_override["italic"])
         size = font_override["size"]
     else:
         embedded_buf = _extract_embedded_font(doc, page, span["font"])
         if embedded_buf:
-            page.insert_font(fontname=internal_fontname, fontbuffer=embedded_buf)
             fontname = internal_fontname
         else:
             fontname = _base14_alias(_closest_base14_family(span["font"]), detected_bold, detected_italic)
         size = span["size"]
 
-    measured = fitz.get_text_length(replacement_text, fontname=fontname, fontsize=size)
+    # fitz.get_text_length() only understands base-14/built-in font names —
+    # it raises ValueError for an internal/embedded fontname like "TE1_0".
+    # For the embedded-font branch, measure width with a throwaway fitz.Font
+    # built directly from the font buffer instead (verified empirically).
+    if embedded_buf is not None:
+        measured = fitz.Font(fontbuffer=embedded_buf).text_length(replacement_text, fontsize=size)
+    else:
+        measured = fitz.get_text_length(replacement_text, fontname=fontname, fontsize=size)
+
     original_width = raw_bbox.width
     if measured > original_width > 0:
         floor = max(_TEXT_EDIT_MIN_SIZE, size * _TEXT_EDIT_SHRINK_FACTOR)
         size = max(original_width / measured * size, floor)
 
-    return (span["origin"], replacement_text, fontname, size)
+    return (span["origin"], replacement_text, fontname, size, embedded_buf)
 
 
 def _apply_stroke(page: fitz.Page, el: dict) -> None:
@@ -730,7 +764,13 @@ def edit_pdf(input_path: str, output_path: str, elements: list[dict], image_path
                     _apply_text_edit(doc, page, span, el["text"], el.get("font_override"), f"TE{page_num}_{i}")
                 )
             page.apply_redactions()
-            for origin, text, fontname, size in pending_inserts:
+            for origin, text, fontname, size, embedded_buf in pending_inserts:
+                # apply_redactions() wipes the page's font resources, so an
+                # embedded font must be (re-)registered here, after redaction
+                # has already run, immediately before the insert_text() call
+                # that needs it — registering it earlier is silently undone.
+                if embedded_buf is not None:
+                    page.insert_font(fontname=fontname, fontbuffer=embedded_buf)
                 page.insert_text(origin, text, fontsize=size, fontname=fontname, color=(0, 0, 0))
 
         # Then strokes/shapes/highlights/images, in the order the user created them.

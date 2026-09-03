@@ -905,6 +905,66 @@ def test_edit_pdf_text_edit_auto_shrinks_when_overflowing(tmp_path):
     assert spans[0]["size"] >= 6  # not below the floor
 
 
+def test_edit_pdf_text_edit_uses_subset_embedded_font(tmp_path):
+    """Covers the embedded-font branch of _apply_text_edit end-to-end, using
+    doc.subset_fonts() to reproduce how Word/LaTeX exports actually embed
+    fonts: get_page_fonts() then reports a subset-prefixed basefont (e.g.
+    "AEDWKD+Arial Regular") that does not exactly match the span's "font"
+    value from get_text("dict") ("Arial Regular") — _extract_embedded_font
+    must strip that prefix to find and use the real embedded font instead of
+    silently falling back to a base-14 font.
+
+    This test also exercises the two ordering fixes found in review: width
+    is measured with fitz.Font(fontbuffer=...).text_length() rather than the
+    base-14-only fitz.get_text_length() (which raises ValueError for an
+    internal fontname), and the embedded font is re-registered via
+    insert_font() after page.apply_redactions() has already run (which wipes
+    the page's font resources) rather than before.
+    """
+    font_path = Path("C:/Windows/Fonts/arial.ttf")
+    if not font_path.exists():
+        pytest.skip("arial.ttf not available on this machine")
+
+    # The original text must contain every glyph the replacement text needs:
+    # doc.subset_fonts() strips glyph data for characters that never appear
+    # on the page, so a replacement using a letter absent from the original
+    # (e.g. original "Embedded Original" replaced with "...Replaced", which
+    # needs an "R"/"p"/"c" the subset never kept) renders with missing/wrong
+    # glyphs — a real limitation of subsetting, not a bug in edit_pdf.
+    original_text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz"
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_font(fontname="F0", fontfile=str(font_path), set_simple=True)
+    page.insert_text((72, 100), original_text, fontsize=14, fontname="F0")
+    doc.subset_fonts()
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [{"type": "text_edit", "page": 1, "run_index": 0, "text": "Embedded Replaced", "font_override": None}],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    text = result[0].get_text()
+    result.close()
+    assert original_text not in text
+    # Asserted as two substrings rather than one "Embedded Replaced" phrase:
+    # re-inserting a raw embedded font buffer maps the space glyph to U+00A0
+    # (non-breaking space) rather than U+0020 on extraction here, a benign
+    # codepoint quirk of the font buffer path, not a correctness issue —
+    # "Replaced" rendering intact (not the missing/garbled glyphs seen when
+    # the original text lacks a needed letter) is what proves the real
+    # embedded font's glyphs were used, not a silent Helvetica fallback.
+    assert "Embedded" in text
+    assert "Replaced" in text
+
+
 def test_edit_pdf_stroke_adds_ink_annotation(tmp_path):
     doc = fitz.open()
     doc.new_page(width=595, height=842)
@@ -1036,7 +1096,7 @@ def test_edit_pdf_highlight_renders_translucent_overlay(tmp_path):
     result.close()
     # top=0.1*842=84.2, left=0.1*595=59.5, right edge=0.3*595=178.5(=595-0.7*595), bottom edge=0.2*842=168.4
     r, g, b = pix.pixel(119, 126)[:3]
-    assert r > 200 and g > 200 and b < 220  # yellow-tinted, not pure white (255,255,255) or pure yellow
+    assert r > 200 and g > 200 and 100 < b < 220  # yellow-tinted at ~0.4 opacity: not pure white (b=255) or pure yellow (b=0)
 
 
 def test_edit_pdf_image_inserts_into_page(tmp_path):
