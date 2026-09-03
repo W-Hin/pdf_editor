@@ -97,7 +97,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   const textDraftAreaRef = useRef(null);
   const imageFileInputRef = useRef(null);
   const pendingImageDropRef = useRef(null);
-  const imageDragRef = useRef(null);
+  const dragRef = useRef(null);
   const historyRef = useRef({ undoStack: [], redoStack: [] });
   const [historyVersion, setHistoryVersion] = useState(0); // bump to force a re-render when the stacks change
   const clipboardRef = useRef(null);
@@ -455,6 +455,11 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     commitElements(next);
   }
 
+  function openTextDraftForEdit(el) {
+    const { id, page, ...rest } = el;
+    setTextDraft({ id, ...rest });
+  }
+
   function handleTextDraftBlur(e) {
     if (!e.currentTarget.contains(e.relatedTarget)) {
       commitTextDraft();
@@ -476,18 +481,21 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     }
   }
 
-  function startImageDrag(el, mode, e) {
+  function startElementDrag(el, mode, e, options = {}) {
     e.stopPropagation();
     const point = pointFromEvent(e);
     if (!point) return;
-    imageDragRef.current = { id: el.id, mode, start: point, startElement: { ...el }, startElementsSnapshot: elements, moved: false };
-    window.addEventListener("mousemove", handleImageDragMove);
-    window.addEventListener("mouseup", handleImageDragEnd);
-    window.addEventListener("blur", handleImageDragEnd);
+    dragRef.current = {
+      id: el.id, mode, start: point, startElement: { ...el }, startElementsSnapshot: elements, moved: false,
+      lockAspect: options.lockAspect ?? false,
+    };
+    window.addEventListener("mousemove", handleElementDragMove);
+    window.addEventListener("mouseup", handleElementDragEnd);
+    window.addEventListener("blur", handleElementDragEnd);
   }
 
-  function handleImageDragMove(e) {
-    const drag = imageDragRef.current;
+  function handleElementDragMove(e) {
+    const drag = dragRef.current;
     if (!drag) return;
     const point = pointFromEvent(e);
     if (!point) return;
@@ -500,24 +508,28 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
       const x = Math.min(Math.max(startElement.x + dx, 0), 1 - startElement.width);
       const y = Math.min(Math.max(startElement.y + dy, 0), 1 - startElement.height);
       updated = { ...startElement, x, y };
-    } else {
+    } else if (drag.lockAspect) {
       const aspect = startElement.height / startElement.width;
       const widthCap = Math.min(1 - startElement.x, (1 - startElement.y) / aspect);
       const desiredWidth = Math.max(0.05, startElement.width + dx);
       const width = Math.min(desiredWidth, widthCap);
       const height = width * aspect;
       updated = { ...startElement, width, height };
+    } else {
+      const width = Math.min(Math.max(0.05, startElement.width + dx), 1 - startElement.x);
+      const height = Math.min(Math.max(0.03, startElement.height + dy), 1 - startElement.y);
+      updated = { ...startElement, width, height };
     }
     drag.latestElement = updated;
     setElements((prev) => prev.map((el) => (el.id === drag.id ? updated : el)));
   }
 
-  function handleImageDragEnd() {
-    window.removeEventListener("mousemove", handleImageDragMove);
-    window.removeEventListener("mouseup", handleImageDragEnd);
-    window.removeEventListener("blur", handleImageDragEnd);
-    const drag = imageDragRef.current;
-    imageDragRef.current = null;
+  function handleElementDragEnd() {
+    window.removeEventListener("mousemove", handleElementDragMove);
+    window.removeEventListener("mouseup", handleElementDragEnd);
+    window.removeEventListener("blur", handleElementDragEnd);
+    const drag = dragRef.current;
+    dragRef.current = null;
     if (!drag || !drag.moved) return;
     historyRef.current = { undoStack: [...historyRef.current.undoStack, drag.startElementsSnapshot], redoStack: [] };
     setHistoryVersion((v) => v + 1);
@@ -914,13 +926,13 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               style={{ left: `${el.x * 100}%`, top: `${el.y * 100}%`, width: `${el.width * 100}%`, height: `${el.height * 100}%` }}
               onMouseDown={(e) => {
                 setSelectedId(el.id);
-                startImageDrag(el, "move", e);
+                startElementDrag(el, "move", e);
               }}
               // Selection happens on mousedown here (it starts a drag), but the
               // click that follows would still reach the stage and deselect.
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="edit-pdf-canvas__image-el-handle" onMouseDown={(e) => startImageDrag(el, "resize", e)} />
+              <div className="edit-pdf-canvas__image-el-handle" onMouseDown={(e) => startElementDrag(el, "resize", e, { lockAspect: true })} />
               <button
                 type="button"
                 className="edit-pdf-canvas__box-remove"
@@ -938,8 +950,21 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
           .map((el) => (
             <div
               key={el.id}
-              className="edit-pdf-canvas__new-text-el"
+              className={
+                el.id === selectedId
+                  ? "edit-pdf-canvas__new-text-el edit-pdf-canvas__new-text-el--selected"
+                  : "edit-pdf-canvas__new-text-el"
+              }
               style={{ left: `${el.x * 100}%`, top: `${el.y * 100}%`, width: `${el.width * 100}%`, height: `${el.height * 100}%` }}
+              onMouseDown={(e) => {
+                setSelectedId(el.id);
+                startElementDrag(el, "move", e);
+              }}
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                openTextDraftForEdit(el);
+              }}
             >
               <p
                 style={{
@@ -954,6 +979,19 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               >
                 {el.text}
               </p>
+              <div
+                className="edit-pdf-canvas__new-text-el-handle"
+                onMouseDown={(e) => startElementDrag(el, "resize", e, { lockAspect: false })}
+              />
+              <button
+                type="button"
+                className="edit-pdf-canvas__box-remove"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => removeElement(el.id)}
+                aria-label="Remove this text box"
+              >
+                <X size={12} weight="bold" />
+              </button>
             </div>
           ))}
 
