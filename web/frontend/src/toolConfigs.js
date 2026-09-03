@@ -137,6 +137,15 @@ export const TOOL_CONFIGS = {
     endpoint: "edit-pdf",
     fields: [],
   },
+  sign: {
+    title: "Sign PDF",
+    category: "Edit",
+    multiFile: false,
+    mode: "view",
+    preview: "sign",
+    endpoint: "edit-pdf",
+    fields: [],
+  },
   compress: {
     title: "Compress PDF",
     category: "Optimize",
