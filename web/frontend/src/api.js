@@ -32,6 +32,11 @@ export async function fetchTextRuns(fileId, pageNumber) {
   return res.json();
 }
 
+export async function fetchFormFields(fileId) {
+  const res = await request(`/files/${fileId}/form-fields`);
+  return res.json();
+}
+
 export function downloadUrl(fileId) {
   return `${BASE}/files/${fileId}/download`;
 }

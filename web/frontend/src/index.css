@@ -1021,6 +1021,71 @@ h1 {
   font-size: 13px;
 }
 
+/* ---------- Form fill canvas ---------- */
+
+.form-fill-canvas {
+  margin: var(--space-5) 0;
+}
+
+.form-fill-canvas__status {
+  padding: var(--space-4);
+  color: var(--color-muted-foreground);
+  font-size: 14px;
+}
+
+.form-fill-canvas__status--error {
+  color: var(--color-destructive, #dc2626);
+}
+
+.form-fill-canvas__nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+  font-size: 14px;
+  color: var(--color-muted-foreground);
+}
+
+.form-fill-canvas__nav button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-card);
+  cursor: pointer;
+}
+
+.form-fill-canvas__nav button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.form-fill-canvas__stage {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.form-fill-canvas__image {
+  display: block;
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+}
+
+.form-fill-canvas__field {
+  position: absolute;
+  border: 1px solid var(--color-accent);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+  box-sizing: border-box;
+  padding: 0 4px;
+}
+
 /* ---------- Image page preview (Images to PDF) ---------- */
 
 .image-page-preview {
