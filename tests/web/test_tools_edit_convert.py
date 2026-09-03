@@ -349,3 +349,35 @@ def test_edit_pdf_image_element_unknown_file_id_returns_422():
         },
     )
     assert response.status_code == 422
+
+
+def test_get_form_fields_returns_fields():
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    widget = fitz.Widget()
+    widget.field_name = "full_name"
+    widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    widget.rect = fitz.Rect(72, 100, 300, 120)
+    page.add_widget(widget)
+    data = doc.tobytes()
+    doc.close()
+    upload = client.post("/api/files", files={"file": ("form.pdf", data, "application/pdf")}).json()
+
+    response = client.get(f"/api/files/{upload['id']}/form-fields")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["fields"]) == 1
+    assert body["fields"][0]["type"] == "text"
+
+
+def test_get_form_fields_no_fields_returns_empty_list():
+    upload = _upload_pdf()
+    response = client.get(f"/api/files/{upload['id']}/form-fields")
+    assert response.status_code == 200
+    assert response.json()["fields"] == []
+
+
+def test_get_form_fields_unknown_file_id_returns_404():
+    response = client.get("/api/files/nope/form-fields")
+    assert response.status_code == 404
