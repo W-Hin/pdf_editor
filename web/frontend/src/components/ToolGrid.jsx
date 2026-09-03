@@ -17,6 +17,7 @@ import {
   Eraser,
   NotePencil,
   Signature,
+  ListChecks,
   File,
 } from "@phosphor-icons/react";
 import { TOOL_CONFIGS } from "../toolConfigs";
@@ -41,6 +42,7 @@ const TOOL_ICONS = {
   redact: Eraser,
   "edit-pdf": NotePencil,
   sign: Signature,
+  "fill-form": ListChecks,
 };
 
 // Development-time early warning: a tool added to TOOL_CONFIGS without a

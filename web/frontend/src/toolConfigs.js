@@ -146,6 +146,15 @@ export const TOOL_CONFIGS = {
     endpoint: "edit-pdf",
     fields: [],
   },
+  "fill-form": {
+    title: "PDF Forms",
+    category: "Edit",
+    multiFile: false,
+    mode: "view",
+    preview: "fill-form",
+    endpoint: "fill-form",
+    fields: [],
+  },
   compress: {
     title: "Compress PDF",
     category: "Optimize",

@@ -22,6 +22,7 @@ import ImagePagePreview from "./ImagePagePreview";
 import RedactSelector from "./RedactSelector";
 import EditPdfCanvas from "./EditPdfCanvas";
 import SignCanvas from "./SignCanvas";
+import FormFillCanvas from "./FormFillCanvas";
 
 // Number fields (e.g. split's "pages per file") must be a whole number no
 // smaller than field.min — used by both the preview and the actual submitted
@@ -53,6 +54,7 @@ export default function ToolView() {
   const [cropRect, setCropRect] = useState(null);
   const [redactions, setRedactions] = useState([]);
   const [elements, setElements] = useState([]);
+  const [formValues, setFormValues] = useState([]);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -77,6 +79,7 @@ export default function ToolView() {
           setCropRect(null);
           setRedactions([]);
           setElements([]);
+          setFormValues([]);
           setOrder(Array.from({ length: primary.page_count }, (_, i) => i + 1));
           if (config.filenameSuffix && !fieldValues.filename) {
             setFieldValues((v) => ({
@@ -115,6 +118,10 @@ export default function ToolView() {
       setError("Place at least one signature on the page preview before running.");
       return;
     }
+    if (config.preview === "fill-form" && formValues.length === 0) {
+      setError("Fill in at least one field before running.");
+      return;
+    }
     setBusy(true);
     try {
       const body = {};
@@ -133,6 +140,9 @@ export default function ToolView() {
       if (config.preview === "redact") body.redactions = redactions;
       if (config.preview === "edit-pdf" || config.preview === "sign") {
         body.elements = elements.map(({ id, ...rest }) => rest);
+      }
+      if (config.preview === "fill-form") {
+        body.values = formValues;
       }
       const data = await runTool(config.endpoint, body);
       setResult(data.outputs);
@@ -317,6 +327,17 @@ export default function ToolView() {
       );
     }
 
+    if (config.preview === "fill-form") {
+      if (!primaryFile) return null;
+      return (
+        // key={primaryFile.id}: same file-switch remount fix every selector-style
+        // component in this app uses — discards FormFillCanvas's internal fields/
+        // values state on file switch instead of applying stale values to a
+        // newly-loaded document.
+        <FormFillCanvas key={primaryFile.id} fileId={primaryFile.id} pageCount={primaryFile.page_count} onChange={setFormValues} />
+      );
+    }
+
     // Default: select/reorder tools (Remove/Extract/Reorder pages) and
     // plain view-only tools (PDF to Image) — same as before this feature.
     if (!primaryFile) return null;
@@ -433,7 +454,8 @@ export default function ToolView() {
           (config.preview === "crop" && !cropRect) ||
           (config.preview === "redact" && redactions.length === 0) ||
           (config.preview === "edit-pdf" && elements.length === 0) ||
-          (config.preview === "sign" && elements.length === 0)
+          (config.preview === "sign" && elements.length === 0) ||
+          (config.preview === "fill-form" && formValues.length === 0)
         }
         onClick={handleRun}
       >
