@@ -46,6 +46,7 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
   const [savedSignature, setSavedSignature] = useState(null);
   const [drawing, setDrawing] = useState(false);
   const [padHasDrawing, setPadHasDrawing] = useState(false);
+  const [selectingSignature, setSelectingSignature] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -65,6 +66,9 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
     if (drawing) initPad();
   }, [drawing]);
 
+  // Drop any in-flight drag listeners if we unmount mid-drag (no-op when not dragging).
+  useEffect(() => handleDragEnd, []);
+
   if (!fileId || !pageCount) return null;
 
   function newElementId() {
@@ -81,6 +85,7 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
 
   async function useSignature(dataUrl, { persist }) {
     setError("");
+    setSelectingSignature(true);
     try {
       const file = await dataUrlToFile(dataUrl, "signature.png");
       const [uploaded, naturalSize] = await Promise.all([uploadFile(file), loadImageNaturalSizeFromDataUrl(dataUrl)]);
@@ -99,6 +104,8 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
     } catch (err) {
       setError("Could not use this signature: " + err.message);
       return false;
+    } finally {
+      setSelectingSignature(false);
     }
   }
 
@@ -124,6 +131,8 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
     ctx.lineWidth = 2;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
+    // The canvas is now blank, so nothing has been drawn since it was last initialized.
+    setPadHasDrawing(false);
   }
 
   function padPointFromEvent(e) {
@@ -158,7 +167,6 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
 
   function handlePadClear() {
     initPad();
-    setPadHasDrawing(false);
   }
 
   async function handlePadSave() {
@@ -234,6 +242,10 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
     setSignatureNaturalSize(null);
     setSignaturePreviewSrc(null);
     setPlacements([]);
+    // Reset the source panel too, so the draw pad reopens freshly initialized.
+    setDrawing(false);
+    setPadHasDrawing(false);
+    setError("");
   }
 
   const markedPageCount = new Set(placements.map((p) => p.page)).size;
@@ -247,20 +259,30 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
           {savedSignature && (
             <div className="sign-canvas__saved">
               <img src={savedSignature} alt="Saved signature" className="sign-canvas__saved-preview" />
-              <button type="button" onClick={() => useSignature(savedSignature, { persist: false })}>
+              <button
+                type="button"
+                onClick={() => useSignature(savedSignature, { persist: false })}
+                disabled={selectingSignature}
+              >
                 Use saved signature
               </button>
             </div>
           )}
           <div className="sign-canvas__source-actions">
-            <button type="button" onClick={() => setDrawing((d) => !d)}>
+            <button type="button" onClick={() => setDrawing((d) => !d)} disabled={selectingSignature}>
               <PencilSimple size={16} weight="regular" />
               Draw new
             </button>
             <label className="sign-canvas__upload">
               <UploadSimple size={16} weight="regular" />
               Upload new
-              <input type="file" accept="image/png,image/jpeg" onChange={handleUploadFileSelected} style={{ display: "none" }} />
+              <input
+                type="file"
+                accept="image/png,image/jpeg"
+                onChange={handleUploadFileSelected}
+                disabled={selectingSignature}
+                style={{ display: "none" }}
+              />
             </label>
           </div>
           {drawing && (
@@ -279,7 +301,7 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
                 <button type="button" onClick={handlePadClear}>
                   Clear
                 </button>
-                <button type="button" onClick={handlePadSave}>
+                <button type="button" onClick={handlePadSave} disabled={selectingSignature}>
                   Save signature
                 </button>
               </div>
