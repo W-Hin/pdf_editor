@@ -25,9 +25,10 @@ async function dataUrlToFile(dataUrl, filename) {
 }
 
 function loadImageNaturalSizeFromDataUrl(dataUrl) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = () => reject(new Error("Could not load this image."));
     img.src = dataUrl;
   });
 }
@@ -93,8 +94,10 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
           // localStorage unavailable/quota exceeded — signature still works this session.
         }
       }
+      return true;
     } catch (err) {
       setError("Could not use this signature: " + err.message);
+      return false;
     }
   }
 
@@ -163,8 +166,8 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
       return;
     }
     const dataUrl = padCanvasRef.current.toDataURL("image/png");
-    await useSignature(dataUrl, { persist: true });
-    setDrawing(false);
+    const ok = await useSignature(dataUrl, { persist: true });
+    if (ok) setDrawing(false);
   }
 
   function handleStagePlace(e) {
