@@ -851,3 +851,28 @@ def extract_form_fields(input_path: str) -> list[dict]:
         return fields
     finally:
         doc.close()
+
+
+def fill_form(input_path: str, output_path: str, values: list[dict]) -> None:
+    if not values:
+        raise PDFError("Fill in at least one field before running.")
+    doc = open_pdf(input_path)
+    try:
+        for v in values:
+            page_num = v["page"]
+            if page_num < 1 or page_num > doc.page_count:
+                raise PDFError(f"Page {page_num} does not exist in this document ({doc.page_count} pages).")
+            widgets = _page_form_widgets(doc[page_num - 1])
+            if v["index"] < 0 or v["index"] >= len(widgets):
+                raise PDFError(f"Field {v['index']} not found on page {page_num}.")
+
+        for v in values:
+            page = doc[v["page"] - 1]
+            widget = _page_form_widgets(page)[v["index"]]
+            widget.field_value = v["value"]
+            widget.update()
+
+        doc.bake(annots=False, widgets=True)
+        doc.save(output_path)
+    finally:
+        doc.close()

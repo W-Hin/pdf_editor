@@ -3,7 +3,7 @@ import pytest
 from pathlib import Path
 
 from app.core.errors import PDFError
-from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf, add_page_numbers, images_to_pdf, redact_pdf, extract_text_runs, edit_pdf, extract_form_fields
+from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf, add_page_numbers, images_to_pdf, redact_pdf, extract_text_runs, edit_pdf, extract_form_fields, fill_form
 
 
 def test_open_pdf_missing_file_raises(tmp_path):
@@ -1498,3 +1498,178 @@ def test_extract_form_fields_no_fields_returns_empty_list(tmp_path):
     fields = extract_form_fields(str(input_path))
 
     assert fields == []
+
+
+def test_fill_form_sets_text_field_value(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    widget = fitz.Widget()
+    widget.field_name = "full_name"
+    widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    widget.rect = fitz.Rect(72, 100, 300, 120)
+    page.add_widget(widget)
+    input_path = tmp_path / "form.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "filled.pdf"
+    fill_form(str(input_path), str(output_path), [{"page": 1, "index": 0, "value": "Jane Doe"}])
+
+    result = fitz.open(str(output_path))
+    text = result[0].get_text()
+    result.close()
+    assert "Jane Doe" in text
+
+
+def test_fill_form_sets_checkbox_value(tmp_path):
+    """fill_form always bakes (flattens) its output, so the checkbox widget
+    itself is gone afterward — get_text() on a checkbox's glyph isn't a
+    reliable readable string either. What IS reliably checkable post-bake is
+    that the checkbox's "on" appearance was actually drawn: render the filled
+    output and compare it against a second document where the same checkbox
+    was explicitly left unchecked (value=False) and also baked. If fill_form's
+    checkbox path works, the two renders must differ inside the checkbox's
+    rect; if it silently no-ops, they'd be pixel-identical.
+    """
+
+    def build_and_fill(value):
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        widget = fitz.Widget()
+        widget.field_name = "agree"
+        widget.field_type = fitz.PDF_WIDGET_TYPE_CHECKBOX
+        widget.rect = fitz.Rect(72, 140, 90, 158)
+        page.add_widget(widget)
+        input_path = tmp_path / f"form_{value}.pdf"
+        doc.save(str(input_path))
+        doc.close()
+        output_path = tmp_path / f"filled_{value}.pdf"
+        fill_form(str(input_path), str(output_path), [{"page": 1, "index": 0, "value": value}])
+        result = fitz.open(str(output_path))
+        pix = result[0].get_pixmap(clip=fitz.Rect(72, 140, 90, 158))
+        samples = pix.samples
+        result.close()
+        return samples
+
+    checked_pixels = build_and_fill(True)
+    unchecked_pixels = build_and_fill(False)
+
+    assert checked_pixels != unchecked_pixels
+
+
+def test_fill_form_sets_combobox_value(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    widget = fitz.Widget()
+    widget.field_name = "country"
+    widget.field_type = fitz.PDF_WIDGET_TYPE_COMBOBOX
+    widget.rect = fitz.Rect(72, 180, 250, 200)
+    widget.choice_values = ["USA", "Canada", "Mexico"]
+    page.add_widget(widget)
+    input_path = tmp_path / "form.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "filled.pdf"
+    fill_form(str(input_path), str(output_path), [{"page": 1, "index": 0, "value": "Canada"}])
+
+    result = fitz.open(str(output_path))
+    text = result[0].get_text()
+    result.close()
+    assert "Canada" in text
+
+
+def test_fill_form_flattens_the_output(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    widget = fitz.Widget()
+    widget.field_name = "full_name"
+    widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    widget.rect = fitz.Rect(72, 100, 300, 120)
+    page.add_widget(widget)
+    input_path = tmp_path / "form.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "filled.pdf"
+    fill_form(str(input_path), str(output_path), [{"page": 1, "index": 0, "value": "Jane Doe"}])
+
+    result = fitz.open(str(output_path))
+    assert result.is_form_pdf is False
+    assert len(list(result[0].widgets())) == 0
+    result.close()
+
+
+def test_fill_form_multiple_fields_across_pages(tmp_path):
+    doc = fitz.open()
+    page1 = doc.new_page(width=595, height=842)
+    w1 = fitz.Widget()
+    w1.field_name = "page1_field"
+    w1.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    w1.rect = fitz.Rect(72, 100, 300, 120)
+    page1.add_widget(w1)
+    page2 = doc.new_page(width=595, height=842)
+    w2 = fitz.Widget()
+    w2.field_name = "page2_field"
+    w2.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    w2.rect = fitz.Rect(72, 100, 300, 120)
+    page2.add_widget(w2)
+    input_path = tmp_path / "form.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "filled.pdf"
+    fill_form(
+        str(input_path),
+        str(output_path),
+        [
+            {"page": 1, "index": 0, "value": "Page One Value"},
+            {"page": 2, "index": 0, "value": "Page Two Value"},
+        ],
+    )
+
+    result = fitz.open(str(output_path))
+    assert "Page One Value" in result[0].get_text()
+    assert "Page Two Value" in result[1].get_text()
+    result.close()
+
+
+def test_fill_form_rejects_empty_values(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "form.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "filled.pdf"
+    with pytest.raises(PDFError):
+        fill_form(str(input_path), str(output_path), [])
+
+
+def test_fill_form_rejects_out_of_range_page(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "form.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "filled.pdf"
+    with pytest.raises(PDFError):
+        fill_form(str(input_path), str(output_path), [{"page": 2, "index": 0, "value": "x"}])
+
+
+def test_fill_form_rejects_out_of_range_index(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    widget = fitz.Widget()
+    widget.field_name = "full_name"
+    widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    widget.rect = fitz.Rect(72, 100, 300, 120)
+    page.add_widget(widget)
+    input_path = tmp_path / "form.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "filled.pdf"
+    with pytest.raises(PDFError):
+        fill_form(str(input_path), str(output_path), [{"page": 1, "index": 5, "value": "x"}])
