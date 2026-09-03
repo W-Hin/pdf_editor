@@ -1,5 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { CaretLeft, CaretRight, CursorText, PencilSimple, Rectangle, Highlighter, ImageSquare, X } from "@phosphor-icons/react";
+import {
+  CaretLeft,
+  CaretRight,
+  CursorText,
+  PencilSimple,
+  Rectangle,
+  Highlighter,
+  ImageSquare,
+  X,
+  ArrowUUpLeft,
+  ArrowUUpRight,
+} from "@phosphor-icons/react";
 import { thumbnailUrl, fetchTextRuns, uploadFile } from "../api";
 
 const PREVIEW_MAX_SIZE = 700;
@@ -42,6 +53,14 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   const imageFileInputRef = useRef(null);
   const pendingImageDropRef = useRef(null);
   const imageDragRef = useRef(null);
+  const historyRef = useRef({ undoStack: [], redoStack: [] });
+  const [historyVersion, setHistoryVersion] = useState(0); // bump to force a re-render when the stacks change
+  const clipboardRef = useRef(null);
+  const elementsRef = useRef(elements);
+
+  useEffect(() => {
+    elementsRef.current = elements;
+  }, [elements]);
 
   useEffect(() => {
     if (!fileId) return;
@@ -58,9 +77,104 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     setEditingRunIndex(null);
   }, [fileId, currentPage]);
 
+  useEffect(() => {
+    function isTypingTarget(target) {
+      return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable;
+    }
+
+    function copySelected() {
+      const el = elements.find((e) => e.id === selectedId);
+      if (!el || el.type === "text_edit") return null;
+      const { id, page, ...rest } = el;
+      return rest;
+    }
+
+    function pasteClipboard() {
+      if (!clipboardRef.current) return;
+      const OFFSET = 0.03;
+      const clamp = (v) => Math.min(Math.max(v, 0), 1 - OFFSET);
+      const base = { ...clipboardRef.current };
+      if ("x0" in base) {
+        base.x0 = clamp(base.x0 + OFFSET);
+        base.x1 = clamp(base.x1 + OFFSET);
+        base.y0 = clamp(base.y0 + OFFSET);
+        base.y1 = clamp(base.y1 + OFFSET);
+      } else if ("left" in base) {
+        base.left = clamp(base.left + OFFSET);
+        base.top = clamp(base.top + OFFSET);
+      } else if ("x" in base) {
+        base.x = clamp(base.x + OFFSET);
+        base.y = clamp(base.y + OFFSET);
+      } else if ("points" in base) {
+        base.points = base.points.map((p) => ({ x: clamp(p.x + OFFSET), y: clamp(p.y + OFFSET) }));
+      }
+      const pasted = { ...base, id: newElementId(), page: currentPage };
+      commitElements([...elements, pasted]);
+      setSelectedId(pasted.id);
+    }
+
+    function handleKeyDown(e) {
+      if (isTypingTarget(document.activeElement)) return;
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (!ctrl) {
+        if (e.key === "Escape") setSelectedId(null);
+        return;
+      }
+      if (e.key === "z" || e.key === "Z") {
+        e.preventDefault();
+        undo();
+      } else if (e.key === "y" || e.key === "Y") {
+        e.preventDefault();
+        redo();
+      } else if (e.key === "c" || e.key === "C") {
+        const copied = copySelected();
+        if (copied) {
+          e.preventDefault();
+          clipboardRef.current = copied;
+        }
+      } else if (e.key === "x" || e.key === "X") {
+        const copied = copySelected();
+        if (copied) {
+          e.preventDefault();
+          clipboardRef.current = copied;
+          commitElements(elements.filter((el) => el.id !== selectedId));
+          setSelectedId(null);
+        }
+      } else if (e.key === "v" || e.key === "V") {
+        e.preventDefault();
+        pasteClipboard();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [elements, selectedId, currentPage]);
+
   if (!fileId || !pageCount) return null;
 
   function commitElements(next) {
+    historyRef.current = { undoStack: [...historyRef.current.undoStack, elements], redoStack: [] };
+    setHistoryVersion((v) => v + 1);
+    setElements(next);
+    onChange(next);
+  }
+
+  function undo() {
+    const { undoStack, redoStack } = historyRef.current;
+    if (undoStack.length === 0) return;
+    const previous = undoStack[undoStack.length - 1];
+    historyRef.current = { undoStack: undoStack.slice(0, -1), redoStack: [...redoStack, elements] };
+    setHistoryVersion((v) => v + 1);
+    setElements(previous);
+    onChange(previous);
+  }
+
+  function redo() {
+    const { undoStack, redoStack } = historyRef.current;
+    if (redoStack.length === 0) return;
+    const next = redoStack[redoStack.length - 1];
+    historyRef.current = { undoStack: [...undoStack, elements], redoStack: redoStack.slice(0, -1) };
+    setHistoryVersion((v) => v + 1);
     setElements(next);
     onChange(next);
   }
@@ -205,7 +319,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     e.stopPropagation();
     const point = pointFromEvent(e);
     if (!point) return;
-    imageDragRef.current = { id: el.id, mode, start: point, startElement: { ...el } };
+    imageDragRef.current = { id: el.id, mode, start: point, startElement: { ...el }, startElementsSnapshot: elements };
     window.addEventListener("mousemove", handleImageDragMove);
     window.addEventListener("mouseup", handleImageDragEnd);
     window.addEventListener("blur", handleImageDragEnd);
@@ -239,11 +353,12 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     window.removeEventListener("mousemove", handleImageDragMove);
     window.removeEventListener("mouseup", handleImageDragEnd);
     window.removeEventListener("blur", handleImageDragEnd);
+    const drag = imageDragRef.current;
     imageDragRef.current = null;
-    setElements((current) => {
-      onChange(current);
-      return current;
-    });
+    if (!drag) return;
+    historyRef.current = { undoStack: [...historyRef.current.undoStack, drag.startElementsSnapshot], redoStack: [] };
+    setHistoryVersion((v) => v + 1);
+    onChange(elementsRef.current);
   }
 
   function handleStageMouseDown(e) {
@@ -321,6 +436,17 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
             {mode.label}
           </button>
         ))}
+      </div>
+
+      <div className="edit-pdf-canvas__history-bar">
+        <button type="button" onClick={undo} disabled={historyRef.current.undoStack.length === 0}>
+          <ArrowUUpLeft size={16} weight="regular" />
+          Undo
+        </button>
+        <button type="button" onClick={redo} disabled={historyRef.current.redoStack.length === 0}>
+          <ArrowUUpRight size={16} weight="regular" />
+          Redo
+        </button>
       </div>
 
       {activeMode === "draw" && (
@@ -611,7 +737,10 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               key={el.id}
               className="edit-pdf-canvas__image-el"
               style={{ left: `${el.x * 100}%`, top: `${el.y * 100}%`, width: `${el.width * 100}%`, height: `${el.height * 100}%` }}
-              onMouseDown={(e) => startImageDrag(el, "move", e)}
+              onMouseDown={(e) => {
+                setSelectedId(el.id);
+                startImageDrag(el, "move", e);
+              }}
             >
               <div className="edit-pdf-canvas__image-el-handle" onMouseDown={(e) => startImageDrag(el, "resize", e)} />
               <button
