@@ -870,6 +870,11 @@ def fill_form(input_path: str, output_path: str, values: list[dict]) -> None:
             page = doc[v["page"] - 1]
             widget = _page_form_widgets(page)[v["index"]]
             widget.field_value = v["value"]
+            if v["value"] == "" and widget.field_type_string in ("Text", "ComboBox"):
+                # PyMuPDF's widget writer skips falsy values, leaving /V (and the
+                # appearance stream bake() uses) at the old value - clear /V
+                # explicitly so update() regenerates an empty appearance.
+                doc.xref_set_key(widget.xref, "V", "()")
             widget.update()
 
         doc.bake(annots=False, widgets=True)

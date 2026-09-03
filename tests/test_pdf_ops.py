@@ -1521,6 +1521,38 @@ def test_fill_form_sets_text_field_value(tmp_path):
     assert "Jane Doe" in text
 
 
+def test_fill_form_clears_prefilled_text_field(tmp_path):
+    """Clearing a pre-filled Text field to "" must actually blank the field in
+    the baked output, not silently leave the old value burned into the PDF.
+    PyMuPDF's low-level widget writer only writes /V when the new value is
+    truthy, so a naive `widget.field_value = ""; widget.update()` leaves the
+    stale /V (and therefore the stale appearance stream) in place. fill_form
+    must clear /V explicitly for this case.
+    """
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    widget = fitz.Widget()
+    widget.field_name = "full_name"
+    widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    widget.field_value = "PREFILLED"
+    widget.rect = fitz.Rect(72, 100, 300, 120)
+    page.add_widget(widget)
+    input_path = tmp_path / "form.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "cleared.pdf"
+    fill_form(str(input_path), str(output_path), [{"page": 1, "index": 0, "value": ""}])
+
+    result = fitz.open(str(output_path))
+    page_text = result[0].get_text()
+    full_text = "".join(p.get_text() for p in result)
+    result.close()
+
+    assert "PREFILLED" not in page_text
+    assert "PREFILLED" not in full_text
+
+
 def test_fill_form_sets_checkbox_value(tmp_path):
     """fill_form always bakes (flattens) its output, so the checkbox widget
     itself is gone afterward — get_text() on a checkbox's glyph isn't a
