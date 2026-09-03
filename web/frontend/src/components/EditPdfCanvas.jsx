@@ -28,6 +28,18 @@ const FAMILY_OPTIONS = ["helvetica", "times", "courier"];
 const MARKUP_COLORS = ["#1f2937", "#e03131", "#f08c00", "#2f9e44", "#1971c2", "#9c36b5"];
 const STROKE_WIDTHS = { thin: 1, medium: 3, thick: 6 };
 
+// Smallest drag (as a fraction of the page) that counts as a real gesture
+// rather than a click with a pixel of jitter. Shared by draw/shapes/highlight
+// so a stray click never commits a degenerate element the backend then rejects.
+const MIN_DRAG_FRACTION = 0.02;
+
+// Alpha suffix for an 8-digit hex colour, matching the 0.4 fill opacity
+// edit_pdf renders highlights at. Baking translucency into the colour (rather
+// than using CSS `opacity`) keeps the element's children — the remove button —
+// fully opaque, since `opacity` creates a stacking context its children cannot
+// escape.
+const HIGHLIGHT_ALPHA_HEX = "66";
+
 export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   const stageRef = useRef(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -38,6 +50,11 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   const [editingRunIndex, setEditingRunIndex] = useState(null);
   const [draftText, setDraftText] = useState("");
   const [draftOverride, setDraftOverride] = useState(null);
+  // The family dropdown always defaults to "helvetica" regardless of the run's
+  // detected font, so comparing its VALUE against "helvetica" cannot tell
+  // "explicitly chose Helvetica on a Times run" from "never touched it" — and
+  // silently drops the user's choice. Track the interaction itself instead.
+  const [draftFamilyTouched, setDraftFamilyTouched] = useState(false);
   const [drawColor, setDrawColor] = useState(MARKUP_COLORS[0]);
   const [drawWidth, setDrawWidth] = useState("medium");
   const [activeStroke, setActiveStroke] = useState(null);
@@ -92,21 +109,39 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     function pasteClipboard() {
       if (!clipboardRef.current) return;
       const OFFSET = 0.03;
-      const clamp = (v) => Math.min(Math.max(v, 0), 1 - OFFSET);
+      // Paste TRANSLATES the element by OFFSET. Every type therefore shifts all
+      // of its coordinates on an axis by the SAME amount, shrunk to whatever
+      // room is actually left on the page. Clamping each coordinate
+      // independently against a fixed bound distorts the element near an edge
+      // instead of moving it — and for a highlight (whose "right"/"bottom" are
+      // insets from the FAR edges) shifting only "left"/"top" shrinks the box,
+      // which for a near-minimum highlight goes negative and fails the Run.
+      const shift = (remaining) => Math.max(0, Math.min(OFFSET, remaining));
       const base = { ...clipboardRef.current };
       if ("x0" in base) {
-        base.x0 = clamp(base.x0 + OFFSET);
-        base.x1 = clamp(base.x1 + OFFSET);
-        base.y0 = clamp(base.y0 + OFFSET);
-        base.y1 = clamp(base.y1 + OFFSET);
+        const dx = shift(1 - Math.max(base.x0, base.x1));
+        const dy = shift(1 - Math.max(base.y0, base.y1));
+        base.x0 += dx;
+        base.x1 += dx;
+        base.y0 += dy;
+        base.y1 += dy;
       } else if ("left" in base) {
-        base.left = clamp(base.left + OFFSET);
-        base.top = clamp(base.top + OFFSET);
+        // "right"/"bottom" are exactly the space remaining on those edges.
+        const dx = shift(base.right);
+        const dy = shift(base.bottom);
+        base.left += dx;
+        base.right -= dx;
+        base.top += dy;
+        base.bottom -= dy;
       } else if ("x" in base) {
-        base.x = clamp(base.x + OFFSET);
-        base.y = clamp(base.y + OFFSET);
+        const dx = shift(1 - (base.x + base.width));
+        const dy = shift(1 - (base.y + base.height));
+        base.x += dx;
+        base.y += dy;
       } else if ("points" in base) {
-        base.points = base.points.map((p) => ({ x: clamp(p.x + OFFSET), y: clamp(p.y + OFFSET) }));
+        const dx = shift(1 - Math.max(...base.points.map((p) => p.x)));
+        const dy = shift(1 - Math.max(...base.points.map((p) => p.y)));
+        base.points = base.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
       }
       const pasted = { ...base, id: newElementId(), page: currentPage };
       commitElements([...elements, pasted]);
@@ -183,6 +218,25 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     return crypto.randomUUID();
   }
 
+  // Selecting stops the click from reaching the stage, whose own handler treats
+  // any click that gets there as a click on empty canvas and deselects.
+  function selectElement(id, e) {
+    e.stopPropagation();
+    setSelectedId(id);
+  }
+
+  function removeElement(id) {
+    commitElements(elements.filter((el) => el.id !== id));
+    // Otherwise selectedId keeps pointing at a deleted element.
+    if (selectedId === id) setSelectedId(null);
+  }
+
+  function handleStageClick() {
+    // Spec: clicking empty canvas deselects. Clicks that landed on an element
+    // stop propagating before they reach here.
+    setSelectedId(null);
+  }
+
   function pointFromEvent(e) {
     const rect = stageRef.current.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
@@ -207,13 +261,28 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   }
 
   function handleDrawMouseUp() {
-    if (!activeStroke || activeStroke.length < 2) return;
+    // Clear FIRST, unconditionally. handleDrawMouseMove is gated only on
+    // activeStroke being non-null, not on a button actually being held, so
+    // leaving a 1-point stroke armed after a plain click makes a line follow
+    // the cursor and commit a phantom stroke on the next mouseup/mouseleave.
+    const stroke = activeStroke;
+    setActiveStroke(null);
+    if (!stroke || stroke.length < 2) return;
+    // A point count is not a size: a click with a pixel of jitter still yields
+    // two points. Measure the actual extent instead, as Highlight mode does.
+    const xs = stroke.map((p) => p.x);
+    const ys = stroke.map((p) => p.y);
+    if (
+      Math.max(...xs) - Math.min(...xs) < MIN_DRAG_FRACTION &&
+      Math.max(...ys) - Math.min(...ys) < MIN_DRAG_FRACTION
+    ) {
+      return;
+    }
     const next = [
       ...elements,
-      { id: newElementId(), type: "stroke", page: currentPage, points: activeStroke, color: drawColor, width: STROKE_WIDTHS[drawWidth] },
+      { id: newElementId(), type: "stroke", page: currentPage, points: stroke, color: drawColor, width: STROKE_WIDTHS[drawWidth] },
     ];
     commitElements(next);
-    setActiveStroke(null);
   }
   function handleShapeMouseDown(e) {
     const point = pointFromEvent(e);
@@ -235,7 +304,16 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     const { x: x1, y: y1 } = shapeDragCurrent;
     setShapeDragStart(null);
     setShapeDragCurrent(null);
-    if (x0 === x1 && y0 === y1) return;
+    // Check both axes independently, as Highlight mode does. A perfectly
+    // horizontal or vertical drag is not "stationary", but it still produces a
+    // zero-dimension rectangle/ellipse that _validate_shape rejects at Run time
+    // with an error pointing at nothing visible on screen.
+    if (Math.abs(x1 - x0) < MIN_DRAG_FRACTION || Math.abs(y1 - y0) < MIN_DRAG_FRACTION) {
+      if (shapeType === "rectangle" || shapeType === "ellipse") return;
+      // A line or arrow only needs two distinct points, so only a drag that is
+      // degenerate on BOTH axes is unusable.
+      if (Math.abs(x1 - x0) < MIN_DRAG_FRACTION && Math.abs(y1 - y0) < MIN_DRAG_FRACTION) return;
+    }
     const next = [
       ...elements,
       {
@@ -276,7 +354,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     const y1 = Math.max(highlightDragStart.y, highlightDragCurrent.y);
     setHighlightDragStart(null);
     setHighlightDragCurrent(null);
-    if (x1 - x0 < 0.02 || y1 - y0 < 0.02) return;
+    if (x1 - x0 < MIN_DRAG_FRACTION || y1 - y0 < MIN_DRAG_FRACTION) return;
     const next = [
       ...elements,
       { id: newElementId(), type: "highlight", page: currentPage, top: y0, left: x0, right: 1 - x1, bottom: 1 - y1, color: highlightColor },
@@ -393,6 +471,9 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     const pending = pendingTextEditFor(run);
     setEditingRunIndex(run.index);
     setDraftText(pending ? pending.text : run.text);
+    // Re-opening a queued edit that already carries an override means its
+    // family was an explicit choice — keep it explicit.
+    setDraftFamilyTouched(Boolean(pending?.font_override));
     setDraftOverride(
       pending?.font_override ?? {
         family: "helvetica",
@@ -406,7 +487,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   function submitRunEditor(run) {
     const pending = pendingTextEditFor(run);
     const overrideChanged =
-      draftOverride.family !== "helvetica" || draftOverride.bold !== run.bold || draftOverride.italic !== run.italic || draftOverride.size !== run.size;
+      draftFamilyTouched || draftOverride.bold !== run.bold || draftOverride.italic !== run.italic || draftOverride.size !== run.size;
     const newEl = {
       id: pending?.id ?? newElementId(),
       type: "text_edit",
@@ -556,6 +637,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
         onMouseMove={handleStageMouseMove}
         onMouseUp={handleStageMouseUp}
         onMouseLeave={handleStageMouseUp}
+        onClick={handleStageClick}
       >
         <img
           className="edit-pdf-canvas__image"
@@ -568,7 +650,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
           {elements
             .filter((el) => el.type === "stroke" && el.page === currentPage)
             .map((el) => (
-              <g key={el.id} onClick={() => setSelectedId(el.id)}>
+              <g key={el.id} onClick={(e) => selectElement(el.id, e)}>
                 <polyline
                   points={el.points.map((p) => `${p.x * 100},${p.y * 100}`).join(" ")}
                   fill="none"
@@ -604,7 +686,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
                 className="edit-pdf-canvas__element-remove"
                 style={{ left: `${left * 100}%`, top: `${top * 100}%` }}
                 onMouseDown={(e) => e.stopPropagation()}
-                onClick={() => commitElements(elements.filter((e) => e.id !== el.id))}
+                onClick={() => removeElement(el.id)}
                 aria-label="Remove this stroke"
               >
                 <X size={12} weight="bold" />
@@ -627,7 +709,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               };
               if (el.shape === "rectangle") {
                 return (
-                  <g key={el.id} onClick={() => setSelectedId(el.id)}>
+                  <g key={el.id} onClick={(e) => selectElement(el.id, e)}>
                     <rect
                       {...commonProps}
                       x={Math.min(el.x0, el.x1) * 100}
@@ -640,7 +722,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               }
               if (el.shape === "ellipse") {
                 return (
-                  <g key={el.id} onClick={() => setSelectedId(el.id)}>
+                  <g key={el.id} onClick={(e) => selectElement(el.id, e)}>
                     <ellipse
                       {...commonProps}
                       cx={((el.x0 + el.x1) / 2) * 100}
@@ -654,7 +736,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               // line and arrow both render as a line preview; the real arrowhead is
               // drawn server-side by edit_pdf — this is close enough for the queue preview.
               return (
-                <g key={el.id} onClick={() => setSelectedId(el.id)}>
+                <g key={el.id} onClick={(e) => selectElement(el.id, e)}>
                   <line {...commonProps} x1={el.x0 * 100} y1={el.y0 * 100} x2={el.x1 * 100} y2={el.y1 * 100} />
                 </g>
               );
@@ -682,7 +764,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               className="edit-pdf-canvas__element-remove"
               style={{ left: `${Math.min(el.x0, el.x1) * 100}%`, top: `${Math.min(el.y0, el.y1) * 100}%` }}
               onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => commitElements(elements.filter((e) => e.id !== el.id))}
+              onClick={() => removeElement(el.id)}
               aria-label="Remove this shape"
             >
               <X size={12} weight="bold" />
@@ -704,9 +786,9 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
                 top: `${el.top * 100}%`,
                 width: `${(1 - el.left - el.right) * 100}%`,
                 height: `${(1 - el.top - el.bottom) * 100}%`,
-                background: el.color,
+                background: `${el.color}${HIGHLIGHT_ALPHA_HEX}`,
               }}
-              onClick={() => setSelectedId(el.id)}
+              onClick={(e) => selectElement(el.id, e)}
             >
               <button
                 type="button"
@@ -714,7 +796,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
-                  commitElements(elements.filter((e) => e.id !== el.id));
+                  removeElement(el.id);
                 }}
                 aria-label="Remove this highlight"
               >
@@ -730,7 +812,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               top: `${Math.min(highlightDragStart.y, highlightDragCurrent.y) * 100}%`,
               width: `${Math.abs(highlightDragCurrent.x - highlightDragStart.x) * 100}%`,
               height: `${Math.abs(highlightDragCurrent.y - highlightDragStart.y) * 100}%`,
-              background: highlightColor,
+              background: `${highlightColor}${HIGHLIGHT_ALPHA_HEX}`,
             }}
           />
         )}
@@ -740,19 +822,26 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
           .map((el) => (
             <div
               key={el.id}
-              className="edit-pdf-canvas__image-el"
+              className={
+                el.id === selectedId
+                  ? "edit-pdf-canvas__image-el edit-pdf-canvas__image-el--selected"
+                  : "edit-pdf-canvas__image-el"
+              }
               style={{ left: `${el.x * 100}%`, top: `${el.y * 100}%`, width: `${el.width * 100}%`, height: `${el.height * 100}%` }}
               onMouseDown={(e) => {
                 setSelectedId(el.id);
                 startImageDrag(el, "move", e);
               }}
+              // Selection happens on mousedown here (it starts a drag), but the
+              // click that follows would still reach the stage and deselect.
+              onClick={(e) => e.stopPropagation()}
             >
               <div className="edit-pdf-canvas__image-el-handle" onMouseDown={(e) => startImageDrag(el, "resize", e)} />
               <button
                 type="button"
                 className="edit-pdf-canvas__box-remove"
                 onMouseDown={(e) => e.stopPropagation()}
-                onClick={() => commitElements(elements.filter((e2) => e2.id !== el.id))}
+                onClick={() => removeElement(el.id)}
                 aria-label="Remove this image"
               >
                 <X size={12} weight="bold" />
@@ -805,7 +894,13 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
                 </p>
                 <label className="field">
                   Font family override
-                  <select value={draftOverride.family} onChange={(e) => setDraftOverride((o) => ({ ...o, family: e.target.value }))}>
+                  <select
+                    value={draftOverride.family}
+                    onChange={(e) => {
+                      setDraftFamilyTouched(true);
+                      setDraftOverride((o) => ({ ...o, family: e.target.value }));
+                    }}
+                  >
                     {FAMILY_OPTIONS.map((f) => (
                       <option key={f} value={f}>
                         {f}

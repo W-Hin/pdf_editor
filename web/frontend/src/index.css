@@ -765,7 +765,10 @@ h1 {
 
 .edit-pdf-canvas__highlight {
   position: absolute;
-  opacity: 0.4;
+  /* Translucency lives in the inline background colour's alpha channel, not in
+     `opacity`: `opacity` creates a stacking context, so the remove button
+     nested inside would inherit it and render at 40% no matter what its own
+     opacity says. */
   pointer-events: auto;
   cursor: pointer;
 }
@@ -799,6 +802,12 @@ h1 {
   position: absolute;
   border: 1px dashed var(--color-accent);
   cursor: move;
+}
+
+.edit-pdf-canvas__image-el--selected {
+  border-style: solid;
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
 }
 
 .edit-pdf-canvas__image-el-handle {
@@ -948,6 +957,25 @@ h1 {
   width: 100%;
   margin-top: var(--space-3);
   accent-color: var(--color-accent);
+}
+
+/* A checkbox and its label sit on one line — the base .field is a block, which
+   leaves the box and its text unaligned and unspaced. */
+.field--checkbox {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.field--checkbox input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+
+/* Inside the markup style bar the field is a flex item in a row, so .field's
+   own vertical margin would only make the bar taller. */
+.edit-pdf-canvas__style-bar .field--checkbox {
+  margin: 0;
 }
 
 /* ---------- Banners & results ---------- */
