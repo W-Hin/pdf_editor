@@ -1127,6 +1127,131 @@ def test_edit_pdf_image_inserts_into_page(tmp_path):
     assert b > 150 and r < 100 and g < 100
 
 
+def test_edit_pdf_markup_elements_handle_rotated_page(tmp_path):
+    """Every markup element must land where the user DREW it on a rotated page.
+
+    Same rigor as test_redact_pdf_handles_rotated_page and
+    test_edit_pdf_text_edit_handles_rotated_page, extended to the four sites
+    that had no rotated-page coverage at all: _apply_stroke, _apply_shape,
+    _apply_highlight and _apply_image. The frontend sends fractions of the
+    *displayed* page, so each element is rendered and pixel-sampled at the
+    displayed-space location those same fractions describe.
+
+    The image case additionally pins the image's ORIENTATION, not just its
+    position: derotating the rect alone leaves the image's own pixels rotated,
+    so on a 90/270-degree page it draws sideways and letterboxed inside the
+    aspect-swapped raw rect (and upside-down at 180). insert_image(rotate=...)
+    is what compensates.
+    """
+    doc = fitz.open()
+    doc.new_page(width=612, height=792)
+    doc[0].set_rotation(90)
+    input_path = tmp_path / "rotated.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    # A 40x20 image with four distinctly coloured quadrants — a solid or
+    # symmetric image would pass even when drawn rotated or mirrored.
+    img_pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 20), False)
+    img_pix.set_rect(fitz.IRect(0, 0, 20, 10), (255, 0, 0))      # top-left red
+    img_pix.set_rect(fitz.IRect(20, 0, 40, 10), (0, 255, 0))     # top-right green
+    img_pix.set_rect(fitz.IRect(0, 10, 20, 20), (0, 0, 255))     # bottom-left blue
+    img_pix.set_rect(fitz.IRect(20, 10, 40, 20), (255, 255, 0))  # bottom-right yellow
+    img_path = tmp_path / "quadrants.png"
+    img_pix.save(str(img_path))
+
+    stroke_y = 0.80
+    image_frac = {"x": 0.50, "y": 0.10, "width": 0.20, "height": 0.10}
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [
+            {
+                "type": "stroke",
+                "page": 1,
+                "points": [{"x": 0.10, "y": stroke_y}, {"x": 0.25, "y": stroke_y}, {"x": 0.40, "y": stroke_y}],
+                "color": "#ff0000",
+                "width": 3,
+            },
+            {
+                "type": "shape", "page": 1, "shape": "rectangle",
+                "x0": 0.10, "y0": 0.10, "x1": 0.30, "y1": 0.30,
+                "color": "#00ff00", "width": 2, "filled": True,
+            },
+            {
+                "type": "highlight", "page": 1,
+                "top": 0.50, "left": 0.10, "right": 0.70, "bottom": 0.40, "color": "#ffff00",
+            },
+            {"type": "image", "page": 1, "file_id": "quad", **image_frac},
+        ],
+        {"quad": str(img_path)},
+    )
+
+    result = fitz.open(str(output_path))
+    page = result[0]
+    # A rotated page renders into a pixmap of its DISPLAYED size, so pixel
+    # (fx * width, fy * height) is exactly the fraction the frontend sent.
+    assert page.rect.width == 792 and page.rect.height == 612, "test setup: page is not displayed-rotated"
+    pix = page.get_pixmap()
+    result.close()
+    width, height = pix.width, pix.height
+
+    def sample(fx, fy):
+        return pix.pixel(int(fx * width), int(fy * height))[:3]
+
+    # Blank control corner: nothing was drawn here, so a mis-derotated element
+    # landing in the wrong place would be caught by the per-element asserts below.
+    assert sample(0.90, 0.90) == (255, 255, 255)
+
+    # Shape: filled green rectangle spanning 0.10-0.30 on both axes.
+    r, g, b = sample(0.20, 0.20)
+    assert g > 150 and r < 100 and b < 100, f"filled shape not green at its displayed centre: {(r, g, b)}"
+
+    # Highlight: displayed x 0.10-0.30, y 0.50-0.60, drawn at 0.4 fill opacity.
+    r, g, b = sample(0.20, 0.55)
+    assert r > 200 and g > 200 and 100 < b < 220, f"highlight not yellow-tinted at its displayed centre: {(r, g, b)}"
+
+    # Stroke: a horizontal red ink line. Scan a few rows around the drawn
+    # fraction — the annotation's rendered width is only a couple of pixels.
+    target_row = int(stroke_y * height)
+    stroke_column = int(0.25 * width)
+    found_red = any(
+        pix.pixel(stroke_column, y)[0] > 200 and pix.pixel(stroke_column, y)[1] < 100
+        for y in range(target_row - 5, target_row + 6)
+    )
+    assert found_red, "hand-drawn stroke did not render at its displayed position"
+
+    # Image: work out where the placement box lands in displayed space, then
+    # where the image actually sits inside it once insert_image has fitted the
+    # 2:1 source into that box. Sampling the four quarter-points of THAT rect
+    # proves both the position and the orientation.
+    box = fitz.Rect(
+        image_frac["x"] * width,
+        image_frac["y"] * height,
+        (image_frac["x"] + image_frac["width"]) * width,
+        (image_frac["y"] + image_frac["height"]) * height,
+    )
+    source_aspect = 40 / 20
+    if source_aspect > box.width / box.height:
+        fitted_w, fitted_h = box.width, box.width / source_aspect
+    else:
+        fitted_h, fitted_w = box.height, box.height * source_aspect
+    cx, cy = (box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2
+    fitted = fitz.Rect(cx - fitted_w / 2, cy - fitted_h / 2, cx + fitted_w / 2, cy + fitted_h / 2)
+
+    def quadrant(fx, fy):
+        return pix.pixel(
+            int(fitted.x0 + fx * fitted.width),
+            int(fitted.y0 + fy * fitted.height),
+        )[:3]
+
+    assert quadrant(0.25, 0.25) == (255, 0, 0), "image top-left quadrant is not the source's top-left"
+    assert quadrant(0.75, 0.25) == (0, 255, 0), "image top-right quadrant is not the source's top-right"
+    assert quadrant(0.25, 0.75) == (0, 0, 255), "image bottom-left quadrant is not the source's bottom-left"
+    assert quadrant(0.75, 0.75) == (255, 255, 0), "image bottom-right quadrant is not the source's bottom-right"
+
+
 def test_edit_pdf_mixed_elements_all_apply_together(tmp_path):
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)

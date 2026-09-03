@@ -568,7 +568,7 @@ def _validate_image_element(el: dict, image_paths: dict[str, str]) -> None:
 
 def _apply_text_edit(doc: fitz.Document, page: fitz.Page, span: dict, replacement_text: str, font_override: dict | None, internal_fontname: str) -> tuple:
     """Adds the redact annotation for this run's original text and returns the
-    (origin, text, fontname, size, embedded_buf) needed to insert its
+    (origin, text, fontname, size, embedded_buf, color) needed to insert its
     replacement.
 
     Verified empirically: inserting the replacement text right away (before
@@ -620,7 +620,12 @@ def _apply_text_edit(doc: fitz.Document, page: fitz.Page, span: dict, replacemen
         floor = max(_TEXT_EDIT_MIN_SIZE, size * _TEXT_EDIT_SHRINK_FACTOR)
         size = max(original_width / measured * size, floor)
 
-    return (span["origin"], replacement_text, fontname, size, embedded_buf)
+    # span["color"] is an sRGB integer; sRGB_to_pdf turns it into the (r, g, b)
+    # float triple insert_text's color= expects. Keeping the run's own colour
+    # means replacement text no longer silently turns black on coloured runs.
+    color = fitz.sRGB_to_pdf(span.get("color", 0))
+
+    return (span["origin"], replacement_text, fontname, size, embedded_buf, color)
 
 
 def _apply_stroke(page: fitz.Page, el: dict) -> None:
@@ -708,7 +713,14 @@ def _apply_image(page: fitz.Page, el: dict, image_path: str) -> None:
     )
     raw = displayed * page.derotation_matrix
     try:
-        page.insert_image(raw, filename=image_path)
+        # The rect is derotated back into mediabox space, but the image's own
+        # pixels are not — without a compensating rotation the image draws
+        # sideways (and letterboxed inside the aspect-swapped raw rect) at
+        # 90/270 degrees, and upside-down at 180. Verified empirically across
+        # every (page.rotation, rotate) pair: rotate=page.rotation is the one
+        # that reproduces the source image upright in DISPLAYED space —
+        # (-page.rotation) % 360 lands 180 degrees out.
+        page.insert_image(raw, filename=image_path, rotate=page.rotation % 360)
     except Exception as exc:
         raise PDFError(f"Could not insert image '{Path(image_path).name}' into the PDF.") from exc
 
@@ -764,14 +776,14 @@ def edit_pdf(input_path: str, output_path: str, elements: list[dict], image_path
                     _apply_text_edit(doc, page, span, el["text"], el.get("font_override"), f"TE{page_num}_{i}")
                 )
             page.apply_redactions()
-            for origin, text, fontname, size, embedded_buf in pending_inserts:
+            for origin, text, fontname, size, embedded_buf, color in pending_inserts:
                 # apply_redactions() wipes the page's font resources, so an
                 # embedded font must be (re-)registered here, after redaction
                 # has already run, immediately before the insert_text() call
                 # that needs it — registering it earlier is silently undone.
                 if embedded_buf is not None:
                     page.insert_font(fontname=fontname, fontbuffer=embedded_buf)
-                page.insert_text(origin, text, fontsize=size, fontname=fontname, color=(0, 0, 0))
+                page.insert_text(origin, text, fontsize=size, fontname=fontname, color=color)
 
         # Then strokes/shapes/highlights/images, in the order the user created them.
         for el in other_elements:

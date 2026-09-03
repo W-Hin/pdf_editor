@@ -283,7 +283,10 @@ class FontOverride(BaseModel):
     family: str
     bold: bool
     italic: bool
-    size: float
+    # A blanked number input arrives as 0 from the frontend; insert_text() accepts
+    # fontsize=0 silently, which erases the original run and renders the
+    # replacement invisibly. Reject it at the model boundary instead.
+    size: float = Field(gt=0)
 
 
 class TextEditElement(BaseModel):
