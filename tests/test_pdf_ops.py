@@ -1131,17 +1131,25 @@ def test_edit_pdf_markup_elements_handle_rotated_page(tmp_path):
     """Every markup element must land where the user DREW it on a rotated page.
 
     Same rigor as test_redact_pdf_handles_rotated_page and
-    test_edit_pdf_text_edit_handles_rotated_page, extended to the four sites
+    test_edit_pdf_text_edit_handles_rotated_page, extended to the five sites
     that had no rotated-page coverage at all: _apply_stroke, _apply_shape,
-    _apply_highlight and _apply_image. The frontend sends fractions of the
-    *displayed* page, so each element is rendered and pixel-sampled at the
-    displayed-space location those same fractions describe.
+    _apply_highlight, _apply_image and _apply_new_text. The frontend sends
+    fractions of the *displayed* page, so each element is rendered and
+    pixel-sampled (or bbox-checked) at the displayed-space location those same
+    fractions describe.
 
     The image case additionally pins the image's ORIENTATION, not just its
     position: derotating the rect alone leaves the image's own pixels rotated,
     so on a 90/270-degree page it draws sideways and letterboxed inside the
     aspect-swapped raw rect (and upside-down at 180). insert_image(rotate=...)
     is what compensates.
+
+    The new_text case pins the text's ORIENTATION the same way: laying out and
+    drawing in raw (derotated) space instead of displayed space renders the
+    glyphs rotated 90 degrees — a "HELLO" that should be wide and short comes
+    out tall and narrow — and wraps against the wrong axis (raw.width is the
+    page's displayed HEIGHT on a 90/270-rotated page). insert_text(rotate=...)
+    plus displayed-space layout is what compensates.
     """
     doc = fitz.open()
     doc.new_page(width=612, height=792)
@@ -1162,6 +1170,10 @@ def test_edit_pdf_markup_elements_handle_rotated_page(tmp_path):
 
     stroke_y = 0.80
     image_frac = {"x": 0.50, "y": 0.10, "width": 0.20, "height": 0.10}
+    # Placed in an otherwise-empty region of the page (top-left is the shape,
+    # top-right the image, mid-left the highlight, y=0.80 the stroke) so its
+    # rendering can't be confused with any other element's.
+    text_frac = {"x": 0.35, "y": 0.62, "width": 0.30, "height": 0.15}
     output_path = tmp_path / "output.pdf"
     edit_pdf(
         str(input_path),
@@ -1184,6 +1196,13 @@ def test_edit_pdf_markup_elements_handle_rotated_page(tmp_path):
                 "top": 0.50, "left": 0.10, "right": 0.70, "bottom": 0.40, "color": "#ffff00",
             },
             {"type": "image", "page": 1, "file_id": "quad", **image_frac},
+            {
+                "type": "new_text", "page": 1,
+                **text_frac,
+                "text": "HELLO",
+                "family": "helvetica", "bold": False, "italic": False, "underline": False,
+                "size": 40, "color": "#000000", "align": "left",
+            },
         ],
         {"quad": str(img_path)},
     )
@@ -1250,6 +1269,42 @@ def test_edit_pdf_markup_elements_handle_rotated_page(tmp_path):
     assert quadrant(0.75, 0.25) == (0, 255, 0), "image top-right quadrant is not the source's top-right"
     assert quadrant(0.25, 0.75) == (0, 0, 255), "image bottom-left quadrant is not the source's bottom-left"
     assert quadrant(0.75, 0.75) == (255, 255, 0), "image bottom-right quadrant is not the source's bottom-right"
+
+    # New text: laid out and drawn in DISPLAYED space, so a landscape 40pt
+    # "HELLO" must come out wide-and-short and sit at the box's displayed-space
+    # top-left corner — not tall-and-narrow (rotated 90 degrees sideways), and
+    # not shifted onto the wrong axis, as it would happen if layout/drawing used
+    # raw (derotated) space instead. get_text("dict") bbox is NOT used here: it
+    # reports coordinates in the page's raw (un-rotated) space regardless of how
+    # the glyphs actually render, so it would report "tall and narrow" even for
+    # correctly-rendered (wide and short) text — verified empirically against
+    # this exact insert_text(rotate=...) call. Scanning rendered ink in the
+    # pixmap (as every other element in this test already does) is what
+    # actually proves what the viewer displays.
+    text_box_x0 = int(text_frac["x"] * width) - 5
+    text_box_y0 = int(text_frac["y"] * height) - 5
+    text_box_x1 = int((text_frac["x"] + text_frac["width"]) * width) + 5
+    text_box_y1 = int((text_frac["y"] + text_frac["height"]) * height) + 5
+    ink_x0 = ink_y0 = 10**9
+    ink_x1 = ink_y1 = -1
+    for iy in range(text_box_y0, text_box_y1):
+        for ix in range(text_box_x0, text_box_x1):
+            r, g, b = pix.pixel(ix, iy)[:3]
+            if r < 250 or g < 250 or b < 250:
+                ink_x0, ink_y0 = min(ink_x0, ix), min(ink_y0, iy)
+                ink_x1, ink_y1 = max(ink_x1, ix), max(ink_y1, iy)
+    assert ink_x1 >= ink_x0, "no rendered ink found for the new_text element in its displayed-space box"
+    ink_w, ink_h = ink_x1 - ink_x0, ink_y1 - ink_y0
+    assert ink_w > ink_h, (
+        f"new_text ink is not landscape-oriented in displayed space: w={ink_w} h={ink_h} "
+        f"(bbox=({ink_x0},{ink_y0})-({ink_x1},{ink_y1})) — text rendered sideways"
+    )
+    expected_x0 = text_frac["x"] * width
+    expected_y0 = text_frac["y"] * height
+    assert abs(ink_x0 - expected_x0) < 10, f"new_text ink x0 {ink_x0} not near expected displayed x0 {expected_x0}"
+    assert expected_y0 < ink_y0 < expected_y0 + text_frac["height"] * height, (
+        f"new_text ink y0 {ink_y0} not within the box's displayed y-range"
+    )
 
 
 def test_edit_pdf_new_text_inserts_at_position(tmp_path):

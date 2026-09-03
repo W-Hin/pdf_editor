@@ -181,7 +181,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     }
 
     function handleKeyDown(e) {
-      if (isTypingTarget(document.activeElement)) return;
+      if (textDraft || isTypingTarget(document.activeElement)) return;
       const ctrl = e.ctrlKey || e.metaKey;
       if (!ctrl) {
         if (e.key === "Escape") setSelectedId(null);
@@ -215,7 +215,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [elements, selectedId, currentPage]);
+  }, [elements, selectedId, currentPage, textDraft]);
 
   if (!fileId || !pageCount) return null;
 

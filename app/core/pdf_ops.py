@@ -777,34 +777,44 @@ def _apply_new_text(page: fitz.Page, el: dict) -> None:
         rect.x0 + (el["x"] + el["width"]) * rect.width,
         rect.y0 + (el["y"] + el["height"]) * rect.height,
     )
-    raw = displayed * page.derotation_matrix
+    dm = page.derotation_matrix
 
     fontname = _base14_alias(el["family"], el["bold"], el["italic"])
     size = el["size"]
     color = _hex_to_rgb(el["color"])
     align = el["align"]
 
-    lines = _wrap_text_lines(el["text"], fontname, size, raw.width)
+    # Layout happens in DISPLAYED space (matching what the user actually drew),
+    # not raw/derotated space — on a 90/270-rotated page, raw space swaps width
+    # and height, so laying out (and wrapping) against raw.width would measure
+    # against the wrong axis entirely. Each point is mapped to raw space only
+    # at the moment it's drawn, via `* dm`, with `rotate=` telling insert_text
+    # how to orient the glyphs themselves — the same technique _apply_image
+    # already uses via its own `rotate=page.rotation % 360` parameter.
+    lines = _wrap_text_lines(el["text"], fontname, size, displayed.width)
     line_height = size * 1.2
-    y = raw.y0 + size
+    y = displayed.y0 + size
     for line in lines:
         # Overflow: stop drawing past the box's bottom edge rather than
         # auto-shrinking — a documented ceiling (the box is user-resizable,
         # so it's recoverable), matching Edit Text's own white-fill limitation.
-        if y > raw.y1:
+        if y > displayed.y1:
             break
         width = fitz.get_text_length(line, fontname=fontname, fontsize=size)
         if align == "center":
-            x = raw.x0 + (raw.width - width) / 2
+            x = displayed.x0 + (displayed.width - width) / 2
         elif align == "right":
-            x = raw.x1 - width
+            x = displayed.x1 - width
         else:
-            x = raw.x0
-        page.insert_text(fitz.Point(x, y), line, fontsize=size, fontname=fontname, color=color)
+            x = displayed.x0
+        page.insert_text(
+            fitz.Point(x, y) * dm, line, fontsize=size, fontname=fontname,
+            color=color, rotate=page.rotation % 360,
+        )
         if el["underline"]:
             underline_y = y + size * 0.15
             page.draw_line(
-                fitz.Point(x, underline_y), fitz.Point(x + width, underline_y),
+                fitz.Point(x, underline_y) * dm, fitz.Point(x + width, underline_y) * dm,
                 color=color, width=max(0.5, size * 0.05),
             )
         y += line_height
