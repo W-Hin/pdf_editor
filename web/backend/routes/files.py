@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from app.core.errors import PDFError
-from app.core.pdf_ops import get_page_count, render_page_thumbnail
+from app.core.pdf_ops import extract_text_runs, get_page_count, render_page_thumbnail
 from web.backend import storage
 
 router = APIRouter()
@@ -33,6 +33,16 @@ def get_thumbnail(file_id: str, page_number: int, max_size: int = 220):
         raise HTTPException(status_code=404, detail="File not found")
     thumb_bytes = render_page_thumbnail(str(path), page_number, max_size=max_size)
     return Response(content=thumb_bytes, media_type="image/png")
+
+
+@router.get("/files/{file_id}/pages/{page_number}/text-runs")
+def get_text_runs(file_id: str, page_number: int):
+    try:
+        path = storage.resolve_file(file_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found")
+    runs = extract_text_runs(str(path), page_number)
+    return {"runs": runs}
 
 
 @router.get("/files/{file_id}/download")

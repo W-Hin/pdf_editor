@@ -272,3 +272,17 @@ def test_redact_unknown_file_id_returns_404():
         },
     )
     assert response.status_code == 404
+
+
+def test_get_text_runs_returns_runs():
+    upload = _upload_pdf()
+    response = client.get(f"/api/files/{upload['id']}/pages/1/text-runs")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["runs"]) == 1
+    assert body["runs"][0]["text"] == "Page 1"
+
+
+def test_get_text_runs_unknown_file_id_returns_404():
+    response = client.get("/api/files/nope/pages/1/text-runs")
+    assert response.status_code == 404
