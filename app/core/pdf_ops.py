@@ -800,3 +800,54 @@ def edit_pdf(input_path: str, output_path: str, elements: list[dict], image_path
         doc.save(output_path)
     finally:
         doc.close()
+
+
+_FORM_FIELD_TYPE_NAMES = {"Text": "text", "CheckBox": "checkbox", "ComboBox": "combobox"}
+
+
+def _page_form_widgets(page: fitz.Page) -> list:
+    """Kept-type widgets for a page, in document order — RadioButton, ListBox,
+    Signature, and any other type are skipped. fill_form (Task 3) reuses this
+    exact function so an index from extract_form_fields always refers to the
+    same widget here.
+    """
+    return [w for w in page.widgets() if w.field_type_string in _FORM_FIELD_TYPE_NAMES]
+
+
+def extract_form_fields(input_path: str) -> list[dict]:
+    doc = open_pdf(input_path)
+    try:
+        fields = []
+        for page_num in range(1, doc.page_count + 1):
+            page = doc[page_num - 1]
+            rect = page.rect
+            for index, w in enumerate(_page_form_widgets(page)):
+                # widget.rect is raw/unrotated; page.rotation_matrix maps it into
+                # the *displayed* rect the frontend positions form controls over
+                # (same convention and same mapping extract_text_runs uses for
+                # span["bbox"] — verified empirically for widgets this session).
+                displayed = fitz.Rect(w.rect) * page.rotation_matrix
+                field_type = _FORM_FIELD_TYPE_NAMES[w.field_type_string]
+                if field_type == "checkbox":
+                    value = w.field_value not in (None, "", "Off")
+                else:
+                    value = w.field_value or ""
+                fields.append(
+                    {
+                        "page": page_num,
+                        "index": index,
+                        "label": w.field_label or w.field_name,
+                        "type": field_type,
+                        "rect": {
+                            "top": (displayed.y0 - rect.y0) / rect.height,
+                            "left": (displayed.x0 - rect.x0) / rect.width,
+                            "right": (rect.x1 - displayed.x1) / rect.width,
+                            "bottom": (rect.y1 - displayed.y1) / rect.height,
+                        },
+                        "value": value,
+                        "choices": list(w.choice_values) if field_type == "combobox" and w.choice_values else None,
+                    }
+                )
+        return fields
+    finally:
+        doc.close()
