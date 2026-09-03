@@ -36,6 +36,9 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   const [shapeFilled, setShapeFilled] = useState(false);
   const [shapeDragStart, setShapeDragStart] = useState(null);
   const [shapeDragCurrent, setShapeDragCurrent] = useState(null);
+  const [highlightColor, setHighlightColor] = useState("#ffd43b");
+  const [highlightDragStart, setHighlightDragStart] = useState(null);
+  const [highlightDragCurrent, setHighlightDragCurrent] = useState(null);
 
   useEffect(() => {
     if (!fileId) return;
@@ -134,9 +137,35 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     ];
     commitElements(next);
   }
-  function handleHighlightMouseDown() {}
-  function handleHighlightMouseMove() {}
-  function handleHighlightMouseUp() {}
+  function handleHighlightMouseDown(e) {
+    const point = pointFromEvent(e);
+    if (!point) return;
+    setHighlightDragStart(point);
+    setHighlightDragCurrent(point);
+  }
+
+  function handleHighlightMouseMove(e) {
+    if (!highlightDragStart) return;
+    const point = pointFromEvent(e);
+    if (!point) return;
+    setHighlightDragCurrent(point);
+  }
+
+  function handleHighlightMouseUp() {
+    if (!highlightDragStart || !highlightDragCurrent) return;
+    const x0 = Math.min(highlightDragStart.x, highlightDragCurrent.x);
+    const x1 = Math.max(highlightDragStart.x, highlightDragCurrent.x);
+    const y0 = Math.min(highlightDragStart.y, highlightDragCurrent.y);
+    const y1 = Math.max(highlightDragStart.y, highlightDragCurrent.y);
+    setHighlightDragStart(null);
+    setHighlightDragCurrent(null);
+    if (x1 - x0 < 0.02 || y1 - y0 < 0.02) return;
+    const next = [
+      ...elements,
+      { id: newElementId(), type: "highlight", page: currentPage, top: y0, left: x0, right: 1 - x1, bottom: 1 - y1, color: highlightColor },
+    ];
+    commitElements(next);
+  }
   function handleImageStageClick() {}
 
   function handleStageMouseDown(e) {
@@ -279,6 +308,21 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               Fill
             </label>
           )}
+        </div>
+      )}
+
+      {activeMode === "highlight" && (
+        <div className="edit-pdf-canvas__style-bar">
+          {["#ffd43b", "#69db7c", "#66d9e8", "#ff8787"].map((c) => (
+            <button
+              key={c}
+              type="button"
+              className={c === highlightColor ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active" : "edit-pdf-canvas__color-swatch"}
+              style={{ background: c }}
+              onClick={() => setHighlightColor(c)}
+              aria-label={`Color ${c}`}
+            />
+          ))}
         </div>
       )}
 
@@ -435,6 +479,52 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               <X size={12} weight="bold" />
             </button>
           ))}
+
+        {elements
+          .filter((el) => el.type === "highlight" && el.page === currentPage)
+          .map((el) => (
+            <div
+              key={el.id}
+              className={
+                el.id === selectedId
+                  ? "edit-pdf-canvas__highlight edit-pdf-canvas__highlight--selected"
+                  : "edit-pdf-canvas__highlight"
+              }
+              style={{
+                left: `${el.left * 100}%`,
+                top: `${el.top * 100}%`,
+                width: `${(1 - el.left - el.right) * 100}%`,
+                height: `${(1 - el.top - el.bottom) * 100}%`,
+                background: el.color,
+              }}
+              onClick={() => setSelectedId(el.id)}
+            >
+              <button
+                type="button"
+                className="edit-pdf-canvas__box-remove"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  commitElements(elements.filter((e) => e.id !== el.id));
+                }}
+                aria-label="Remove this highlight"
+              >
+                <X size={12} weight="bold" />
+              </button>
+            </div>
+          ))}
+        {highlightDragStart && highlightDragCurrent && (
+          <div
+            className="edit-pdf-canvas__highlight edit-pdf-canvas__highlight--dragging"
+            style={{
+              left: `${Math.min(highlightDragStart.x, highlightDragCurrent.x) * 100}%`,
+              top: `${Math.min(highlightDragStart.y, highlightDragCurrent.y) * 100}%`,
+              width: `${Math.abs(highlightDragCurrent.x - highlightDragStart.x) * 100}%`,
+              height: `${Math.abs(highlightDragCurrent.y - highlightDragStart.y) * 100}%`,
+              background: highlightColor,
+            }}
+          />
+        )}
 
         {activeMode === "text" &&
           runs.map((run) => {

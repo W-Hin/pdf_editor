@@ -740,6 +740,38 @@ h1 {
   pointer-events: auto;
 }
 
+.edit-pdf-canvas__highlight {
+  position: absolute;
+  opacity: 0.4;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.edit-pdf-canvas__highlight--selected {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.edit-pdf-canvas__highlight--dragging {
+  pointer-events: none;
+}
+
+.edit-pdf-canvas__box-remove {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  cursor: pointer;
+  opacity: 1;
+}
+
 .edit-pdf-canvas__style-bar {
   display: flex;
   align-items: center;
