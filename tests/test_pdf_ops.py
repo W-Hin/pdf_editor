@@ -1252,6 +1252,319 @@ def test_edit_pdf_markup_elements_handle_rotated_page(tmp_path):
     assert quadrant(0.75, 0.75) == (255, 255, 0), "image bottom-right quadrant is not the source's bottom-right"
 
 
+def test_edit_pdf_new_text_inserts_at_position(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [
+            {
+                "type": "new_text", "page": 1,
+                "x": 0.1, "y": 0.1, "width": 0.3, "height": 0.1,
+                "text": "Hello Stamp",
+                "family": "helvetica", "bold": False, "italic": False, "underline": False,
+                "size": 14, "color": "#1f2937", "align": "left",
+            }
+        ],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    text = result[0].get_text()
+    result.close()
+    assert "Hello Stamp" in text
+
+
+def test_edit_pdf_new_text_wraps_multiple_lines(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    # This exact text/size/width combination was verified empirically (see the
+    # design spec's Key technical findings) to wrap into exactly 3 lines:
+    # "This is a longer note that should wrap" / "across multiple lines within
+    # the box," / "underlined." — a raw-space box of (72,100)-(300,200) at
+    # 12pt, reproduced here via fractions of a 595x842 page so the raw rect
+    # matches exactly.
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [
+            {
+                "type": "new_text", "page": 1,
+                "x": 72 / 595, "y": 100 / 842, "width": 228 / 595, "height": 100 / 842,
+                "text": "This is a longer note that should wrap across multiple lines within the box, underlined.",
+                "family": "helvetica", "bold": False, "italic": False, "underline": False,
+                "size": 12, "color": "#000000", "align": "left",
+            }
+        ],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    text = result[0].get_text()
+    result.close()
+    line_count = len([l for l in text.split("\n") if l.strip()])
+    assert line_count == 3
+    assert "This is a longer note that should wrap" in text
+    assert "underlined." in text
+
+
+def test_edit_pdf_new_text_font_family_bold_italic(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [
+            {
+                "type": "new_text", "page": 1,
+                "x": 0.1, "y": 0.1, "width": 0.5, "height": 0.1,
+                "text": "Styled",
+                "family": "times", "bold": True, "italic": True, "underline": False,
+                "size": 14, "color": "#000000", "align": "left",
+            }
+        ],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    d = result[0].get_text("dict")
+    result.close()
+    spans = [s for b in d["blocks"] for l in b.get("lines", []) for s in l["spans"]]
+    assert len(spans) == 1
+    assert spans[0]["font"] == "Times-BoldItalic"
+    assert bool(spans[0]["flags"] & 16)  # bold
+    assert bool(spans[0]["flags"] & 2)  # italic
+
+
+def test_edit_pdf_new_text_underline_draws_line_per_line(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [
+            {
+                "type": "new_text", "page": 1,
+                "x": 0.12, "y": 0.12, "width": 0.4, "height": 0.1,
+                "text": "Underlined Text",
+                "family": "helvetica", "bold": False, "italic": False, "underline": True,
+                "size": 20, "color": "#000000", "align": "left",
+            }
+        ],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    drawings = result[0].get_drawings()
+    result.close()
+    assert len(drawings) == 1
+    assert drawings[0]["items"][0][0] == "l"  # a line
+
+
+def test_edit_pdf_new_text_alignment_positions_text(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    base_el = {
+        "type": "new_text", "page": 1,
+        "x": 0.1, "y": 0.1, "width": 0.5, "height": 0.1,
+        "text": "Hi",
+        "family": "helvetica", "bold": False, "italic": False, "underline": False,
+        "size": 14, "color": "#000000",
+    }
+
+    def origin_x(align):
+        out = tmp_path / f"{align}.pdf"
+        edit_pdf(str(input_path), str(out), [{**base_el, "align": align}], {})
+        doc2 = fitz.open(str(out))
+        d = doc2[0].get_text("dict")
+        doc2.close()
+        spans = [s for b in d["blocks"] for l in b.get("lines", []) for s in l["spans"]]
+        return spans[0]["origin"][0]
+
+    left_x = origin_x("left")
+    center_x = origin_x("center")
+    right_x = origin_x("right")
+    assert left_x < center_x < right_x
+
+
+def test_edit_pdf_new_text_overflow_stops_at_box_bottom_without_raising(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    long_text = "One Two Three Four Five Six Seven Eight Nine Ten Eleven Twelve Thirteen Fourteen"
+    # A box only tall enough for one line at this size — the rest overflows
+    # past the bottom edge and is simply never drawn (no auto-shrink, no error).
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [
+            {
+                "type": "new_text", "page": 1,
+                "x": 0.1, "y": 0.1, "width": 0.15, "height": 0.03,
+                "text": long_text,
+                "family": "helvetica", "bold": False, "italic": False, "underline": False,
+                "size": 14, "color": "#000000", "align": "left",
+            }
+        ],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    text = result[0].get_text()
+    result.close()
+    assert "One" in text
+    assert "Fourteen" not in text
+
+
+def test_edit_pdf_rejects_new_text_empty_text(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    with pytest.raises(PDFError):
+        edit_pdf(
+            str(input_path), str(output_path),
+            [
+                {
+                    "type": "new_text", "page": 1,
+                    "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.1,
+                    "text": "   ",
+                    "family": "helvetica", "bold": False, "italic": False, "underline": False,
+                    "size": 14, "color": "#000000", "align": "left",
+                }
+            ],
+            {},
+        )
+
+
+def test_edit_pdf_rejects_new_text_invalid_color(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    with pytest.raises(PDFError):
+        edit_pdf(
+            str(input_path), str(output_path),
+            [
+                {
+                    "type": "new_text", "page": 1,
+                    "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.1,
+                    "text": "Hi",
+                    "family": "helvetica", "bold": False, "italic": False, "underline": False,
+                    "size": 14, "color": "not-a-color", "align": "left",
+                }
+            ],
+            {},
+        )
+
+
+def test_edit_pdf_rejects_new_text_unknown_family(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    with pytest.raises(PDFError):
+        edit_pdf(
+            str(input_path), str(output_path),
+            [
+                {
+                    "type": "new_text", "page": 1,
+                    "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.1,
+                    "text": "Hi",
+                    "family": "comic-sans", "bold": False, "italic": False, "underline": False,
+                    "size": 14, "color": "#000000", "align": "left",
+                }
+            ],
+            {},
+        )
+
+
+def test_edit_pdf_rejects_new_text_unknown_align(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    with pytest.raises(PDFError):
+        edit_pdf(
+            str(input_path), str(output_path),
+            [
+                {
+                    "type": "new_text", "page": 1,
+                    "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.1,
+                    "text": "Hi",
+                    "family": "helvetica", "bold": False, "italic": False, "underline": False,
+                    "size": 14, "color": "#000000", "align": "justify",
+                }
+            ],
+            {},
+        )
+
+
+def test_edit_pdf_rejects_new_text_out_of_bounds_rect(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    with pytest.raises(PDFError):
+        edit_pdf(
+            str(input_path), str(output_path),
+            [
+                {
+                    "type": "new_text", "page": 1,
+                    "x": 0.9, "y": 0.1, "width": 0.3, "height": 0.1,  # x + width > 1
+                    "text": "Hi",
+                    "family": "helvetica", "bold": False, "italic": False, "underline": False,
+                    "size": 14, "color": "#000000", "align": "left",
+                }
+            ],
+            {},
+        )
+
+
 def test_edit_pdf_mixed_elements_all_apply_together(tmp_path):
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)

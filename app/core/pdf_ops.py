@@ -725,6 +725,91 @@ def _apply_image(page: fitz.Page, el: dict, image_path: str) -> None:
         raise PDFError(f"Could not insert image '{Path(image_path).name}' into the PDF.") from exc
 
 
+_NEW_TEXT_FAMILIES = {"helvetica", "times", "courier"}
+_NEW_TEXT_ALIGNS = {"left", "center", "right"}
+
+
+def _validate_new_text(el: dict) -> None:
+    if not el["text"].strip():
+        raise PDFError("Add some text before running.")
+    if not (0 <= el["x"] <= 1) or not (0 <= el["y"] <= 1):
+        raise PDFError("Text box position must be within the page.")
+    if not (0 < el["width"] <= 1) or not (0 < el["height"] <= 1):
+        raise PDFError("Text box width and height must be positive fractions of the page.")
+    if el["x"] + el["width"] > 1 or el["y"] + el["height"] > 1:
+        raise PDFError("The text box must fit within the page.")
+    if el["family"] not in _NEW_TEXT_FAMILIES:
+        raise PDFError(f"Unknown font family: {el['family']}")
+    if el["align"] not in _NEW_TEXT_ALIGNS:
+        raise PDFError(f"Unknown text alignment: {el['align']}")
+    _hex_to_rgb(el["color"])  # raises PDFError up front on a malformed hex
+
+
+def _wrap_text_lines(text: str, fontname: str, fontsize: float, max_width: float) -> list[str]:
+    """Greedy word-wrap using the same width-measurement primitive
+    (fitz.get_text_length) auto-shrink-to-fit already relies on.
+    insert_textbox() (used elsewhere for Watermark/Page Numbers) wraps text
+    but doesn't expose per-line boundaries or widths, which _apply_new_text
+    needs to draw a correctly-sized underline under each line and to align
+    each line independently — verified empirically (see the Add Text design
+    spec) that this manual approach produces the expected line breaks.
+    """
+    lines = []
+    for paragraph in text.split("\n"):
+        words = paragraph.split(" ")
+        current = words[0]
+        for word in words[1:]:
+            candidate = f"{current} {word}"
+            if fitz.get_text_length(candidate, fontname=fontname, fontsize=fontsize) <= max_width:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+    return lines
+
+
+def _apply_new_text(page: fitz.Page, el: dict) -> None:
+    rect = page.rect
+    displayed = fitz.Rect(
+        rect.x0 + el["x"] * rect.width,
+        rect.y0 + el["y"] * rect.height,
+        rect.x0 + (el["x"] + el["width"]) * rect.width,
+        rect.y0 + (el["y"] + el["height"]) * rect.height,
+    )
+    raw = displayed * page.derotation_matrix
+
+    fontname = _base14_alias(el["family"], el["bold"], el["italic"])
+    size = el["size"]
+    color = _hex_to_rgb(el["color"])
+    align = el["align"]
+
+    lines = _wrap_text_lines(el["text"], fontname, size, raw.width)
+    line_height = size * 1.2
+    y = raw.y0 + size
+    for line in lines:
+        # Overflow: stop drawing past the box's bottom edge rather than
+        # auto-shrinking — a documented ceiling (the box is user-resizable,
+        # so it's recoverable), matching Edit Text's own white-fill limitation.
+        if y > raw.y1:
+            break
+        width = fitz.get_text_length(line, fontname=fontname, fontsize=size)
+        if align == "center":
+            x = raw.x0 + (raw.width - width) / 2
+        elif align == "right":
+            x = raw.x1 - width
+        else:
+            x = raw.x0
+        page.insert_text(fitz.Point(x, y), line, fontsize=size, fontname=fontname, color=color)
+        if el["underline"]:
+            underline_y = y + size * 0.15
+            page.draw_line(
+                fitz.Point(x, underline_y), fitz.Point(x + width, underline_y),
+                color=color, width=max(0.5, size * 0.05),
+            )
+        y += line_height
+
+
 def edit_pdf(input_path: str, output_path: str, elements: list[dict], image_paths: dict[str, str]) -> None:
     if not elements:
         raise PDFError("Add at least one edit before running.")
@@ -752,6 +837,8 @@ def edit_pdf(input_path: str, output_path: str, elements: list[dict], image_path
                 _validate_highlight(el)
             elif el_type == "image":
                 _validate_image_element(el, image_paths)
+            elif el_type == "new_text":
+                _validate_new_text(el)
             else:
                 raise PDFError(f"Unknown element type: {el_type}")
 
@@ -796,6 +883,8 @@ def edit_pdf(input_path: str, output_path: str, elements: list[dict], image_path
                 _apply_highlight(page, el)
             elif el["type"] == "image":
                 _apply_image(page, el, image_paths[el["file_id"]])
+            elif el["type"] == "new_text":
+                _apply_new_text(page, el)
 
         doc.save(output_path)
     finally:
