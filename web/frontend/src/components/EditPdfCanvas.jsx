@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { CaretLeft, CaretRight, CursorText, PencilSimple, Rectangle, Highlighter, ImageSquare, X } from "@phosphor-icons/react";
-import { thumbnailUrl, fetchTextRuns } from "../api";
+import { thumbnailUrl, fetchTextRuns, uploadFile } from "../api";
 
 const PREVIEW_MAX_SIZE = 700;
 
@@ -39,6 +39,9 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   const [highlightColor, setHighlightColor] = useState("#ffd43b");
   const [highlightDragStart, setHighlightDragStart] = useState(null);
   const [highlightDragCurrent, setHighlightDragCurrent] = useState(null);
+  const imageFileInputRef = useRef(null);
+  const pendingImageDropRef = useRef(null);
+  const imageDragRef = useRef(null);
 
   useEffect(() => {
     if (!fileId) return;
@@ -166,7 +169,78 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     ];
     commitElements(next);
   }
-  function handleImageStageClick() {}
+  function handleImageStageClick(e) {
+    const point = pointFromEvent(e);
+    if (!point) return;
+    pendingImageDropRef.current = point;
+    imageFileInputRef.current?.click();
+  }
+
+  function loadImageNaturalSize(file) {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        resolve({ width: img.naturalWidth, height: img.naturalHeight });
+        URL.revokeObjectURL(url);
+      };
+      img.src = url;
+    });
+  }
+
+  async function handleImageFileSelected(e) {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    const drop = pendingImageDropRef.current ?? { x: 0.375, y: 0.375 };
+    const [uploaded, naturalSize] = await Promise.all([uploadFile(file), loadImageNaturalSize(file)]);
+    const width = 0.25;
+    const height = Math.min(0.9, width * (naturalSize.height / naturalSize.width));
+    const x = Math.min(Math.max(drop.x - width / 2, 0), 1 - width);
+    const y = Math.min(Math.max(drop.y - height / 2, 0), 1 - height);
+    commitElements([...elements, { id: newElementId(), type: "image", page: currentPage, file_id: uploaded.id, x, y, width, height }]);
+  }
+
+  function startImageDrag(el, mode, e) {
+    e.stopPropagation();
+    const point = pointFromEvent(e);
+    if (!point) return;
+    imageDragRef.current = { id: el.id, mode, start: point, startElement: { ...el } };
+    window.addEventListener("mousemove", handleImageDragMove);
+    window.addEventListener("mouseup", handleImageDragEnd);
+  }
+
+  function handleImageDragMove(e) {
+    const drag = imageDragRef.current;
+    if (!drag) return;
+    const point = pointFromEvent(e);
+    if (!point) return;
+    const dx = point.x - drag.start.x;
+    const dy = point.y - drag.start.y;
+    const { startElement } = drag;
+    let updated;
+    if (drag.mode === "move") {
+      const x = Math.min(Math.max(startElement.x + dx, 0), 1 - startElement.width);
+      const y = Math.min(Math.max(startElement.y + dy, 0), 1 - startElement.height);
+      updated = { ...startElement, x, y };
+    } else {
+      const scale = Math.max(0.05, startElement.width + dx) / startElement.width;
+      const width = Math.min(1 - startElement.x, startElement.width * scale);
+      const height = width * (startElement.height / startElement.width);
+      updated = { ...startElement, width, height };
+    }
+    setElements((prev) => prev.map((el) => (el.id === drag.id ? updated : el)));
+  }
+
+  function handleImageDragEnd() {
+    window.removeEventListener("mousemove", handleImageDragMove);
+    window.removeEventListener("mouseup", handleImageDragEnd);
+    imageDragRef.current = null;
+    setElements((current) => {
+      onChange(current);
+      return current;
+    });
+  }
 
   function handleStageMouseDown(e) {
     if (activeMode === "draw") return handleDrawMouseDown(e);
@@ -526,6 +600,28 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
           />
         )}
 
+        {elements
+          .filter((el) => el.type === "image" && el.page === currentPage)
+          .map((el) => (
+            <div
+              key={el.id}
+              className="edit-pdf-canvas__image-el"
+              style={{ left: `${el.x * 100}%`, top: `${el.y * 100}%`, width: `${el.width * 100}%`, height: `${el.height * 100}%` }}
+              onMouseDown={(e) => startImageDrag(el, "move", e)}
+            >
+              <div className="edit-pdf-canvas__image-el-handle" onMouseDown={(e) => startImageDrag(el, "resize", e)} />
+              <button
+                type="button"
+                className="edit-pdf-canvas__box-remove"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => commitElements(elements.filter((e2) => e2.id !== el.id))}
+                aria-label="Remove this image"
+              >
+                <X size={12} weight="bold" />
+              </button>
+            </div>
+          ))}
+
         {activeMode === "text" &&
           runs.map((run) => {
             const pending = pendingTextEditFor(run);
@@ -544,6 +640,14 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
             );
           })}
       </div>
+
+      <input
+        ref={imageFileInputRef}
+        type="file"
+        accept="image/png,image/jpeg"
+        style={{ display: "none" }}
+        onChange={handleImageFileSelected}
+      />
 
       {activeMode === "text" && editingRunIndex !== null && (
         <div className="edit-pdf-canvas__run-editor">
