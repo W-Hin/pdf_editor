@@ -37,6 +37,7 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
   const stageRef = useRef(null);
   const padCanvasRef = useRef(null);
   const isDrawingRef = useRef(false);
+  const dragRef = useRef(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [placements, setPlacements] = useState([]);
   const [signatureFileId, setSignatureFileId] = useState(null);
@@ -187,6 +188,47 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
     setPlacements((prev) => prev.filter((p) => p.id !== id));
   }
 
+  function startDrag(placement, mode, e) {
+    e.stopPropagation();
+    const point = pointFromEvent(e);
+    if (!point) return;
+    dragRef.current = { id: placement.id, mode, start: point, startPlacement: { ...placement } };
+    window.addEventListener("mousemove", handleDragMove);
+    window.addEventListener("mouseup", handleDragEnd);
+    window.addEventListener("blur", handleDragEnd);
+  }
+
+  function handleDragMove(e) {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const point = pointFromEvent(e);
+    if (!point) return;
+    const dx = point.x - drag.start.x;
+    const dy = point.y - drag.start.y;
+    const { startPlacement } = drag;
+    let updated;
+    if (drag.mode === "move") {
+      const x = Math.min(Math.max(startPlacement.x + dx, 0), 1 - startPlacement.width);
+      const y = Math.min(Math.max(startPlacement.y + dy, 0), 1 - startPlacement.height);
+      updated = { ...startPlacement, x, y };
+    } else {
+      const aspect = startPlacement.height / startPlacement.width;
+      const widthCap = Math.min(1 - startPlacement.x, (1 - startPlacement.y) / aspect);
+      const desiredWidth = Math.max(0.05, startPlacement.width + dx);
+      const width = Math.min(desiredWidth, widthCap);
+      const height = width * aspect;
+      updated = { ...startPlacement, width, height };
+    }
+    setPlacements((prev) => prev.map((p) => (p.id === drag.id ? updated : p)));
+  }
+
+  function handleDragEnd() {
+    window.removeEventListener("mousemove", handleDragMove);
+    window.removeEventListener("mouseup", handleDragEnd);
+    window.removeEventListener("blur", handleDragEnd);
+    dragRef.current = null;
+  }
+
   function useDifferentSignature() {
     setSignatureFileId(null);
     setSignatureNaturalSize(null);
@@ -276,9 +318,10 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
                   key={p.id}
                   className="sign-canvas__placement"
                   style={{ left: `${p.x * 100}%`, top: `${p.y * 100}%`, width: `${p.width * 100}%`, height: `${p.height * 100}%` }}
-                  onMouseDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => startDrag(p, "move", e)}
                 >
                   <img src={signaturePreviewSrc} className="sign-canvas__placement-image" alt="Placed signature" draggable={false} />
+                  <div className="sign-canvas__placement-handle" onMouseDown={(e) => startDrag(p, "resize", e)} />
                   <button
                     type="button"
                     className="sign-canvas__placement-remove"
