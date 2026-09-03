@@ -393,3 +393,54 @@ def redact_pdf(input_path: str, output_path: str, redactions: list[dict]) -> Non
         doc.save(output_path)
     finally:
         doc.close()
+
+
+def _page_text_spans(page: fitz.Page) -> list[dict]:
+    """Raw PyMuPDF span dicts for a page, in document order, whitespace-only
+    spans skipped. Coordinates in each span's "bbox"/"origin" are in unrotated
+    mediabox space — the space add_redact_annot/insert_text/set_cropbox all
+    expect. edit_pdf (Task 3) reuses this exact function so a run_index from
+    extract_text_runs always refers to the same span here.
+    """
+    spans = []
+    for block in page.get_text("dict")["blocks"]:
+        for line in block.get("lines", []):
+            for span in line["spans"]:
+                if span["text"].strip():
+                    spans.append(span)
+    return spans
+
+
+def extract_text_runs(input_path: str, page_number: int) -> list[dict]:
+    doc = open_pdf(input_path)
+    try:
+        if page_number < 1 or page_number > doc.page_count:
+            raise PDFError(f"Page {page_number} does not exist in this document ({doc.page_count} pages).")
+        page = doc[page_number - 1]
+        rect = page.rect
+        runs = []
+        for index, span in enumerate(_page_text_spans(page)):
+            # span["bbox"] is raw/unrotated; page.rotation_matrix maps it into
+            # the *displayed* rect the frontend renders click targets over
+            # (finding #2 — the inverse of crop_pdf/redact_pdf's derotation step).
+            displayed = fitz.Rect(span["bbox"]) * page.rotation_matrix
+            flags = span["flags"]
+            runs.append(
+                {
+                    "index": index,
+                    "text": span["text"],
+                    "font": span["font"],
+                    "size": span["size"],
+                    "bold": bool(flags & 16),
+                    "italic": bool(flags & 2),
+                    "bbox": {
+                        "top": (displayed.y0 - rect.y0) / rect.height,
+                        "left": (displayed.x0 - rect.x0) / rect.width,
+                        "right": (rect.x1 - displayed.x1) / rect.width,
+                        "bottom": (rect.y1 - displayed.y1) / rect.height,
+                    },
+                }
+            )
+        return runs
+    finally:
+        doc.close()

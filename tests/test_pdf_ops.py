@@ -3,7 +3,7 @@ import pytest
 from pathlib import Path
 
 from app.core.errors import PDFError
-from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf, add_page_numbers, images_to_pdf, redact_pdf
+from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf, add_page_numbers, images_to_pdf, redact_pdf, extract_text_runs
 
 
 def test_open_pdf_missing_file_raises(tmp_path):
@@ -749,3 +749,75 @@ def test_redact_pdf_rejects_invalid_fraction(tmp_path):
         redact_pdf(str(input_path), str(output_path), [
             {"page": 1, "top": 1.0, "right": 0.1, "bottom": 0.1, "left": 0.1},
         ])
+
+
+def test_extract_text_runs_returns_text_font_size_and_style(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "Plain Text", fontsize=14, fontname="helv")
+    page.insert_text((72, 150), "Bold Text", fontsize=12, fontname="hebo")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    runs = extract_text_runs(str(input_path), 1)
+
+    assert len(runs) == 2
+    assert runs[0]["index"] == 0
+    assert runs[0]["text"] == "Plain Text"
+    assert runs[0]["size"] == 14
+    assert runs[0]["bold"] is False
+    assert runs[0]["italic"] is False
+    assert runs[1]["text"] == "Bold Text"
+    assert runs[1]["bold"] is True
+
+
+def test_extract_text_runs_skips_whitespace_only_spans(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "Real Text   ", fontsize=12, fontname="helv")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    runs = extract_text_runs(str(input_path), 1)
+
+    assert all(r["text"].strip() for r in runs)
+
+
+def test_extract_text_runs_bbox_fractions_are_displayed_space(tmp_path):
+    """On a rotated page, a run's bbox fraction must describe where it VISUALLY
+    appears (the space the frontend renders click targets in), not raw mediabox
+    space — spec finding #2: raw_bbox * page.rotation_matrix maps into displayed
+    space."""
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    # Unrotated top-left; after a 90 degree rotation this is DISPLAYED top-right.
+    page.insert_text((72, 72), "ROTATED")
+    page.set_rotation(90)
+    input_path = tmp_path / "rotated.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    runs = extract_text_runs(str(input_path), 1)
+
+    assert len(runs) == 1
+    bbox = runs[0]["bbox"]
+    # Displayed top-right quadrant: small "top", small "right".
+    assert bbox["top"] < 0.5
+    assert bbox["right"] < 0.5
+    assert 0 <= bbox["top"] < 1
+    assert 0 <= bbox["left"] < 1
+    assert 0 <= bbox["right"] < 1
+    assert 0 <= bbox["bottom"] < 1
+
+
+def test_extract_text_runs_rejects_out_of_range_page(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    with pytest.raises(PDFError):
+        extract_text_runs(str(input_path), 2)
