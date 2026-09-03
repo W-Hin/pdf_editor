@@ -3,7 +3,7 @@ import pytest
 from pathlib import Path
 
 from app.core.errors import PDFError
-from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf, add_page_numbers, images_to_pdf, redact_pdf, extract_text_runs
+from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf, add_page_numbers, images_to_pdf, redact_pdf, extract_text_runs, edit_pdf
 
 
 def test_open_pdf_missing_file_raises(tmp_path):
@@ -821,3 +821,340 @@ def test_extract_text_runs_rejects_out_of_range_page(tmp_path):
 
     with pytest.raises(PDFError):
         extract_text_runs(str(input_path), 2)
+
+
+def test_edit_pdf_text_edit_replaces_text_and_keeps_surrounding_content(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "Hello World", fontsize=14, fontname="helv")
+    page.insert_text((72, 150), "Untouched Line", fontsize=14, fontname="helv")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [{"type": "text_edit", "page": 1, "run_index": 0, "text": "Goodbye Mars", "font_override": None}],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    text = result[0].get_text()
+    result.close()
+    assert "Hello World" not in text
+    assert "Goodbye Mars" in text
+    assert "Untouched Line" in text
+
+
+def test_edit_pdf_text_edit_handles_rotated_page(tmp_path):
+    """Same rigor as test_redact_pdf_handles_rotated_page: a run the user could
+    SEE and clicked must be the run that actually gets replaced."""
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 700), "OMEGA ORIGINAL")  # displayed top-left after rotation
+    page.insert_text((72, 72), "ALPHA KEEP")        # displayed top-right after rotation
+    page.set_rotation(90)
+    input_path = tmp_path / "rotated.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    runs = extract_text_runs(str(input_path), 1)
+    target = next(r for r in runs if r["text"] == "OMEGA ORIGINAL")
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [{"type": "text_edit", "page": 1, "run_index": target["index"], "text": "OMEGA REPLACED", "font_override": None}],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    text = result[0].get_text()
+    result.close()
+    assert "OMEGA ORIGINAL" not in text
+    assert "OMEGA REPLACED" in text
+    assert "ALPHA KEEP" in text
+
+
+def test_edit_pdf_text_edit_auto_shrinks_when_overflowing(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "Hi", fontsize=20, fontname="helv")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    long_text = "This replacement text is much much longer than the original run"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [{"type": "text_edit", "page": 1, "run_index": 0, "text": long_text, "font_override": None}],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    d = result[0].get_text("dict")
+    result.close()
+    spans = [s for b in d["blocks"] for l in b.get("lines", []) for s in l["spans"]]
+    assert len(spans) == 1
+    assert spans[0]["size"] < 20  # shrunk to fit
+    assert spans[0]["size"] >= 6  # not below the floor
+
+
+def test_edit_pdf_stroke_adds_ink_annotation(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [
+            {
+                "type": "stroke",
+                "page": 1,
+                "points": [{"x": 0.1, "y": 0.1}, {"x": 0.2, "y": 0.15}, {"x": 0.3, "y": 0.1}],
+                "color": "#ff0000",
+                "width": 3,
+            }
+        ],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    # Read annotation "type" while iterating, not from a list of Annot objects
+    # built beforehand: in this PyMuPDF build, accessing an attribute on an
+    # Annot pulled from a fully-consumed `list(page.annots())` raises
+    # "annotation not bound to any page" — the generator invalidates earlier
+    # objects once exhausted. Verified empirically (see task-3 report).
+    annot_types = [a.type[1] for a in result[0].annots()]
+    result.close()
+    assert len(annot_types) == 1
+    assert annot_types[0] == "Ink"
+
+
+def test_edit_pdf_shape_rectangle_filled_renders_color(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [
+            {
+                "type": "shape",
+                "page": 1,
+                "shape": "rectangle",
+                "x0": 0.1,
+                "y0": 0.1,
+                "x1": 0.3,
+                "y1": 0.2,
+                "color": "#00ff00",
+                "width": 2,
+                "filled": True,
+            }
+        ],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    pix = result[0].get_pixmap()
+    result.close()
+    # Center of the drawn rect: x0=0.1*595=59.5, x1=0.3*595=178.5, y0=0.1*842=84.2, y1=0.2*842=168.4
+    r, g, b = pix.pixel(119, 126)[:3]
+    assert g > 150 and r < 100 and b < 100  # unmistakably green, not white
+
+
+def test_edit_pdf_shape_arrow_does_not_raise_and_draws_pixels(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [
+            {
+                "type": "shape",
+                "page": 1,
+                "shape": "arrow",
+                "x0": 0.1,
+                "y0": 0.1,
+                "x1": 0.4,
+                "y1": 0.3,
+                "color": "#000000",
+                "width": 2,
+                "filled": False,
+            }
+        ],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    pix = result[0].get_pixmap()
+    result.close()
+    dark_pixels = sum(
+        1
+        for y in range(0, pix.height, 2)
+        for x in range(0, pix.width, 2)
+        if sum(pix.pixel(x, y)[:3]) < 200
+    )
+    assert dark_pixels > 10
+
+
+def test_edit_pdf_highlight_renders_translucent_overlay(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [{"type": "highlight", "page": 1, "top": 0.1, "right": 0.7, "bottom": 0.8, "left": 0.1, "color": "#ffff00"}],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    pix = result[0].get_pixmap()
+    result.close()
+    # top=0.1*842=84.2, left=0.1*595=59.5, right edge=0.3*595=178.5(=595-0.7*595), bottom edge=0.2*842=168.4
+    r, g, b = pix.pixel(119, 126)[:3]
+    assert r > 200 and g > 200 and b < 220  # yellow-tinted, not pure white (255,255,255) or pure yellow
+
+
+def test_edit_pdf_image_inserts_into_page(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    img_pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), False)
+    img_pix.set_rect(img_pix.irect, (0, 0, 255))
+    img_path = tmp_path / "stamp.png"
+    img_pix.save(str(img_path))
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [{"type": "image", "page": 1, "file_id": "stamp", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.1}],
+        {"stamp": str(img_path)},
+    )
+
+    result = fitz.open(str(output_path))
+    pix = result[0].get_pixmap()
+    result.close()
+    # center of placed image: x=0.2*595=119, y=0.15*842=126.3
+    r, g, b = pix.pixel(119, 126)[:3]
+    assert b > 150 and r < 100 and g < 100
+
+
+def test_edit_pdf_mixed_elements_all_apply_together(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "Original", fontsize=14, fontname="helv")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [
+            {"type": "text_edit", "page": 1, "run_index": 0, "text": "Replaced", "font_override": None},
+            {"type": "shape", "page": 1, "shape": "rectangle", "x0": 0.5, "y0": 0.5, "x1": 0.6, "y1": 0.55, "color": "#000000", "width": 1, "filled": False},
+            {"type": "highlight", "page": 1, "top": 0.6, "right": 0.3, "bottom": 0.3, "left": 0.3, "color": "#00ffff"},
+        ],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    text = result[0].get_text()
+    annots_and_shapes_present = result[0].get_pixmap() is not None  # rendered without error
+    result.close()
+    assert "Original" not in text
+    assert "Replaced" in text
+    assert annots_and_shapes_present
+
+
+def test_edit_pdf_rejects_empty_elements(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    with pytest.raises(PDFError):
+        edit_pdf(str(input_path), str(output_path), [], {})
+
+
+def test_edit_pdf_rejects_out_of_range_page(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    with pytest.raises(PDFError):
+        edit_pdf(
+            str(input_path),
+            str(output_path),
+            [{"type": "highlight", "page": 2, "top": 0.1, "right": 0.1, "bottom": 0.1, "left": 0.1, "color": "#ffff00"}],
+            {},
+        )
+
+
+def test_edit_pdf_rejects_invalid_run_index(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "Only Run", fontsize=14, fontname="helv")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    with pytest.raises(PDFError):
+        edit_pdf(
+            str(input_path),
+            str(output_path),
+            [{"type": "text_edit", "page": 1, "run_index": 5, "text": "x", "font_override": None}],
+            {},
+        )
+
+
+def test_edit_pdf_rejects_unresolvable_image_file_id(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    with pytest.raises(PDFError):
+        edit_pdf(
+            str(input_path),
+            str(output_path),
+            [{"type": "image", "page": 1, "file_id": "missing", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.1}],
+            {},
+        )

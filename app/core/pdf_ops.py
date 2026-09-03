@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import fitz
@@ -442,5 +443,308 @@ def extract_text_runs(input_path: str, page_number: int) -> list[dict]:
                 }
             )
         return runs
+    finally:
+        doc.close()
+
+
+_TEXT_EDIT_MIN_SIZE = 6
+_TEXT_EDIT_SHRINK_FACTOR = 0.5
+
+_FONT_ALIASES = {
+    ("helvetica", False, False): "helv",
+    ("helvetica", True, False): "hebo",
+    ("helvetica", False, True): "heit",
+    ("helvetica", True, True): "hebi",
+    ("times", False, False): "tiro",
+    ("times", True, False): "tibo",
+    ("times", False, True): "tiit",
+    ("times", True, True): "tibi",
+    ("courier", False, False): "cour",
+    ("courier", True, False): "cobo",
+    ("courier", False, True): "coit",
+    ("courier", True, True): "cobi",
+}
+
+_SHAPE_TYPES = {"rectangle", "ellipse", "line", "arrow"}
+
+
+def _base14_alias(family: str, bold: bool, italic: bool) -> str:
+    key = (family.lower(), bool(bold), bool(italic))
+    return _FONT_ALIASES.get(key, _FONT_ALIASES[("helvetica", bool(bold), bool(italic))])
+
+
+def _closest_base14_family(font_name: str) -> str:
+    lowered = font_name.lower()
+    if "times" in lowered or "serif" in lowered or "georgia" in lowered:
+        return "times"
+    if "courier" in lowered or "mono" in lowered or "consolas" in lowered:
+        return "courier"
+    return "helvetica"
+
+
+def _extract_embedded_font(doc: fitz.Document, page: fitz.Page, span_font_name: str) -> bytes | None:
+    """Real font-file bytes for span_font_name if it's actually embedded on
+    this page, else None (base-14 fonts have nothing to extract)."""
+    for f in doc.get_page_fonts(page.number, full=True):
+        xref, basefont = f[0], f[3]
+        if basefont == span_font_name:
+            try:
+                extracted = doc.extract_font(xref)
+                buf = extracted[3]
+                if buf:
+                    return buf
+            except Exception:
+                pass
+            break
+    return None
+
+
+def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
+    value = hex_color.lstrip("#")
+    if len(value) != 6:
+        raise PDFError(f"Invalid color: {hex_color}")
+    try:
+        return (int(value[0:2], 16) / 255, int(value[2:4], 16) / 255, int(value[4:6], 16) / 255)
+    except ValueError as exc:
+        raise PDFError(f"Invalid color: {hex_color}") from exc
+
+
+def _validate_stroke(el: dict) -> None:
+    if not el["points"]:
+        raise PDFError("A hand-drawn stroke must have at least one point.")
+    for pt in el["points"]:
+        if not (0 <= pt["x"] <= 1) or not (0 <= pt["y"] <= 1):
+            raise PDFError("Stroke points must be within the page.")
+
+
+def _validate_shape(el: dict) -> None:
+    for name in ("x0", "y0", "x1", "y1"):
+        value = el[name]
+        if not (0 <= value <= 1):
+            raise PDFError(f"Shape '{name}' must be between 0 and 1 (got {value}).")
+    if el["shape"] in ("rectangle", "ellipse"):
+        if el["x0"] == el["x1"] or el["y0"] == el["y1"]:
+            raise PDFError("The shape must have a positive width and height.")
+    elif el["x0"] == el["x1"] and el["y0"] == el["y1"]:
+        raise PDFError("A line or arrow must have two distinct points.")
+
+
+def _validate_highlight(el: dict) -> None:
+    for name in ("top", "right", "bottom", "left"):
+        value = el[name]
+        if not (0 <= value < 1):
+            raise PDFError(f"Highlight '{name}' must be between 0 and 1 (got {value}).")
+    if el["left"] + el["right"] >= 1 or el["top"] + el["bottom"] >= 1:
+        raise PDFError("The highlight area must have a positive width and height.")
+
+
+def _validate_image_element(el: dict, image_paths: dict[str, str]) -> None:
+    if el["file_id"] not in image_paths:
+        raise PDFError(f"Image '{el['file_id']}' was not uploaded.")
+    if not (0 <= el["x"] <= 1) or not (0 <= el["y"] <= 1):
+        raise PDFError("Image position must be within the page.")
+    if not (0 < el["width"] <= 1) or not (0 < el["height"] <= 1):
+        raise PDFError("Image width and height must be positive fractions of the page.")
+    if el["x"] + el["width"] > 1 or el["y"] + el["height"] > 1:
+        raise PDFError("The image must fit within the page.")
+
+
+def _apply_text_edit(doc: fitz.Document, page: fitz.Page, span: dict, replacement_text: str, font_override: dict | None, internal_fontname: str) -> tuple:
+    """Adds the redact annotation for this run's original text and returns the
+    (origin, text, fontname, size) needed to insert its replacement.
+
+    Verified empirically: inserting the replacement text right away (before
+    page.apply_redactions() has actually run) does NOT work in this PyMuPDF
+    build — the new text overlaps the same rect as the pending redaction
+    annotation, and apply_redactions() clips/removes it right along with the
+    original, since redaction acts on whatever is in the content stream at
+    the moment it runs, not just what was there when the annotation was
+    added. The caller must call page.apply_redactions() first and only then
+    insert the text this function returns.
+    """
+    raw_bbox = fitz.Rect(span["bbox"])
+    page.add_redact_annot(raw_bbox, fill=(1, 1, 1))
+
+    detected_bold = bool(span["flags"] & 16)
+    detected_italic = bool(span["flags"] & 2)
+
+    if font_override:
+        fontname = _base14_alias(font_override["family"], font_override["bold"], font_override["italic"])
+        size = font_override["size"]
+    else:
+        embedded_buf = _extract_embedded_font(doc, page, span["font"])
+        if embedded_buf:
+            page.insert_font(fontname=internal_fontname, fontbuffer=embedded_buf)
+            fontname = internal_fontname
+        else:
+            fontname = _base14_alias(_closest_base14_family(span["font"]), detected_bold, detected_italic)
+        size = span["size"]
+
+    measured = fitz.get_text_length(replacement_text, fontname=fontname, fontsize=size)
+    original_width = raw_bbox.width
+    if measured > original_width > 0:
+        floor = max(_TEXT_EDIT_MIN_SIZE, size * _TEXT_EDIT_SHRINK_FACTOR)
+        size = max(original_width / measured * size, floor)
+
+    return (span["origin"], replacement_text, fontname, size)
+
+
+def _apply_stroke(page: fitz.Page, el: dict) -> None:
+    rect = page.rect
+    raw_points = [
+        fitz.Point(rect.x0 + pt["x"] * rect.width, rect.y0 + pt["y"] * rect.height) * page.derotation_matrix
+        for pt in el["points"]
+    ]
+    if len(raw_points) == 1:
+        p = raw_points[0]
+        raw_points = [p, fitz.Point(p.x + 0.1, p.y + 0.1)]
+    # add_ink_annot requires plain (x, y) float pairs, not fitz.Point objects —
+    # verified empirically: passing Points raises "arg must be seq of seq of
+    # float pairs" even though every other API used in this file accepts Points.
+    tuple_points = [(p.x, p.y) for p in raw_points]
+    annot = page.add_ink_annot([tuple_points])
+    annot.set_colors(stroke=_hex_to_rgb(el["color"]))
+    annot.set_border(width=el["width"])
+    annot.update()
+
+
+def _to_raw_point(page: fitz.Page, fx: float, fy: float) -> fitz.Point:
+    rect = page.rect
+    displayed = fitz.Point(rect.x0 + fx * rect.width, rect.y0 + fy * rect.height)
+    return displayed * page.derotation_matrix
+
+
+def _draw_arrow(shape, p0: fitz.Point, p1: fitz.Point, color: tuple, width: float) -> None:
+    shape.draw_line(p0, p1)
+    shape.finish(color=color, width=width)
+    angle = math.atan2(p1.y - p0.y, p1.x - p0.x)
+    head_len = max(8, width * 3)
+    head_angle = math.radians(25)
+    h1 = fitz.Point(p1.x - head_len * math.cos(angle - head_angle), p1.y - head_len * math.sin(angle - head_angle))
+    h2 = fitz.Point(p1.x - head_len * math.cos(angle + head_angle), p1.y - head_len * math.sin(angle + head_angle))
+    shape.draw_polyline([h1, p1, h2, h1])
+    shape.finish(color=color, fill=color, width=width, closePath=True)
+
+
+def _apply_shape(page: fitz.Page, el: dict) -> None:
+    p0 = _to_raw_point(page, el["x0"], el["y0"])
+    p1 = _to_raw_point(page, el["x1"], el["y1"])
+    color = _hex_to_rgb(el["color"])
+    width = el["width"]
+    shape = page.new_shape()
+    if el["shape"] in ("rectangle", "ellipse"):
+        raw_rect = fitz.Rect(p0, p1)
+        raw_rect.normalize()
+        fill = color if el.get("filled") else None
+        if el["shape"] == "rectangle":
+            shape.draw_rect(raw_rect)
+        else:
+            shape.draw_oval(raw_rect)
+        shape.finish(color=color, width=width, fill=fill)
+    elif el["shape"] == "line":
+        shape.draw_line(p0, p1)
+        shape.finish(color=color, width=width)
+    else:
+        _draw_arrow(shape, p0, p1, color, width)
+    shape.commit()
+
+
+def _apply_highlight(page: fitz.Page, el: dict) -> None:
+    rect = page.rect
+    displayed = fitz.Rect(
+        rect.x0 + el["left"] * rect.width,
+        rect.y0 + el["top"] * rect.height,
+        rect.x1 - el["right"] * rect.width,
+        rect.y1 - el["bottom"] * rect.height,
+    )
+    raw = displayed * page.derotation_matrix
+    shape = page.new_shape()
+    shape.draw_rect(raw)
+    shape.finish(fill=_hex_to_rgb(el["color"]), fill_opacity=0.4, color=None)
+    shape.commit()
+
+
+def _apply_image(page: fitz.Page, el: dict, image_path: str) -> None:
+    rect = page.rect
+    displayed = fitz.Rect(
+        rect.x0 + el["x"] * rect.width,
+        rect.y0 + el["y"] * rect.height,
+        rect.x0 + (el["x"] + el["width"]) * rect.width,
+        rect.y0 + (el["y"] + el["height"]) * rect.height,
+    )
+    raw = displayed * page.derotation_matrix
+    try:
+        page.insert_image(raw, filename=image_path)
+    except Exception as exc:
+        raise PDFError(f"Could not insert image '{Path(image_path).name}' into the PDF.") from exc
+
+
+def edit_pdf(input_path: str, output_path: str, elements: list[dict], image_paths: dict[str, str]) -> None:
+    if not elements:
+        raise PDFError("Add at least one edit before running.")
+    doc = open_pdf(input_path)
+    try:
+        run_cache: dict[int, list[dict]] = {}
+        for el in elements:
+            page_num = el["page"]
+            if page_num < 1 or page_num > doc.page_count:
+                raise PDFError(f"Page {page_num} does not exist in this document ({doc.page_count} pages).")
+            el_type = el["type"]
+            if el_type == "text_edit":
+                if page_num not in run_cache:
+                    run_cache[page_num] = _page_text_spans(doc[page_num - 1])
+                spans = run_cache[page_num]
+                if el["run_index"] < 0 or el["run_index"] >= len(spans):
+                    raise PDFError(f"Text run {el['run_index']} not found on page {page_num}.")
+            elif el_type == "stroke":
+                _validate_stroke(el)
+            elif el_type == "shape":
+                if el["shape"] not in _SHAPE_TYPES:
+                    raise PDFError(f"Unknown shape: {el['shape']}")
+                _validate_shape(el)
+            elif el_type == "highlight":
+                _validate_highlight(el)
+            elif el_type == "image":
+                _validate_image_element(el, image_paths)
+            else:
+                raise PDFError(f"Unknown element type: {el_type}")
+
+        text_edits_by_page: dict[int, list[dict]] = {}
+        other_elements = []
+        for el in elements:
+            if el["type"] == "text_edit":
+                text_edits_by_page.setdefault(el["page"], []).append(el)
+            else:
+                other_elements.append(el)
+
+        # Text edits apply first, settling each page's content stream before
+        # anything else is layered on top. Replacement text is inserted only
+        # after apply_redactions() has run for the page — see _apply_text_edit.
+        for page_num, page_edits in text_edits_by_page.items():
+            page = doc[page_num - 1]
+            spans = run_cache[page_num]
+            pending_inserts = []
+            for i, el in enumerate(page_edits):
+                span = spans[el["run_index"]]
+                pending_inserts.append(
+                    _apply_text_edit(doc, page, span, el["text"], el.get("font_override"), f"TE{page_num}_{i}")
+                )
+            page.apply_redactions()
+            for origin, text, fontname, size in pending_inserts:
+                page.insert_text(origin, text, fontsize=size, fontname=fontname, color=(0, 0, 0))
+
+        # Then strokes/shapes/highlights/images, in the order the user created them.
+        for el in other_elements:
+            page = doc[el["page"] - 1]
+            if el["type"] == "stroke":
+                _apply_stroke(page, el)
+            elif el["type"] == "shape":
+                _apply_shape(page, el)
+            elif el["type"] == "highlight":
+                _apply_highlight(page, el)
+            elif el["type"] == "image":
+                _apply_image(page, el, image_paths[el["file_id"]])
+
+        doc.save(output_path)
     finally:
         doc.close()
