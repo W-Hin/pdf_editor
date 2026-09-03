@@ -699,6 +699,11 @@ h1 {
   pointer-events: none;
 }
 
+.edit-pdf-canvas__stroke {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
 .edit-pdf-canvas__stroke--selected {
   filter: drop-shadow(0 0 2px var(--color-accent));
 }

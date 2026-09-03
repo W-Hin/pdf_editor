@@ -81,7 +81,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   }
 
   function handleDrawMouseUp() {
-    if (!activeStroke || activeStroke.length === 0) return;
+    if (!activeStroke || activeStroke.length < 2) return;
     const next = [
       ...elements,
       { id: newElementId(), type: "stroke", page: currentPage, points: activeStroke, color: drawColor, width: STROKE_WIDTHS[drawWidth] },
