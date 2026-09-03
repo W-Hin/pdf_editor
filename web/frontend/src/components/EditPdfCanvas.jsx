@@ -27,7 +27,16 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
   useEffect(() => {
     if (!fileId) return;
-    fetchTextRuns(fileId, currentPage).then((data) => setRuns(data.runs));
+    async function loadRuns() {
+      try {
+        const data = await fetchTextRuns(fileId, currentPage);
+        setRuns(data.runs);
+      } catch (err) {
+        console.error("Failed to load text runs:", err);
+        setRuns([]);
+      }
+    }
+    loadRuns();
     setEditingRunIndex(null);
   }, [fileId, currentPage]);
 
