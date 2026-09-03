@@ -30,6 +30,12 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   const [drawColor, setDrawColor] = useState(MARKUP_COLORS[0]);
   const [drawWidth, setDrawWidth] = useState("medium");
   const [activeStroke, setActiveStroke] = useState(null);
+  const [shapeType, setShapeType] = useState("rectangle");
+  const [shapeColor, setShapeColor] = useState(MARKUP_COLORS[0]);
+  const [shapeWidth, setShapeWidth] = useState("medium");
+  const [shapeFilled, setShapeFilled] = useState(false);
+  const [shapeDragStart, setShapeDragStart] = useState(null);
+  const [shapeDragCurrent, setShapeDragCurrent] = useState(null);
 
   useEffect(() => {
     if (!fileId) return;
@@ -89,9 +95,45 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     commitElements(next);
     setActiveStroke(null);
   }
-  function handleShapeMouseDown() {}
-  function handleShapeMouseMove() {}
-  function handleShapeMouseUp() {}
+  function handleShapeMouseDown(e) {
+    const point = pointFromEvent(e);
+    if (!point) return;
+    setShapeDragStart(point);
+    setShapeDragCurrent(point);
+  }
+
+  function handleShapeMouseMove(e) {
+    if (!shapeDragStart) return;
+    const point = pointFromEvent(e);
+    if (!point) return;
+    setShapeDragCurrent(point);
+  }
+
+  function handleShapeMouseUp() {
+    if (!shapeDragStart || !shapeDragCurrent) return;
+    const { x: x0, y: y0 } = shapeDragStart;
+    const { x: x1, y: y1 } = shapeDragCurrent;
+    setShapeDragStart(null);
+    setShapeDragCurrent(null);
+    if (x0 === x1 && y0 === y1) return;
+    const next = [
+      ...elements,
+      {
+        id: newElementId(),
+        type: "shape",
+        page: currentPage,
+        shape: shapeType,
+        x0,
+        y0,
+        x1,
+        y1,
+        color: shapeColor,
+        width: STROKE_WIDTHS[shapeWidth],
+        filled: shapeType === "rectangle" || shapeType === "ellipse" ? shapeFilled : false,
+      },
+    ];
+    commitElements(next);
+  }
   function handleHighlightMouseDown() {}
   function handleHighlightMouseMove() {}
   function handleHighlightMouseUp() {}
@@ -199,6 +241,47 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
         </div>
       )}
 
+      {activeMode === "shapes" && (
+        <div className="edit-pdf-canvas__style-bar">
+          {["rectangle", "ellipse", "line", "arrow"].map((s) => (
+            <button
+              key={s}
+              type="button"
+              className={s === shapeType ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+              onClick={() => setShapeType(s)}
+            >
+              {s}
+            </button>
+          ))}
+          {MARKUP_COLORS.map((c) => (
+            <button
+              key={c}
+              type="button"
+              className={c === shapeColor ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active" : "edit-pdf-canvas__color-swatch"}
+              style={{ background: c }}
+              onClick={() => setShapeColor(c)}
+              aria-label={`Color ${c}`}
+            />
+          ))}
+          {Object.keys(STROKE_WIDTHS).map((w) => (
+            <button
+              key={w}
+              type="button"
+              className={w === shapeWidth ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+              onClick={() => setShapeWidth(w)}
+            >
+              {w}
+            </button>
+          ))}
+          {(shapeType === "rectangle" || shapeType === "ellipse") && (
+            <label className="field field--checkbox">
+              <input type="checkbox" checked={shapeFilled} onChange={(e) => setShapeFilled(e.target.checked)} />
+              Fill
+            </label>
+          )}
+        </div>
+      )}
+
       <div className="edit-pdf-canvas__nav">
         <button type="button" onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1}>
           <CaretLeft size={14} weight="bold" />
@@ -275,6 +358,83 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               </button>
             );
           })}
+
+        <svg className="edit-pdf-canvas__shapes" viewBox="0 0 100 100" preserveAspectRatio="none" style={{ zIndex: 2 }}>
+          {elements
+            .filter((el) => el.type === "shape" && el.page === currentPage)
+            .map((el) => {
+              const stroke = el.color;
+              const fill = el.filled ? el.color : "none";
+              const commonProps = {
+                stroke,
+                fill,
+                strokeWidth: el.width / 3,
+                vectorEffect: "non-scaling-stroke",
+                className: el.id === selectedId ? "edit-pdf-canvas__shape edit-pdf-canvas__shape--selected" : "edit-pdf-canvas__shape",
+              };
+              if (el.shape === "rectangle") {
+                return (
+                  <g key={el.id} onClick={() => setSelectedId(el.id)}>
+                    <rect
+                      {...commonProps}
+                      x={Math.min(el.x0, el.x1) * 100}
+                      y={Math.min(el.y0, el.y1) * 100}
+                      width={Math.abs(el.x1 - el.x0) * 100}
+                      height={Math.abs(el.y1 - el.y0) * 100}
+                    />
+                  </g>
+                );
+              }
+              if (el.shape === "ellipse") {
+                return (
+                  <g key={el.id} onClick={() => setSelectedId(el.id)}>
+                    <ellipse
+                      {...commonProps}
+                      cx={((el.x0 + el.x1) / 2) * 100}
+                      cy={((el.y0 + el.y1) / 2) * 100}
+                      rx={(Math.abs(el.x1 - el.x0) / 2) * 100}
+                      ry={(Math.abs(el.y1 - el.y0) / 2) * 100}
+                    />
+                  </g>
+                );
+              }
+              // line and arrow both render as a line preview; the real arrowhead is
+              // drawn server-side by edit_pdf — this is close enough for the queue preview.
+              return (
+                <g key={el.id} onClick={() => setSelectedId(el.id)}>
+                  <line {...commonProps} x1={el.x0 * 100} y1={el.y0 * 100} x2={el.x1 * 100} y2={el.y1 * 100} />
+                </g>
+              );
+            })}
+          {shapeDragStart && shapeDragCurrent && (
+            <line
+              x1={shapeDragStart.x * 100}
+              y1={shapeDragStart.y * 100}
+              x2={shapeDragCurrent.x * 100}
+              y2={shapeDragCurrent.y * 100}
+              stroke={shapeColor}
+              strokeWidth={STROKE_WIDTHS[shapeWidth] / 3}
+              strokeDasharray="2,1"
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
+        </svg>
+
+        {elements
+          .filter((el) => el.type === "shape" && el.page === currentPage)
+          .map((el) => (
+            <button
+              key={`${el.id}-remove`}
+              type="button"
+              className="edit-pdf-canvas__element-remove"
+              style={{ left: `${Math.min(el.x0, el.x1) * 100}%`, top: `${Math.min(el.y0, el.y1) * 100}%` }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => commitElements(elements.filter((e) => e.id !== el.id))}
+              aria-label="Remove this shape"
+            >
+              <X size={12} weight="bold" />
+            </button>
+          ))}
 
         {activeMode === "text" &&
           runs.map((run) => {

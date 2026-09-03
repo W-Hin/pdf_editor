@@ -708,6 +708,23 @@ h1 {
   filter: drop-shadow(0 0 2px var(--color-accent));
 }
 
+.edit-pdf-canvas__shapes {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.edit-pdf-canvas__shape {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.edit-pdf-canvas__shape--selected {
+  filter: drop-shadow(0 0 2px var(--color-accent));
+}
+
 .edit-pdf-canvas__element-remove {
   position: absolute;
   transform: translate(-50%, -50%);
