@@ -381,3 +381,60 @@ def test_get_form_fields_no_fields_returns_empty_list():
 def test_get_form_fields_unknown_file_id_returns_404():
     response = client.get("/api/files/nope/form-fields")
     assert response.status_code == 404
+
+
+def _upload_form_pdf():
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    widget = fitz.Widget()
+    widget.field_name = "full_name"
+    widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    widget.rect = fitz.Rect(72, 100, 300, 120)
+    page.add_widget(widget)
+    data = doc.tobytes()
+    doc.close()
+    return client.post("/api/files", files={"file": ("form.pdf", data, "application/pdf")}).json()
+
+
+def test_fill_form_returns_one_output():
+    upload = _upload_form_pdf()
+    response = client.post(
+        "/api/tools/fill-form",
+        json={"file_id": upload["id"], "values": [{"page": 1, "index": 0, "value": "Jane Doe"}]},
+    )
+    assert response.status_code == 200
+    assert len(response.json()["outputs"]) == 1
+
+
+def test_fill_form_checkbox_value_accepted():
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    widget = fitz.Widget()
+    widget.field_name = "agree"
+    widget.field_type = fitz.PDF_WIDGET_TYPE_CHECKBOX
+    widget.rect = fitz.Rect(72, 140, 90, 158)
+    page.add_widget(widget)
+    data = doc.tobytes()
+    doc.close()
+    upload = client.post("/api/files", files={"file": ("form.pdf", data, "application/pdf")}).json()
+
+    response = client.post(
+        "/api/tools/fill-form",
+        json={"file_id": upload["id"], "values": [{"page": 1, "index": 0, "value": True}]},
+    )
+    assert response.status_code == 200
+
+
+def test_fill_form_rejects_empty_values():
+    upload = _upload_form_pdf()
+    response = client.post("/api/tools/fill-form", json={"file_id": upload["id"], "values": []})
+    assert response.status_code == 422
+    assert isinstance(response.json()["detail"], str)
+
+
+def test_fill_form_unknown_file_id_returns_404():
+    response = client.post(
+        "/api/tools/fill-form",
+        json={"file_id": "nope", "values": [{"page": 1, "index": 0, "value": "x"}]},
+    )
+    assert response.status_code == 404

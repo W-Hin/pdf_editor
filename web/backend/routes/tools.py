@@ -13,6 +13,7 @@ from app.core.pdf_ops import (
     crop_pdf,
     edit_pdf,
     extract_pages,
+    fill_form,
     get_page_count,
     images_to_pdf,
     merge_pdfs,
@@ -369,3 +370,24 @@ def edit_pdf_route(req: EditPdfRequest):
     elements = [el.model_dump() for el in req.elements]
     edit_pdf(input_path, str(output_path), elements, image_paths)
     return _output_response([output_path], "Edit PDF", [Path(input_path).name])
+
+
+class FormFieldValue(BaseModel):
+    page: int
+    index: int
+    value: str | bool
+
+
+class FillFormRequest(BaseModel):
+    file_id: str
+    values: list[FormFieldValue]
+
+
+@router.post("/fill-form")
+def fill_form_route(req: FillFormRequest):
+    input_path = str(storage.resolve_file(req.file_id))
+    stem = Path(input_path).stem
+    output_path = storage.output_path_for(stem, "_filled")
+    values = [v.model_dump() for v in req.values]
+    fill_form(input_path, str(output_path), values)
+    return _output_response([output_path], "Fill PDF Form", [Path(input_path).name])
