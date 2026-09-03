@@ -855,6 +855,161 @@ h1 {
   border-color: var(--color-accent);
 }
 
+/* ---------- Sign canvas ---------- */
+
+.sign-canvas {
+  margin: var(--space-5) 0;
+}
+
+.sign-canvas__error {
+  color: var(--color-destructive, #dc2626);
+  font-size: 13px;
+  margin: 0 0 var(--space-3) 0;
+}
+
+.sign-canvas__source-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-card);
+  max-width: 460px;
+}
+
+.sign-canvas__saved {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.sign-canvas__saved-preview {
+  max-width: 120px;
+  max-height: 60px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+}
+
+.sign-canvas__source-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.sign-canvas__source-actions button,
+.sign-canvas__upload {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-card);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.sign-canvas__pad-canvas {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: crosshair;
+  touch-action: none;
+  max-width: 100%;
+}
+
+.sign-canvas__pad-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.sign-canvas__pad-actions button {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-card);
+  cursor: pointer;
+}
+
+.sign-canvas__nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+  font-size: 14px;
+  color: var(--color-muted-foreground);
+}
+
+.sign-canvas__nav button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-card);
+  cursor: pointer;
+}
+
+.sign-canvas__nav button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sign-canvas__stage {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  user-select: none;
+}
+
+.sign-canvas__image {
+  display: block;
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+}
+
+.sign-canvas__placement {
+  position: absolute;
+  border: 1px dashed var(--color-accent);
+  cursor: move;
+}
+
+.sign-canvas__placement-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+
+.sign-canvas__placement-remove {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  cursor: pointer;
+}
+
+.sign-canvas__different {
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-card);
+  cursor: pointer;
+  font-size: 13px;
+}
+
 /* ---------- Image page preview (Images to PDF) ---------- */
 
 .image-page-preview {
