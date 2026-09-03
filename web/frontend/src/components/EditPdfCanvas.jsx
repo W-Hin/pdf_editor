@@ -7,6 +7,13 @@ import {
   Rectangle,
   Highlighter,
   ImageSquare,
+  TextAa,
+  TextB,
+  TextItalic,
+  TextAUnderline,
+  TextAlignLeft,
+  TextAlignCenter,
+  TextAlignRight,
   X,
   ArrowUUpLeft,
   ArrowUUpRight,
@@ -21,9 +28,28 @@ const MODES = [
   { id: "shapes", label: "Shapes", icon: Rectangle },
   { id: "highlight", label: "Highlight", icon: Highlighter },
   { id: "image", label: "Insert Image", icon: ImageSquare },
+  { id: "new_text", label: "Add Text", icon: TextAa },
 ];
 
 const FAMILY_OPTIONS = ["helvetica", "times", "courier"];
+
+const NEW_TEXT_DEFAULT_WIDTH = 0.25;
+const NEW_TEXT_DEFAULT_HEIGHT = 0.08;
+const NEW_TEXT_DEFAULTS = {
+  family: "helvetica",
+  bold: false,
+  italic: false,
+  underline: false,
+  size: 14,
+  color: "#1f2937",
+  align: "left",
+};
+
+function newTextFontFamilyCss(family) {
+  if (family === "times") return '"Times New Roman", Times, serif';
+  if (family === "courier") return '"Courier New", Courier, monospace';
+  return "Helvetica, Arial, sans-serif";
+}
 
 const MARKUP_COLORS = ["#1f2937", "#e03131", "#f08c00", "#2f9e44", "#1971c2", "#9c36b5"];
 const STROKE_WIDTHS = { thin: 1, medium: 3, thick: 6 };
@@ -67,6 +93,8 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   const [highlightColor, setHighlightColor] = useState("#ffd43b");
   const [highlightDragStart, setHighlightDragStart] = useState(null);
   const [highlightDragCurrent, setHighlightDragCurrent] = useState(null);
+  const [textDraft, setTextDraft] = useState(null);
+  const textDraftAreaRef = useRef(null);
   const imageFileInputRef = useRef(null);
   const pendingImageDropRef = useRef(null);
   const imageDragRef = useRef(null);
@@ -78,6 +106,10 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   useEffect(() => {
     elementsRef.current = elements;
   }, [elements]);
+
+  useEffect(() => {
+    if (textDraft) textDraftAreaRef.current?.focus();
+  }, [textDraft?.id]);
 
   useEffect(() => {
     if (!fileId) return;
@@ -393,6 +425,57 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     commitElements([...elements, { id: newElementId(), type: "image", page: currentPage, file_id: uploaded.id, x, y, width, height }]);
   }
 
+  function handleNewTextStageClick(e) {
+    if (textDraft) return; // an editor is already open — closing it happens via blur, not another placement in the same click
+    // The browser's own mousedown default action clears focus shortly after
+    // this handler returns (since the stage div itself isn't focusable),
+    // racing the effect below that focuses the new textarea and winning —
+    // the textarea gets focus then loses it a fraction of a millisecond
+    // later, firing the wrapper's onBlur and discarding the just-placed,
+    // still-empty draft before the user can type. Suppressing the default
+    // action here stops the browser from clearing focus so the effect's
+    // focus() call sticks.
+    e.preventDefault();
+    const point = pointFromEvent(e);
+    if (!point) return;
+    const width = NEW_TEXT_DEFAULT_WIDTH;
+    const height = NEW_TEXT_DEFAULT_HEIGHT;
+    const x = Math.min(Math.max(point.x - width / 2, 0), 1 - width);
+    const y = Math.min(Math.max(point.y - height / 2, 0), 1 - height);
+    setTextDraft({ id: null, x, y, width, height, text: "", ...NEW_TEXT_DEFAULTS });
+  }
+
+  function commitTextDraft() {
+    const draft = textDraft;
+    setTextDraft(null);
+    if (!draft || !draft.text.trim()) return; // empty placements are discarded, not saved
+    const { id, ...rest } = draft;
+    const newEl = { id: id ?? newElementId(), type: "new_text", page: currentPage, ...rest };
+    const next = id ? elements.map((el) => (el.id === id ? newEl : el)) : [...elements, newEl];
+    commitElements(next);
+  }
+
+  function handleTextDraftBlur(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      commitTextDraft();
+    }
+  }
+
+  function handleTextDraftKeyDown(e) {
+    const ctrl = e.ctrlKey || e.metaKey;
+    if (!ctrl) return;
+    if (e.key === "b" || e.key === "B") {
+      e.preventDefault();
+      setTextDraft((d) => ({ ...d, bold: !d.bold }));
+    } else if (e.key === "i" || e.key === "I") {
+      e.preventDefault();
+      setTextDraft((d) => ({ ...d, italic: !d.italic }));
+    } else if (e.key === "u" || e.key === "U") {
+      e.preventDefault();
+      setTextDraft((d) => ({ ...d, underline: !d.underline }));
+    }
+  }
+
   function startImageDrag(el, mode, e) {
     e.stopPropagation();
     const point = pointFromEvent(e);
@@ -449,6 +532,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     if (activeMode === "shapes") return handleShapeMouseDown(e);
     if (activeMode === "highlight") return handleHighlightMouseDown(e);
     if (activeMode === "image") return handleImageStageClick(e);
+    if (activeMode === "new_text") return handleNewTextStageClick(e);
   }
 
   function handleStageMouseMove(e) {
@@ -848,6 +932,132 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               </button>
             </div>
           ))}
+
+        {elements
+          .filter((el) => el.type === "new_text" && el.page === currentPage && el.id !== textDraft?.id)
+          .map((el) => (
+            <div
+              key={el.id}
+              className="edit-pdf-canvas__new-text-el"
+              style={{ left: `${el.x * 100}%`, top: `${el.y * 100}%`, width: `${el.width * 100}%`, height: `${el.height * 100}%` }}
+            >
+              <p
+                style={{
+                  fontFamily: newTextFontFamilyCss(el.family),
+                  fontWeight: el.bold ? "bold" : "normal",
+                  fontStyle: el.italic ? "italic" : "normal",
+                  textDecoration: el.underline ? "underline" : "none",
+                  color: el.color,
+                  fontSize: `${el.size}px`,
+                  textAlign: el.align,
+                }}
+              >
+                {el.text}
+              </p>
+            </div>
+          ))}
+
+        {textDraft && (
+          <div
+            className="edit-pdf-canvas__new-text-editor"
+            style={{ left: `${textDraft.x * 100}%`, top: `${textDraft.y * 100}%`, width: `${textDraft.width * 100}%`, height: `${textDraft.height * 100}%` }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onBlur={handleTextDraftBlur}
+          >
+            <textarea
+              ref={textDraftAreaRef}
+              className="edit-pdf-canvas__new-text-textarea"
+              value={textDraft.text}
+              onChange={(e) => setTextDraft((d) => ({ ...d, text: e.target.value }))}
+              onKeyDown={handleTextDraftKeyDown}
+              style={{
+                fontFamily: newTextFontFamilyCss(textDraft.family),
+                fontWeight: textDraft.bold ? "bold" : "normal",
+                fontStyle: textDraft.italic ? "italic" : "normal",
+                textDecoration: textDraft.underline ? "underline" : "none",
+                color: textDraft.color,
+                fontSize: `${textDraft.size}px`,
+                textAlign: textDraft.align,
+              }}
+            />
+            <div className="edit-pdf-canvas__new-text-style-bar">
+              <select
+                value={textDraft.family}
+                onChange={(e) => setTextDraft((d) => ({ ...d, family: e.target.value }))}
+              >
+                {FAMILY_OPTIONS.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="number"
+                min={1}
+                value={textDraft.size}
+                onChange={(e) => setTextDraft((d) => ({ ...d, size: Number(e.target.value) }))}
+              />
+              <button
+                type="button"
+                className={textDraft.bold ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+                onClick={() => setTextDraft((d) => ({ ...d, bold: !d.bold }))}
+                aria-label="Bold"
+              >
+                <TextB size={14} weight="bold" />
+              </button>
+              <button
+                type="button"
+                className={textDraft.italic ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+                onClick={() => setTextDraft((d) => ({ ...d, italic: !d.italic }))}
+                aria-label="Italic"
+              >
+                <TextItalic size={14} weight="bold" />
+              </button>
+              <button
+                type="button"
+                className={textDraft.underline ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+                onClick={() => setTextDraft((d) => ({ ...d, underline: !d.underline }))}
+                aria-label="Underline"
+              >
+                <TextAUnderline size={14} weight="bold" />
+              </button>
+              {MARKUP_COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  className={c === textDraft.color ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active" : "edit-pdf-canvas__color-swatch"}
+                  style={{ background: c }}
+                  onClick={() => setTextDraft((d) => ({ ...d, color: c }))}
+                  aria-label={`Color ${c}`}
+                />
+              ))}
+              <button
+                type="button"
+                className={textDraft.align === "left" ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+                onClick={() => setTextDraft((d) => ({ ...d, align: "left" }))}
+                aria-label="Align left"
+              >
+                <TextAlignLeft size={14} weight="bold" />
+              </button>
+              <button
+                type="button"
+                className={textDraft.align === "center" ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+                onClick={() => setTextDraft((d) => ({ ...d, align: "center" }))}
+                aria-label="Align center"
+              >
+                <TextAlignCenter size={14} weight="bold" />
+              </button>
+              <button
+                type="button"
+                className={textDraft.align === "right" ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+                onClick={() => setTextDraft((d) => ({ ...d, align: "right" }))}
+                aria-label="Align right"
+              >
+                <TextAlignRight size={14} weight="bold" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {activeMode === "text" &&
           runs.map((run) => {
