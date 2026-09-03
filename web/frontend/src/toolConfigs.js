@@ -128,6 +128,15 @@ export const TOOL_CONFIGS = {
     endpoint: "redact",
     fields: [],
   },
+  "edit-pdf": {
+    title: "Edit PDF",
+    category: "Edit",
+    multiFile: false,
+    mode: "view",
+    preview: "edit-pdf",
+    endpoint: "edit-pdf",
+    fields: [],
+  },
   compress: {
     title: "Compress PDF",
     category: "Optimize",

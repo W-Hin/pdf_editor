@@ -20,6 +20,7 @@ import PageGrid from "./PageGrid";
 import CropSelector from "./CropSelector";
 import ImagePagePreview from "./ImagePagePreview";
 import RedactSelector from "./RedactSelector";
+import EditPdfCanvas from "./EditPdfCanvas";
 
 // Number fields (e.g. split's "pages per file") must be a whole number no
 // smaller than field.min — used by both the preview and the actual submitted
@@ -50,6 +51,7 @@ export default function ToolView() {
   const [order, setOrder] = useState(null);
   const [cropRect, setCropRect] = useState(null);
   const [redactions, setRedactions] = useState([]);
+  const [elements, setElements] = useState([]);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -73,6 +75,7 @@ export default function ToolView() {
           setSelected([]);
           setCropRect(null);
           setRedactions([]);
+          setElements([]);
           setOrder(Array.from({ length: primary.page_count }, (_, i) => i + 1));
           if (config.filenameSuffix && !fieldValues.filename) {
             setFieldValues((v) => ({
@@ -103,6 +106,10 @@ export default function ToolView() {
       setError("Draw at least one box on the page preview to mark an area for redaction.");
       return;
     }
+    if (config.preview === "edit-pdf" && elements.length === 0) {
+      setError("Add at least one edit on the page preview before running.");
+      return;
+    }
     setBusy(true);
     try {
       const body = {};
@@ -119,6 +126,9 @@ export default function ToolView() {
       if (config.mode === "reorder") body.order = order;
       if (config.preview === "crop") Object.assign(body, cropRect);
       if (config.preview === "redact") body.redactions = redactions;
+      if (config.preview === "edit-pdf") {
+        body.elements = elements.map(({ id, ...rest }) => rest);
+      }
       const data = await runTool(config.endpoint, body);
       setResult(data.outputs);
     } catch (err) {
@@ -281,6 +291,16 @@ export default function ToolView() {
       );
     }
 
+    if (config.preview === "edit-pdf") {
+      if (!primaryFile) return null;
+      return (
+        // key={primaryFile.id} forces a full remount on file switch, discarding
+        // EditPdfCanvas's internal elements/history/selection state — the exact
+        // fix Redact needed after shipping without it (see the Redact spec).
+        <EditPdfCanvas key={primaryFile.id} fileId={primaryFile.id} pageCount={primaryFile.page_count} onChange={setElements} />
+      );
+    }
+
     // Default: select/reorder tools (Remove/Extract/Reorder pages) and
     // plain view-only tools (PDF to Image) — same as before this feature.
     if (!primaryFile) return null;
@@ -395,7 +415,8 @@ export default function ToolView() {
           busy ||
           files.length === 0 ||
           (config.preview === "crop" && !cropRect) ||
-          (config.preview === "redact" && redactions.length === 0)
+          (config.preview === "redact" && redactions.length === 0) ||
+          (config.preview === "edit-pdf" && elements.length === 0)
         }
         onClick={handleRun}
       >
