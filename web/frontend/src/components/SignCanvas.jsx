@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { CaretLeft, CaretRight, PencilSimple, UploadSimple, X } from "@phosphor-icons/react";
-import { thumbnailUrl, uploadFile } from "../api";
+import { PencilSimple, UploadSimple, X } from "@phosphor-icons/react";
+import { uploadFile } from "../api";
+import PageScrollViewer from "./PageScrollViewer";
 
-const PREVIEW_MAX_SIZE = 700;
 const PAD_WIDTH = 400;
 const PAD_HEIGHT = 150;
 const SIGNATURE_STORAGE_KEY = "pdf-editor-saved-signature";
@@ -34,11 +34,10 @@ function loadImageNaturalSizeFromDataUrl(dataUrl) {
 }
 
 export default function SignCanvas({ fileId, pageCount, onChange }) {
-  const stageRef = useRef(null);
+  // (stageRef removed — PageScrollViewer gives a per-page ref to renderPageOverlay instead)
   const padCanvasRef = useRef(null);
   const isDrawingRef = useRef(false);
   const dragRef = useRef(null);
-  const [currentPage, setCurrentPage] = useState(1);
   const [placements, setPlacements] = useState([]);
   const [signatureFileId, setSignatureFileId] = useState(null);
   const [signatureNaturalSize, setSignatureNaturalSize] = useState(null);
@@ -75,8 +74,8 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
     return crypto.randomUUID();
   }
 
-  function pointFromEvent(e) {
-    const rect = stageRef.current.getBoundingClientRect();
+  function pointFromEvent(pageRef, e) {
+    const rect = pageRef.current.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
     const x = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1);
     const y = Math.min(Math.max((e.clientY - rect.top) / rect.height, 0), 1);
@@ -179,8 +178,8 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
     if (ok) setDrawing(false);
   }
 
-  function handleStagePlace(e) {
-    const point = pointFromEvent(e);
+  function handleStagePlace(pageNumber, pageRef, e) {
+    const point = pointFromEvent(pageRef, e);
     if (!point) return;
     const width = DEFAULT_WIDTH_FRACTION;
     const height = Math.min(MAX_HEIGHT_FRACTION, width * (signatureNaturalSize.height / signatureNaturalSize.width));
@@ -188,7 +187,7 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
     const y = Math.min(Math.max(point.y - height / 2, 0), 1 - height);
     setPlacements((prev) => [
       ...prev,
-      { id: newElementId(), type: "image", page: currentPage, file_id: signatureFileId, x, y, width, height },
+      { id: newElementId(), type: "image", page: pageNumber, file_id: signatureFileId, x, y, width, height },
     ]);
   }
 
@@ -196,11 +195,11 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
     setPlacements((prev) => prev.filter((p) => p.id !== id));
   }
 
-  function startDrag(placement, mode, e) {
+  function startDrag(pageRef, placement, mode, e) {
     e.stopPropagation();
-    const point = pointFromEvent(e);
+    const point = pointFromEvent(pageRef, e);
     if (!point) return;
-    dragRef.current = { id: placement.id, mode, start: point, startPlacement: { ...placement } };
+    dragRef.current = { id: placement.id, mode, start: point, startPlacement: { ...placement }, pageRef };
     window.addEventListener("mousemove", handleDragMove);
     window.addEventListener("mouseup", handleDragEnd);
     window.addEventListener("blur", handleDragEnd);
@@ -209,7 +208,7 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
   function handleDragMove(e) {
     const drag = dragRef.current;
     if (!drag) return;
-    const point = pointFromEvent(e);
+    const point = pointFromEvent(drag.pageRef, e);
     if (!point) return;
     const dx = point.x - drag.start.x;
     const dy = point.y - drag.start.y;
@@ -247,8 +246,6 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
     setPadHasDrawing(false);
     setError("");
   }
-
-  const markedPageCount = new Set(placements.map((p) => p.page)).size;
 
   return (
     <div className="sign-canvas">
@@ -312,50 +309,40 @@ export default function SignCanvas({ fileId, pageCount, onChange }) {
 
       {signatureFileId && (
         <>
-          <div className="sign-canvas__nav">
-            <button type="button" onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1}>
-              <CaretLeft size={14} weight="bold" />
-              Previous
-            </button>
-            <span>
-              Page {currentPage} of {pageCount} ({markedPageCount} page{markedPageCount === 1 ? "" : "s"} signed)
-            </span>
-            <button type="button" onClick={() => setCurrentPage((p) => Math.min(pageCount, p + 1))} disabled={currentPage === pageCount}>
-              Next
-              <CaretRight size={14} weight="bold" />
-            </button>
-          </div>
-
-          <div ref={stageRef} className="sign-canvas__stage" onMouseDown={handleStagePlace}>
-            <img
-              className="sign-canvas__image"
-              src={thumbnailUrl(fileId, currentPage, PREVIEW_MAX_SIZE)}
-              alt={`Page ${currentPage} preview — click to place your signature`}
-              draggable={false}
-            />
-            {placements
-              .filter((p) => p.page === currentPage)
-              .map((p) => (
-                <div
-                  key={p.id}
-                  className="sign-canvas__placement"
-                  style={{ left: `${p.x * 100}%`, top: `${p.y * 100}%`, width: `${p.width * 100}%`, height: `${p.height * 100}%` }}
-                  onMouseDown={(e) => startDrag(p, "move", e)}
-                >
-                  <img src={signaturePreviewSrc} className="sign-canvas__placement-image" alt="Placed signature" draggable={false} />
-                  <div className="sign-canvas__placement-handle" onMouseDown={(e) => startDrag(p, "resize", e)} />
-                  <button
-                    type="button"
-                    className="sign-canvas__placement-remove"
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={() => removePlacement(p.id)}
-                    aria-label="Remove this signature"
-                  >
-                    <X size={12} weight="bold" />
-                  </button>
-                </div>
-              ))}
-          </div>
+          <PageScrollViewer
+            fileId={fileId}
+            pageCount={pageCount}
+            className="sign-canvas__viewer"
+            renderPageOverlay={(pageNumber, pageRef) => (
+              <div
+                className="sign-canvas__stage"
+                onMouseDown={(e) => handleStagePlace(pageNumber, pageRef, e)}
+              >
+                {placements
+                  .filter((p) => p.page === pageNumber)
+                  .map((p) => (
+                    <div
+                      key={p.id}
+                      className="sign-canvas__placement"
+                      style={{ left: `${p.x * 100}%`, top: `${p.y * 100}%`, width: `${p.width * 100}%`, height: `${p.height * 100}%` }}
+                      onMouseDown={(e) => startDrag(pageRef, p, "move", e)}
+                    >
+                      <img src={signaturePreviewSrc} className="sign-canvas__placement-image" alt="Placed signature" draggable={false} />
+                      <div className="sign-canvas__placement-handle" onMouseDown={(e) => startDrag(pageRef, p, "resize", e)} />
+                      <button
+                        type="button"
+                        className="sign-canvas__placement-remove"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={() => removePlacement(p.id)}
+                        aria-label="Remove this signature"
+                      >
+                        <X size={12} weight="bold" />
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            )}
+          />
 
           <button type="button" className="sign-canvas__different" onClick={useDifferentSignature}>
             Use a different signature
