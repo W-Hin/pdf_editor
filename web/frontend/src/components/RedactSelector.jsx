@@ -1,37 +1,34 @@
-import { useRef, useState } from "react";
-import { CaretLeft, CaretRight, X } from "@phosphor-icons/react";
-import { thumbnailUrl } from "../api";
+import { X } from "@phosphor-icons/react";
+import { useState } from "react";
+import PageScrollViewer from "./PageScrollViewer";
 
-const PREVIEW_MAX_SIZE = 700;
 const MIN_DRAG_FRACTION = 0.02;
 
 export default function RedactSelector({ fileId, pageCount, onChange }) {
-  const containerRef = useRef(null);
-  const [currentPage, setCurrentPage] = useState(1);
   const [redactions, setRedactions] = useState([]);
   const [dragStart, setDragStart] = useState(null);
   const [dragCurrent, setDragCurrent] = useState(null);
+  const [dragPage, setDragPage] = useState(null);
 
-  if (!fileId || !pageCount) return null;
-
-  function pointFromEvent(e) {
-    const rect = containerRef.current.getBoundingClientRect();
+  function pointFromEvent(pageRef, e) {
+    const rect = pageRef.current.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
     const x = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1);
     const y = Math.min(Math.max((e.clientY - rect.top) / rect.height, 0), 1);
     return { x, y };
   }
 
-  function handleMouseDown(e) {
-    const point = pointFromEvent(e);
+  function handleMouseDown(pageNumber, pageRef, e) {
+    const point = pointFromEvent(pageRef, e);
     if (!point) return;
+    setDragPage(pageNumber);
     setDragStart(point);
     setDragCurrent(point);
   }
 
-  function handleMouseMove(e) {
+  function handleMouseMove(pageRef, e) {
     if (!dragStart) return;
-    const point = pointFromEvent(e);
+    const point = pointFromEvent(pageRef, e);
     if (!point) return;
     setDragCurrent(point);
   }
@@ -42,12 +39,14 @@ export default function RedactSelector({ fileId, pageCount, onChange }) {
     const x1 = Math.max(dragStart.x, dragCurrent.x);
     const y0 = Math.min(dragStart.y, dragCurrent.y);
     const y1 = Math.max(dragStart.y, dragCurrent.y);
+    const page = dragPage;
     setDragStart(null);
     setDragCurrent(null);
+    setDragPage(null);
     if (x1 - x0 < MIN_DRAG_FRACTION || y1 - y0 < MIN_DRAG_FRACTION) {
       return; // too small to be a deliberate drag
     }
-    const next = [...redactions, { page: currentPage, top: y0, left: x0, right: 1 - x1, bottom: 1 - y1 }];
+    const next = [...redactions, { page, top: y0, left: x0, right: 1 - x1, bottom: 1 - y1 }];
     setRedactions(next);
     onChange(next);
   }
@@ -58,58 +57,27 @@ export default function RedactSelector({ fileId, pageCount, onChange }) {
     onChange(next);
   }
 
-  const activeDragBox =
-    dragStart && dragCurrent
-      ? {
-          x0: Math.min(dragStart.x, dragCurrent.x),
-          y0: Math.min(dragStart.y, dragCurrent.y),
-          x1: Math.max(dragStart.x, dragCurrent.x),
-          y1: Math.max(dragStart.y, dragCurrent.y),
-        }
-      : null;
+  if (!fileId || !pageCount) return null;
 
-  const pageBoxes = redactions
-    .map((r, index) => ({ ...r, index }))
-    .filter((r) => r.page === currentPage);
-  const markedPageCount = new Set(redactions.map((r) => r.page)).size;
-
-  return (
-    <div className="redact-selector">
-      <div className="redact-selector__nav">
-        <button
-          type="button"
-          onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-          disabled={currentPage === 1}
-        >
-          <CaretLeft size={14} weight="bold" />
-          Previous
-        </button>
-        <span>
-          Page {currentPage} of {pageCount} ({markedPageCount} page{markedPageCount === 1 ? "" : "s"} marked)
-        </span>
-        <button
-          type="button"
-          onClick={() => setCurrentPage((p) => Math.min(pageCount, p + 1))}
-          disabled={currentPage === pageCount}
-        >
-          Next
-          <CaretRight size={14} weight="bold" />
-        </button>
-      </div>
+  function renderPageOverlay(pageNumber, pageRef) {
+    const pageBoxes = redactions.map((r, index) => ({ ...r, index })).filter((r) => r.page === pageNumber);
+    const activeDragBox =
+      dragPage === pageNumber && dragStart && dragCurrent
+        ? {
+            x0: Math.min(dragStart.x, dragCurrent.x),
+            y0: Math.min(dragStart.y, dragCurrent.y),
+            x1: Math.max(dragStart.x, dragCurrent.x),
+            y1: Math.max(dragStart.y, dragCurrent.y),
+          }
+        : null;
+    return (
       <div
-        ref={containerRef}
         className="redact-selector__canvas"
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
+        onMouseDown={(e) => handleMouseDown(pageNumber, pageRef, e)}
+        onMouseMove={(e) => handleMouseMove(pageRef, e)}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
       >
-        <img
-          className="redact-selector__image"
-          src={thumbnailUrl(fileId, currentPage, PREVIEW_MAX_SIZE)}
-          alt={`Page ${currentPage} preview — drag to mark an area for redaction`}
-          draggable={false}
-        />
         {pageBoxes.map((box) => (
           <div
             key={box.index}
@@ -144,6 +112,8 @@ export default function RedactSelector({ fileId, pageCount, onChange }) {
           />
         )}
       </div>
-    </div>
-  );
+    );
+  }
+
+  return <PageScrollViewer fileId={fileId} pageCount={pageCount} renderPageOverlay={renderPageOverlay} className="redact-selector" />;
 }

@@ -163,6 +163,63 @@ h1 {
   background: rgba(30, 64, 175, 0.1);
 }
 
+/* ---------- Page scroll viewer ---------- */
+
+.page-scroll-viewer {
+  max-width: 1400px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.page-scroll-viewer__header {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+  font-size: 14px;
+  color: var(--color-muted-foreground);
+}
+
+.page-scroll-viewer__page-input {
+  width: 48px;
+  text-align: center;
+  padding: 2px 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-card);
+  font-size: 14px;
+}
+
+.page-scroll-viewer__scroll {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-5);
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: var(--space-2);
+}
+
+.page-scroll-viewer__page {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.page-scroll-viewer__page-inner {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.page-scroll-viewer__image {
+  display: block;
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+}
+
 /* ---------- Tool grid (home) ---------- */
 
 .tool-grid-page {
@@ -512,45 +569,11 @@ h1 {
   margin: var(--space-5) 0;
 }
 
-.redact-selector__nav {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-4);
-  margin-bottom: var(--space-3);
-  font-size: 14px;
-  color: var(--color-muted-foreground);
-}
-
-.redact-selector__nav button {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-card);
-  cursor: pointer;
-}
-
-.redact-selector__nav button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 .redact-selector__canvas {
-  position: relative;
-  display: inline-block;
-  max-width: 100%;
+  position: absolute;
+  inset: 0;
   cursor: crosshair;
   user-select: none;
-}
-
-.redact-selector__image {
-  display: block;
-  max-width: 100%;
-  border-radius: var(--radius-sm);
-  pointer-events: none;
 }
 
 .redact-selector__box {
