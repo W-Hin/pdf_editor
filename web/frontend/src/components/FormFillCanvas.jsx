@@ -1,15 +1,12 @@
 import { useEffect, useState } from "react";
-import { CaretLeft, CaretRight } from "@phosphor-icons/react";
-import { thumbnailUrl, fetchFormFields } from "../api";
-
-const PREVIEW_MAX_SIZE = 700;
+import { fetchFormFields } from "../api";
+import PageScrollViewer from "./PageScrollViewer";
 
 function fieldKey(field) {
   return `${field.page}:${field.index}`;
 }
 
 export default function FormFillCanvas({ fileId, pageCount, onChange }) {
-  const [currentPage, setCurrentPage] = useState(1);
   const [fields, setFields] = useState([]);
   const [values, setValues] = useState({});
   const [initialValues, setInitialValues] = useState({});
@@ -69,87 +66,73 @@ export default function FormFillCanvas({ fileId, pageCount, onChange }) {
     return <p className="form-fill-canvas__status">No fillable fields found in this document.</p>;
   }
 
-  const pageFields = fields.filter((f) => f.page === currentPage);
-  const changedCount = fields.filter((f) => values[fieldKey(f)] !== initialValues[fieldKey(f)]).length;
+  function renderField(field) {
+    const key = fieldKey(field);
+    const style = {
+      left: `${field.rect.left * 100}%`,
+      top: `${field.rect.top * 100}%`,
+      width: `${(1 - field.rect.left - field.rect.right) * 100}%`,
+      height: `${(1 - field.rect.top - field.rect.bottom) * 100}%`,
+    };
+    if (field.type === "text") {
+      return (
+        <input
+          key={key}
+          type="text"
+          className="form-fill-canvas__field"
+          style={style}
+          value={values[key] ?? ""}
+          onChange={(e) => setFieldValue(field, e.target.value)}
+          title={field.label}
+        />
+      );
+    }
+    if (field.type === "checkbox") {
+      return (
+        <input
+          key={key}
+          type="checkbox"
+          className="form-fill-canvas__field"
+          style={style}
+          checked={Boolean(values[key])}
+          onChange={(e) => setFieldValue(field, e.target.checked)}
+          title={field.label}
+        />
+      );
+    }
+    return (
+      <select
+        key={key}
+        className="form-fill-canvas__field"
+        style={style}
+        value={values[key] ?? ""}
+        onChange={(e) => setFieldValue(field, e.target.value)}
+        title={field.label}
+      >
+        <option value="" disabled>
+          — Select —
+        </option>
+        {(field.choices ?? []).map((choice) => (
+          <option key={choice} value={choice}>
+            {choice}
+          </option>
+        ))}
+      </select>
+    );
+  }
 
   return (
     <div className="form-fill-canvas">
-      <div className="form-fill-canvas__nav">
-        <button type="button" onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1}>
-          <CaretLeft size={14} weight="bold" />
-          Previous
-        </button>
-        <span>
-          Page {currentPage} of {pageCount} ({changedCount} field{changedCount === 1 ? "" : "s"} changed)
-        </span>
-        <button type="button" onClick={() => setCurrentPage((p) => Math.min(pageCount, p + 1))} disabled={currentPage === pageCount}>
-          Next
-          <CaretRight size={14} weight="bold" />
-        </button>
-      </div>
-
-      <div className="form-fill-canvas__stage">
-        <img
-          className="form-fill-canvas__image"
-          src={thumbnailUrl(fileId, currentPage, PREVIEW_MAX_SIZE)}
-          alt={`Page ${currentPage} preview`}
-          draggable={false}
-        />
-        {pageFields.map((field) => {
-          const key = fieldKey(field);
-          const style = {
-            left: `${field.rect.left * 100}%`,
-            top: `${field.rect.top * 100}%`,
-            width: `${(1 - field.rect.left - field.rect.right) * 100}%`,
-            height: `${(1 - field.rect.top - field.rect.bottom) * 100}%`,
-          };
-          if (field.type === "text") {
-            return (
-              <input
-                key={key}
-                type="text"
-                className="form-fill-canvas__field"
-                style={style}
-                value={values[key] ?? ""}
-                onChange={(e) => setFieldValue(field, e.target.value)}
-                title={field.label}
-              />
-            );
-          }
-          if (field.type === "checkbox") {
-            return (
-              <input
-                key={key}
-                type="checkbox"
-                className="form-fill-canvas__field"
-                style={style}
-                checked={Boolean(values[key])}
-                onChange={(e) => setFieldValue(field, e.target.checked)}
-                title={field.label}
-              />
-            );
-          }
-          return (
-            <select
-              key={key}
-              className="form-fill-canvas__field"
-              style={style}
-              value={values[key] ?? ""}
-              onChange={(e) => setFieldValue(field, e.target.value)}
-              title={field.label}
-            >
-              <option value="" disabled>
-                — Select —
-              </option>
-              {(field.choices ?? []).map((choice) => (
-                <option key={choice} value={choice}>
-                  {choice}
-                </option>
-              ))}
-            </select>
-          );
-        })}
-      </div>
+      <PageScrollViewer
+        fileId={fileId}
+        pageCount={pageCount}
+        className="form-fill-canvas__viewer"
+        renderPageOverlay={(pageNumber) => (
+          <div className="form-fill-canvas__stage">
+            {fields.filter((f) => f.page === pageNumber).map(renderField)}
+          </div>
+        )}
+      />
     </div>
   );
 }
