@@ -100,6 +100,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   const [historyVersion, setHistoryVersion] = useState(0); // bump to force a re-render when the stacks change
   const clipboardRef = useRef(null);
   const elementsRef = useRef(elements);
+  const selectedElementForStyle = elements.find((e) => e.id === selectedId) ?? null;
 
   useEffect(() => {
     elementsRef.current = elements;
@@ -233,6 +234,14 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     setHistoryVersion((v) => v + 1);
     setElements(next);
     onChange(next);
+  }
+
+  function updateSelectedElementStyle(patch) {
+    if (!selectedId) return false; // nothing selected — caller should fall back to its default-setting behavior
+    const el = elements.find((e) => e.id === selectedId);
+    if (!el) return false;
+    commitElements(elements.map((e) => (e.id === selectedId ? { ...e, ...patch } : e)));
+    return true;
   }
 
   function undo() {
@@ -1149,9 +1158,15 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
             <button
               key={c}
               type="button"
-              className={c === drawColor ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active" : "edit-pdf-canvas__color-swatch"}
+              className={
+                (selectedElementForStyle?.type === "stroke" ? selectedElementForStyle.color === c : c === drawColor)
+                  ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active"
+                  : "edit-pdf-canvas__color-swatch"
+              }
               style={{ background: c }}
-              onClick={() => setDrawColor(c)}
+              onClick={() => {
+                if (!updateSelectedElementStyle({ color: c })) setDrawColor(c);
+              }}
               aria-label={`Color ${c}`}
             />
           ))}
@@ -1159,8 +1174,14 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
             <button
               key={w}
               type="button"
-              className={w === drawWidth ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
-              onClick={() => setDrawWidth(w)}
+              className={
+                (selectedElementForStyle?.type === "stroke" ? selectedElementForStyle.width === STROKE_WIDTHS[w] : w === drawWidth)
+                  ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active"
+                  : "edit-pdf-canvas__width-button"
+              }
+              onClick={() => {
+                if (!updateSelectedElementStyle({ width: STROKE_WIDTHS[w] })) setDrawWidth(w);
+              }}
             >
               {w}
             </button>
@@ -1184,9 +1205,15 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
             <button
               key={c}
               type="button"
-              className={c === shapeColor ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active" : "edit-pdf-canvas__color-swatch"}
+              className={
+                (selectedElementForStyle?.type === "shape" ? selectedElementForStyle.color === c : c === shapeColor)
+                  ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active"
+                  : "edit-pdf-canvas__color-swatch"
+              }
               style={{ background: c }}
-              onClick={() => setShapeColor(c)}
+              onClick={() => {
+                if (!updateSelectedElementStyle({ color: c })) setShapeColor(c);
+              }}
               aria-label={`Color ${c}`}
             />
           ))}
@@ -1194,15 +1221,27 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
             <button
               key={w}
               type="button"
-              className={w === shapeWidth ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
-              onClick={() => setShapeWidth(w)}
+              className={
+                (selectedElementForStyle?.type === "shape" ? selectedElementForStyle.width === STROKE_WIDTHS[w] : w === shapeWidth)
+                  ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active"
+                  : "edit-pdf-canvas__width-button"
+              }
+              onClick={() => {
+                if (!updateSelectedElementStyle({ width: STROKE_WIDTHS[w] })) setShapeWidth(w);
+              }}
             >
               {w}
             </button>
           ))}
           {(shapeType === "rectangle" || shapeType === "ellipse") && (
             <label className="field field--checkbox">
-              <input type="checkbox" checked={shapeFilled} onChange={(e) => setShapeFilled(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={selectedElementForStyle?.type === "shape" ? selectedElementForStyle.filled : shapeFilled}
+                onChange={(e) => {
+                  if (!updateSelectedElementStyle({ filled: e.target.checked })) setShapeFilled(e.target.checked);
+                }}
+              />
               Fill
             </label>
           )}
@@ -1215,9 +1254,15 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
             <button
               key={c}
               type="button"
-              className={c === highlightColor ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active" : "edit-pdf-canvas__color-swatch"}
+              className={
+                (selectedElementForStyle?.type === "highlight" ? selectedElementForStyle.color === c : c === highlightColor)
+                  ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active"
+                  : "edit-pdf-canvas__color-swatch"
+              }
               style={{ background: c }}
-              onClick={() => setHighlightColor(c)}
+              onClick={() => {
+                if (!updateSelectedElementStyle({ color: c })) setHighlightColor(c);
+              }}
               aria-label={`Color ${c}`}
             />
           ))}
