@@ -48,6 +48,16 @@ def test_watermark_rejects_empty_text():
     assert response.status_code == 422
 
 
+def test_watermark_accepts_font_size_and_rotate():
+    upload = _upload_pdf()
+    response = client.post(
+        "/api/tools/watermark",
+        json={"file_id": upload["id"], "text": "DRAFT", "opacity": 0.3, "font_size": 60, "rotate": 45},
+    )
+    assert response.status_code == 200
+    assert len(response.json()["outputs"]) == 1
+
+
 def test_compress_returns_one_output():
     upload = _upload_pdf()
     response = client.post(

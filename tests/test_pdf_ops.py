@@ -164,6 +164,55 @@ def test_add_watermark_rejects_empty_text(make_pdf, tmp_path):
         add_watermark(path, str(tmp_path / "out.pdf"), "   ")
 
 
+def test_add_watermark_rotates_at_arbitrary_angle(make_pdf, tmp_path):
+    path = make_pdf(num_pages=1)
+    out_path = str(tmp_path / "wm45.pdf")
+
+    add_watermark(path, out_path, "DRAFT", opacity=0.5, font_size=60, rotate=45)
+
+    result = fitz.open(out_path)
+    pix = result[0].get_pixmap()
+    cx, cy = pix.width // 2, pix.height // 2
+    center_pixel = pix.pixel(cx, cy)[:3]
+    corner_pixel = pix.pixel(20, 20)[:3]
+    result.close()
+    # A 45-degree-rotated watermark passes through the page's exact center
+    # (the rotation pivot) — verified empirically: center pixel (208,208,208),
+    # a visible gray, not pure white. A far corner has no ink at all.
+    assert center_pixel != (255, 255, 255)
+    assert corner_pixel == (255, 255, 255)
+
+
+def test_add_watermark_font_size_scales_rendered_text(make_pdf, tmp_path):
+    path = make_pdf(num_pages=1)
+    small_path = str(tmp_path / "small.pdf")
+    large_path = str(tmp_path / "large.pdf")
+
+    add_watermark(path, small_path, "DRAFT", opacity=0.5, font_size=20, rotate=0)
+    add_watermark(path, large_path, "DRAFT", opacity=0.5, font_size=80, rotate=0)
+
+    def ink_width(p):
+        doc = fitz.open(p)
+        d = doc[0].get_text("dict")
+        doc.close()
+        # make_pdf() also inserts a "Page N" label on the page, so filter to the
+        # watermark span itself rather than assuming it's spans[0].
+        spans = [
+            s
+            for b in d["blocks"]
+            for l in b.get("lines", [])
+            for s in l["spans"]
+            if s["text"] == "DRAFT"
+        ]
+        return spans[0]["bbox"][2] - spans[0]["bbox"][0]
+
+    small_w = ink_width(small_path)
+    large_w = ink_width(large_path)
+    # 80pt vs 20pt is a 4x fontsize ratio — verified empirically: 266.6 vs 66.7,
+    # i.e. genuinely ~4x, not a coincidence of rounding.
+    assert large_w > small_w * 3
+
+
 from app.core.pdf_ops import compress_pdf
 
 

@@ -156,6 +156,8 @@ class WatermarkRequest(BaseModel):
     file_id: str
     text: str
     opacity: float = 0.3
+    font_size: float = 40
+    rotate: float = 0
 
 
 @router.post("/watermark")
@@ -165,7 +167,7 @@ def watermark(req: WatermarkRequest):
     input_path = str(storage.resolve_file(req.file_id))
     stem = Path(input_path).stem
     output_path = storage.output_path_for(stem, "_watermarked")
-    add_watermark(input_path, str(output_path), req.text, opacity=req.opacity)
+    add_watermark(input_path, str(output_path), req.text, opacity=req.opacity, font_size=req.font_size, rotate=req.rotate)
     return _output_response([output_path], "Add watermark", [Path(input_path).name])
 
 

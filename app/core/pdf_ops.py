@@ -123,25 +123,34 @@ def add_watermark(
     output_path: str,
     text: str,
     opacity: float = 0.3,
-    font_size: int = 40,
-    rotate: int = 0,
+    font_size: float = 40,
+    rotate: float = 0,
 ) -> None:
     if not text.strip():
         raise PDFError("Watermark text cannot be empty.")
-    if rotate not in (0, 90, 180, 270):
-        raise PDFError("Watermark rotation must be 0, 90, 180, or 270 degrees.")
     doc = open_pdf(input_path)
     try:
         for page in doc:
-            page.insert_textbox(
-                page.rect,
+            # insert_textbox()'s own `rotate` parameter only accepts multiples of
+            # 90 — verified empirically (raises "rotate must be multiple of 90").
+            # insert_text() with a morph=(pivot, matrix) transform supports any
+            # angle instead: the watermark is centered on the page via a computed
+            # origin, then rotated around that same center point. This also means
+            # the watermark no longer auto-wraps across multiple lines the way
+            # insert_textbox() did — a deliberate, documented change (see this
+            # plan's Global Constraints), matching the existing single-line text
+            # field.
+            width = fitz.get_text_length(text, fontname="helv", fontsize=font_size)
+            center = fitz.Point(page.rect.width / 2, page.rect.height / 2)
+            origin = fitz.Point(center.x - width / 2, center.y + font_size / 3)
+            page.insert_text(
+                origin,
                 text,
                 fontsize=font_size,
                 fontname="helv",
                 color=(0.5, 0.5, 0.5),
                 fill_opacity=opacity,
-                rotate=rotate,
-                align=fitz.TEXT_ALIGN_CENTER,
+                morph=(center, fitz.Matrix(rotate)),
             )
         doc.save(output_path)
     finally:
