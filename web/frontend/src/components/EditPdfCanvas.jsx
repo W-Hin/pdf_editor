@@ -518,9 +518,23 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     const { startElement } = drag;
     let updated;
     if (drag.mode === "move") {
-      const x = Math.min(Math.max(startElement.x + dx, 0), 1 - startElement.width);
-      const y = Math.min(Math.max(startElement.y + dy, 0), 1 - startElement.height);
-      updated = { ...startElement, x, y };
+      updated = moveElement(startElement, dx, dy);
+    } else if (drag.mode === "resize-width") {
+      const width = Math.min(Math.max(0.05, startElement.width + dx), 1 - startElement.x);
+      updated = { ...startElement, width };
+    } else if (drag.mode === "resize-height") {
+      const height = Math.min(Math.max(0.03, startElement.height + dy), 1 - startElement.y);
+      updated = { ...startElement, height };
+    } else if (drag.mode === "resize-corner-xy") {
+      const x1 = Math.min(Math.max(startElement.x1 + dx, 0), 1);
+      const y1 = Math.min(Math.max(startElement.y1 + dy, 0), 1);
+      updated = { ...startElement, x1, y1 };
+    } else if (drag.mode === "resize" && "left" in startElement) {
+      const width = Math.max(0.02, 1 - startElement.left - startElement.right + dx);
+      const height = Math.max(0.02, 1 - startElement.top - startElement.bottom + dy);
+      const right = Math.max(0, 1 - startElement.left - width);
+      const bottom = Math.max(0, 1 - startElement.top - height);
+      updated = { ...startElement, right, bottom };
     } else if (drag.lockAspect) {
       const aspect = startElement.height / startElement.width;
       const widthCap = Math.min(1 - startElement.x, (1 - startElement.y) / aspect);
@@ -535,6 +549,41 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     }
     drag.latestElement = updated;
     setElements((prev) => prev.map((el) => (el.id === drag.id ? updated : el)));
+  }
+
+  // Moving translates the element by (dx, dy), clamped so it stays on the
+  // page. Each element type keeps its own coordinates within bounds, so the
+  // clamp differs by shape: x/y/width/height types clamp directly; x0/x1 and
+  // left/right/top/bottom types clamp the pair together; points translate as
+  // a whole group, clamped by their own min/max extent.
+  function moveElement(el, dx, dy) {
+    if ("x0" in el) {
+      const width = Math.abs(el.x1 - el.x0);
+      const height = Math.abs(el.y1 - el.y0);
+      const minX = Math.min(el.x0, el.x1);
+      const minY = Math.min(el.y0, el.y1);
+      const clampedDx = Math.min(Math.max(dx, -minX), 1 - width - minX);
+      const clampedDy = Math.min(Math.max(dy, -minY), 1 - height - minY);
+      return { ...el, x0: el.x0 + clampedDx, x1: el.x1 + clampedDx, y0: el.y0 + clampedDy, y1: el.y1 + clampedDy };
+    }
+    if ("left" in el) {
+      const width = 1 - el.left - el.right;
+      const height = 1 - el.top - el.bottom;
+      const clampedDx = Math.min(Math.max(dx, -el.left), el.right);
+      const clampedDy = Math.min(Math.max(dy, -el.top), el.bottom);
+      return { ...el, left: el.left + clampedDx, right: el.right - clampedDx, top: el.top + clampedDy, bottom: el.bottom - clampedDy };
+    }
+    if ("points" in el) {
+      const xs = el.points.map((p) => p.x);
+      const ys = el.points.map((p) => p.y);
+      const clampedDx = Math.min(Math.max(dx, -Math.min(...xs)), 1 - Math.max(...xs));
+      const clampedDy = Math.min(Math.max(dy, -Math.min(...ys)), 1 - Math.max(...ys));
+      return { ...el, points: el.points.map((p) => ({ x: p.x + clampedDx, y: p.y + clampedDy })) };
+    }
+    // x/y/width/height (image, new_text)
+    const x = Math.min(Math.max(el.x + dx, 0), 1 - el.width);
+    const y = Math.min(Math.max(el.y + dy, 0), 1 - el.height);
+    return { ...el, x, y };
   }
 
   function handleElementDragEnd() {
@@ -661,18 +710,30 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
             const ys = el.points.map((p) => p.y);
             const left = Math.min(...xs);
             const top = Math.min(...ys);
+            const width = Math.max(...xs) - left;
+            const height = Math.max(...ys) - top;
             return (
-              <button
-                key={`${el.id}-remove`}
-                type="button"
-                className="edit-pdf-canvas__element-remove"
-                style={{ left: `${left * 100}%`, top: `${top * 100}%` }}
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={() => removeElement(el.id)}
-                aria-label="Remove this stroke"
-              >
-                <X size={12} weight="bold" />
-              </button>
+              <div key={`${el.id}-hit`}>
+                <div
+                  className="edit-pdf-canvas__hit-overlay"
+                  style={{ left: `${left * 100}%`, top: `${top * 100}%`, width: `${width * 100}%`, height: `${height * 100}%` }}
+                  onMouseDown={(e) => {
+                    setSelectedId(el.id);
+                    startElementDrag(pageRef, el, "move", e);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                />
+                <button
+                  type="button"
+                  className="edit-pdf-canvas__element-remove"
+                  style={{ left: `${left * 100}%`, top: `${top * 100}%` }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={() => removeElement(el.id)}
+                  aria-label="Remove this stroke"
+                >
+                  <X size={12} weight="bold" />
+                </button>
+              </div>
             );
           })}
 
@@ -715,8 +776,28 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
                   </g>
                 );
               }
-              // line and arrow both render as a line preview; the real arrowhead is
-              // drawn server-side by edit_pdf — this is close enough for the queue preview.
+              if (el.shape === "arrow") {
+                const x1p = el.x0 * 100, y1p = el.y0 * 100, x2p = el.x1 * 100, y2p = el.y1 * 100;
+                const angle = Math.atan2(y2p - y1p, x2p - x1p);
+                const headLen = Math.max(2, el.width);
+                const headAngle = (25 * Math.PI) / 180;
+                const hx1 = x2p - headLen * Math.cos(angle - headAngle);
+                const hy1 = y2p - headLen * Math.sin(angle - headAngle);
+                const hx2 = x2p - headLen * Math.cos(angle + headAngle);
+                const hy2 = y2p - headLen * Math.sin(angle + headAngle);
+                return (
+                  <g key={el.id} onClick={(e) => selectElement(el.id, e)}>
+                    <line {...commonProps} x1={x1p} y1={y1p} x2={x2p} y2={y2p} />
+                    <polygon
+                      points={`${hx1},${hy1} ${x2p},${y2p} ${hx2},${hy2}`}
+                      fill={el.color}
+                      stroke={el.color}
+                    />
+                  </g>
+                );
+              }
+              // line renders as a plain line — the arrow branch above is what
+              // now makes it visually distinct from Arrow in the live preview.
               return (
                 <g key={el.id} onClick={(e) => selectElement(el.id, e)}>
                   <line {...commonProps} x1={el.x0 * 100} y1={el.y0 * 100} x2={el.x1 * 100} y2={el.y1 * 100} />
@@ -739,19 +820,40 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
         {elements
           .filter((el) => el.type === "shape" && el.page === pageNumber)
-          .map((el) => (
-            <button
-              key={`${el.id}-remove`}
-              type="button"
-              className="edit-pdf-canvas__element-remove"
-              style={{ left: `${Math.min(el.x0, el.x1) * 100}%`, top: `${Math.min(el.y0, el.y1) * 100}%` }}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => removeElement(el.id)}
-              aria-label="Remove this shape"
-            >
-              <X size={12} weight="bold" />
-            </button>
-          ))}
+          .map((el) => {
+            const left = Math.min(el.x0, el.x1);
+            const top = Math.min(el.y0, el.y1);
+            const width = Math.abs(el.x1 - el.x0);
+            const height = Math.abs(el.y1 - el.y0);
+            return (
+              <div key={`${el.id}-hit`}>
+                <div
+                  className="edit-pdf-canvas__hit-overlay"
+                  style={{ left: `${left * 100}%`, top: `${top * 100}%`, width: `${width * 100}%`, height: `${height * 100}%` }}
+                  onMouseDown={(e) => {
+                    setSelectedId(el.id);
+                    startElementDrag(pageRef, el, "move", e);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div
+                    className="edit-pdf-canvas__shape-resize-handle"
+                    onMouseDown={(e) => startElementDrag(pageRef, el, "resize-corner-xy", e)}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="edit-pdf-canvas__element-remove"
+                  style={{ left: `${left * 100}%`, top: `${top * 100}%` }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={() => removeElement(el.id)}
+                  aria-label="Remove this shape"
+                >
+                  <X size={12} weight="bold" />
+                </button>
+              </div>
+            );
+          })}
 
         {elements
           .filter((el) => el.type === "highlight" && el.page === pageNumber)
@@ -770,8 +872,16 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
                 height: `${(1 - el.top - el.bottom) * 100}%`,
                 background: `${el.color}${HIGHLIGHT_ALPHA_HEX}`,
               }}
-              onClick={(e) => selectElement(el.id, e)}
+              onMouseDown={(e) => {
+                setSelectedId(el.id);
+                startElementDrag(pageRef, el, "move", e);
+              }}
+              onClick={(e) => e.stopPropagation()}
             >
+              <div
+                className="edit-pdf-canvas__shape-resize-handle"
+                onMouseDown={(e) => startElementDrag(pageRef, el, "resize", e, { lockAspect: false })}
+              />
               <button
                 type="button"
                 className="edit-pdf-canvas__box-remove"

@@ -797,6 +797,23 @@ h1 {
   opacity: 1;
 }
 
+.edit-pdf-canvas__hit-overlay {
+  position: absolute;
+  cursor: move;
+  background: transparent;
+}
+
+.edit-pdf-canvas__shape-resize-handle {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  cursor: nwse-resize;
+}
+
 .edit-pdf-canvas__image-el {
   position: absolute;
   border: 1px dashed var(--color-accent);
