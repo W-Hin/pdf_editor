@@ -646,14 +646,15 @@ def _apply_stroke(page: fitz.Page, el: dict) -> None:
     if len(raw_points) == 1:
         p = raw_points[0]
         raw_points = [p, fitz.Point(p.x + 0.1, p.y + 0.1)]
-    # add_ink_annot requires plain (x, y) float pairs, not fitz.Point objects —
-    # verified empirically: passing Points raises "arg must be seq of seq of
-    # float pairs" even though every other API used in this file accepts Points.
-    tuple_points = [(p.x, p.y) for p in raw_points]
-    annot = page.add_ink_annot([tuple_points])
-    annot.set_colors(stroke=_hex_to_rgb(el["color"]))
-    annot.set_border(width=el["width"])
-    annot.update()
+    # Draw into the content stream (not add_ink_annot) so strokes participate
+    # in the same paint order as shapes/highlights/images/text — PDF viewers
+    # always render annotations above page content regardless of array
+    # position, which silently defeated z-order (bring-to-front/send-to-back)
+    # for strokes.
+    shape = page.new_shape()
+    shape.draw_polyline(raw_points)
+    shape.finish(color=_hex_to_rgb(el["color"]), width=el["width"])
+    shape.commit()
 
 
 def _to_raw_point(page: fitz.Page, fx: float, fy: float) -> fitz.Point:

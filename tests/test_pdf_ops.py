@@ -1024,7 +1024,7 @@ def test_edit_pdf_text_edit_uses_subset_embedded_font(tmp_path):
     assert "Replaced" in text
 
 
-def test_edit_pdf_stroke_adds_ink_annotation(tmp_path):
+def test_edit_pdf_stroke_draws_into_content_stream(tmp_path):
     doc = fitz.open()
     doc.new_page(width=595, height=842)
     input_path = tmp_path / "input.pdf"
@@ -1048,15 +1048,76 @@ def test_edit_pdf_stroke_adds_ink_annotation(tmp_path):
     )
 
     result = fitz.open(str(output_path))
-    # Read annotation "type" while iterating, not from a list of Annot objects
-    # built beforehand: in this PyMuPDF build, accessing an attribute on an
-    # Annot pulled from a fully-consumed `list(page.annots())` raises
-    # "annotation not bound to any page" — the generator invalidates earlier
-    # objects once exhausted. Verified empirically (see task-3 report).
-    annot_types = [a.type[1] for a in result[0].annots()]
+    # Strokes are drawn directly into the page content stream (not as an ink
+    # annotation) so they participate in the same paint order as
+    # shapes/highlights/images/text and correctly respect z-order — PDF
+    # viewers always render annotations above content regardless of array
+    # position, which is exactly the z-order bug this test now guards
+    # against (see test_edit_pdf_stroke_respects_zorder_against_shape below).
+    assert list(result[0].annots()) == []
+    pix = result[0].get_pixmap()
+    width, height = pix.width, pix.height
     result.close()
-    assert len(annot_types) == 1
-    assert annot_types[0] == "Ink"
+    # Point (0.1, 0.1) -> (59, 84); scan a few rows around it for red pixels
+    # since draw_polyline's exact stroke placement/antialiasing can shift the
+    # line by a pixel or two versus the old ink-annot rendering.
+    column = int(0.1 * width)
+    target_row = int(0.1 * height)
+    found_red = any(
+        pix.pixel(column, y)[0] > 200 and pix.pixel(column, y)[1] < 100
+        for y in range(max(0, target_row - 4), target_row + 5)
+    )
+    assert found_red, "stroke did not render into the content stream at its displayed position"
+
+
+def test_edit_pdf_stroke_respects_zorder_against_shape(tmp_path):
+    # Regression test for the z-order bug: strokes used to be drawn as ink
+    # annotations, which PDF viewers always paint above page content
+    # regardless of array order. A stroke drawn first, then covered by a
+    # filled rectangle later in the elements array, must now show the
+    # rectangle's color (array order respected) — not the stroke on top.
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    stroke_el = {
+        "type": "stroke",
+        "page": 1,
+        "points": [{"x": 0.1, "y": 0.1}, {"x": 0.3, "y": 0.1}],
+        "color": "#0000ff",
+        "width": 20,
+    }
+    rect_el = {
+        "type": "shape",
+        "page": 1,
+        "shape": "rectangle",
+        "x0": 0.05,
+        "y0": 0.05,
+        "x1": 0.35,
+        "y1": 0.15,
+        "color": "#ff0000",
+        "width": 2,
+        "filled": True,
+    }
+
+    def sample_pixel(elements):
+        output_path = tmp_path / f"output_{len(elements)}_{elements[0]['type']}.pdf"
+        edit_pdf(str(input_path), str(output_path), elements, {})
+        result = fitz.open(str(output_path))
+        pix = result[0].get_pixmap()
+        width, height = pix.width, pix.height
+        result.close()
+        return pix.pixel(int(0.2 * width), int(0.1 * height))[:3]
+
+    # Stroke first, rectangle second (rectangle should be on top -> red).
+    r, g, b = sample_pixel([stroke_el, rect_el])
+    assert r > 150 and g < 100 and b < 100, "rectangle drawn after the stroke should paint on top of it"
+
+    # Rectangle first, stroke second (stroke should be on top -> blue).
+    r, g, b = sample_pixel([rect_el, stroke_el])
+    assert b > 150 and r < 100 and g < 100, "stroke drawn after the rectangle should paint on top of it"
 
 
 def test_edit_pdf_shape_rectangle_filled_renders_color(tmp_path):
