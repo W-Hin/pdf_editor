@@ -299,10 +299,10 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     onChange(next);
   }
 
-  function updateSelectedElementStyle(patch) {
+  function updateSelectedElementStyle(type, patch) {
     if (!selectedId) return false; // nothing selected — caller should fall back to its default-setting behavior
     const el = elements.find((e) => e.id === selectedId);
-    if (!el) return false;
+    if (!el || el.type !== type) return false; // a different-type element is selected — don't corrupt its fields
     commitElements(elements.map((e) => (e.id === selectedId ? { ...e, ...patch } : e)));
     return true;
   }
@@ -315,17 +315,50 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     if (!selectedId) return;
     const index = elements.findIndex((e) => e.id === selectedId);
     if (index === -1) return;
-    const next = [...elements];
-    const [el] = next.splice(index, 1);
-    if (direction === "front") {
-      next.push(el);
-    } else if (direction === "back") {
-      next.unshift(el);
-    } else if (direction === "forward") {
-      next.splice(Math.min(index + 1, next.length), 0, el);
-    } else if (direction === "backward") {
-      next.splice(Math.max(index - 1, 0), 0, el);
+    const el = elements[index];
+
+    if (direction === "front" || direction === "back") {
+      // Front/back apply relative to array-order painting globally, so no
+      // same-page skipping is needed here.
+      const next = [...elements];
+      next.splice(index, 1);
+      if (direction === "front") next.push(el);
+      else next.unshift(el);
+      commitElements(next);
+      return;
     }
+
+    if (direction !== "forward" && direction !== "backward") return;
+
+    // `elements` is a single global array spanning every page, and
+    // renderPageOverlay only paints elements where el.page === pageNumber
+    // and el.type !== "text_edit". A plain one-slot array swap can land on
+    // an array neighbor that isn't actually adjacent in what's rendered on
+    // any page (a different page's element, or an excluded text_edit
+    // placeholder), producing no visible change. So instead, find the
+    // nearest neighbor in that direction that WOULD render adjacent to this
+    // element on its own page, and move past that one instead.
+    const step = direction === "forward" ? 1 : -1;
+    let targetIndex = -1;
+    for (let i = index + step; i >= 0 && i < elements.length; i += step) {
+      if (elements[i].page === el.page && elements[i].type !== "text_edit") {
+        targetIndex = i;
+        break;
+      }
+    }
+    if (targetIndex === -1) return; // already frontmost/backmost among this page's visible elements — no-op
+
+    // Removing el at `index` first, then (re-)inserting at `targetIndex`,
+    // lands el on the correct side of its same-page neighbor in both
+    // directions: forward's targetIndex was found after index, so removing
+    // el shifts the neighbor back by one first — inserting at targetIndex
+    // then places el immediately after the neighbor's new position.
+    // Backward's targetIndex was found before index, so removing el doesn't
+    // shift the neighbor at all — inserting at targetIndex places el
+    // immediately before it, unchanged.
+    const next = [...elements];
+    next.splice(index, 1);
+    next.splice(targetIndex, 0, el);
     commitElements(next);
   }
 
@@ -1314,7 +1347,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               }
               style={{ background: c }}
               onClick={() => {
-                if (!updateSelectedElementStyle({ color: c })) setDrawColor(c);
+                if (!updateSelectedElementStyle("stroke", { color: c })) setDrawColor(c);
               }}
               aria-label={`Color ${c}`}
             />
@@ -1329,7 +1362,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
                   : "edit-pdf-canvas__width-button"
               }
               onClick={() => {
-                if (!updateSelectedElementStyle({ width: STROKE_WIDTHS[w] })) setDrawWidth(w);
+                if (!updateSelectedElementStyle("stroke", { width: STROKE_WIDTHS[w] })) setDrawWidth(w);
               }}
             >
               {w}
@@ -1361,7 +1394,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               }
               style={{ background: c }}
               onClick={() => {
-                if (!updateSelectedElementStyle({ color: c })) setShapeColor(c);
+                if (!updateSelectedElementStyle("shape", { color: c })) setShapeColor(c);
               }}
               aria-label={`Color ${c}`}
             />
@@ -1376,7 +1409,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
                   : "edit-pdf-canvas__width-button"
               }
               onClick={() => {
-                if (!updateSelectedElementStyle({ width: STROKE_WIDTHS[w] })) setShapeWidth(w);
+                if (!updateSelectedElementStyle("shape", { width: STROKE_WIDTHS[w] })) setShapeWidth(w);
               }}
             >
               {w}
@@ -1388,7 +1421,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
                 type="checkbox"
                 checked={selectedElementForStyle?.type === "shape" ? selectedElementForStyle.filled : shapeFilled}
                 onChange={(e) => {
-                  if (!updateSelectedElementStyle({ filled: e.target.checked })) setShapeFilled(e.target.checked);
+                  if (!updateSelectedElementStyle("shape", { filled: e.target.checked })) setShapeFilled(e.target.checked);
                 }}
               />
               Fill
@@ -1410,7 +1443,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               }
               style={{ background: c }}
               onClick={() => {
-                if (!updateSelectedElementStyle({ color: c })) setHighlightColor(c);
+                if (!updateSelectedElementStyle("highlight", { color: c })) setHighlightColor(c);
               }}
               aria-label={`Color ${c}`}
             />
