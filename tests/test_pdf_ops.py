@@ -166,21 +166,31 @@ def test_add_watermark_rejects_empty_text(make_pdf, tmp_path):
 
 def test_add_watermark_rotates_at_arbitrary_angle(make_pdf, tmp_path):
     path = make_pdf(num_pages=1)
-    out_path = str(tmp_path / "wm45.pdf")
+    unrotated_path = str(tmp_path / "wm0.pdf")
+    rotated_path = str(tmp_path / "wm45.pdf")
 
-    add_watermark(path, out_path, "DRAFT", opacity=0.5, font_size=60, rotate=45)
+    add_watermark(path, unrotated_path, "DRAFT", opacity=0.5, font_size=60, rotate=0)
+    add_watermark(path, rotated_path, "DRAFT", opacity=0.5, font_size=60, rotate=45)
 
-    result = fitz.open(out_path)
-    pix = result[0].get_pixmap()
-    cx, cy = pix.width // 2, pix.height // 2
-    center_pixel = pix.pixel(cx, cy)[:3]
-    corner_pixel = pix.pixel(20, 20)[:3]
-    result.close()
-    # A 45-degree-rotated watermark passes through the page's exact center
-    # (the rotation pivot) — verified empirically: center pixel (208,208,208),
-    # a visible gray, not pure white. A far corner has no ink at all.
-    assert center_pixel != (255, 255, 255)
-    assert corner_pixel == (255, 255, 255)
+    def sample(p):
+        doc = fitz.open(p)
+        pix = doc[0].get_pixmap()
+        cx, cy = pix.width // 2, pix.height // 2
+        center = pix.pixel(cx, cy)[:3]
+        off_diagonal = pix.pixel(cx + 30, cy - 30)[:3]
+        doc.close()
+        return center, off_diagonal
+
+    unrotated_center, unrotated_off = sample(unrotated_path)
+    rotated_center, rotated_off = sample(rotated_path)
+
+    # Both pass through the page center regardless of rotation (that's the pivot).
+    assert unrotated_center != (255, 255, 255)
+    assert rotated_center != (255, 255, 255)
+    # A point up-and-right of center only has ink once rotated toward it —
+    # genuinely discriminates rotation, unlike sampling the center alone
+    # (which sits on the baseline at every angle).
+    assert rotated_off != unrotated_off
 
 
 def test_add_watermark_font_size_scales_rendered_text(make_pdf, tmp_path):

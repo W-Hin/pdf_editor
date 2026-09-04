@@ -156,7 +156,11 @@ class WatermarkRequest(BaseModel):
     file_id: str
     text: str
     opacity: float = 0.3
-    font_size: float = 40
+    # A blanked/zero slider value would silently render an invisible watermark
+    # (insert_text() accepts fontsize<=0 without erroring) — reject it at the
+    # model boundary instead, matching FontOverride.size/NewTextElement.size's
+    # identical guard elsewhere in this file.
+    font_size: float = Field(default=40, gt=0)
     rotate: float = 0
 
 

@@ -757,7 +757,7 @@ def _validate_new_text(el: dict) -> None:
 def _wrap_text_lines(text: str, fontname: str, fontsize: float, max_width: float) -> list[str]:
     """Greedy word-wrap using the same width-measurement primitive
     (fitz.get_text_length) auto-shrink-to-fit already relies on.
-    insert_textbox() (used elsewhere for Watermark/Page Numbers) wraps text
+    insert_textbox() (used elsewhere for Page Numbers) wraps text
     but doesn't expose per-line boundaries or widths, which _apply_new_text
     needs to draw a correctly-sized underline under each line and to align
     each line independently — verified empirically (see the Add Text design

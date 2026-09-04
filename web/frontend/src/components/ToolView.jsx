@@ -230,7 +230,11 @@ export default function ToolView() {
               ? () => (
                   <span
                     className="page-thumb__watermark-preview"
-                    style={{ opacity: opacity / 100, fontSize: `${fontSize}px`, transform: `rotate(${rotate}deg)` }}
+                    style={{
+                      opacity: opacity / 100,
+                      fontSize: `${(fontSize / 595) * 100}cqw`,
+                      transform: `rotate(${-rotate}deg)`,
+                    }}
                   >
                     {text}
                   </span>

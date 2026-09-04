@@ -435,6 +435,7 @@ h1 {
   overflow: hidden;
   border-radius: var(--radius-sm);
   background: var(--color-muted);
+  container-type: inline-size;
 }
 
 .page-thumb img {
@@ -475,7 +476,7 @@ h1 {
   text-transform: uppercase;
   letter-spacing: 0.02em;
   color: var(--color-secondary);
-  word-break: break-word;
+  white-space: nowrap;
 }
 
 .page-thumb__label {
