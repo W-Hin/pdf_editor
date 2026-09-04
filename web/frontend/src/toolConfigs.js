@@ -73,6 +73,22 @@ export const TOOL_CONFIGS = {
         default: 30,
         scale: 0.01,
       },
+      {
+        name: "font_size",
+        label: "Font size (pt)",
+        type: "range",
+        min: 10,
+        max: 120,
+        default: 40,
+      },
+      {
+        name: "rotate",
+        label: "Rotation (degrees)",
+        type: "range",
+        min: 0,
+        max: 360,
+        default: 0,
+      },
     ],
   },
   "add-page-numbers": {

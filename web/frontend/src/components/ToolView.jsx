@@ -218,6 +218,8 @@ export default function ToolView() {
       if (!primaryFile) return null;
       const text = fieldValues.text?.trim();
       const opacity = fieldValues.opacity ?? 30;
+      const fontSize = fieldValues.font_size ?? 40;
+      const rotate = fieldValues.rotate ?? 0;
       return (
         <PageGrid
           fileId={primaryFile.id}
@@ -226,7 +228,10 @@ export default function ToolView() {
           overlay={
             text
               ? () => (
-                  <span className="page-thumb__watermark-preview" style={{ opacity: opacity / 100 }}>
+                  <span
+                    className="page-thumb__watermark-preview"
+                    style={{ opacity: opacity / 100, fontSize: `${fontSize}px`, transform: `rotate(${rotate}deg)` }}
+                  >
                     {text}
                   </span>
                 )
