@@ -668,6 +668,27 @@ h1 {
   cursor: not-allowed;
 }
 
+.edit-pdf-canvas__zorder-bar {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.edit-pdf-canvas__zorder-bar button {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-card);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.edit-pdf-canvas__zorder-bar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .edit-pdf-canvas__stage {
   position: absolute;
   inset: 0;

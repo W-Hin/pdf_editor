@@ -244,6 +244,28 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     return true;
   }
 
+  // Z-order is simply the selected element's position within `elements` — the
+  // backend applies `other_elements` in array order, and the interleaved
+  // renderer below paints elements in that same order, so moving an element's
+  // index here is the entire implementation of front/back/forward/backward.
+  function reorderSelected(direction) {
+    if (!selectedId) return;
+    const index = elements.findIndex((e) => e.id === selectedId);
+    if (index === -1) return;
+    const next = [...elements];
+    const [el] = next.splice(index, 1);
+    if (direction === "front") {
+      next.push(el);
+    } else if (direction === "back") {
+      next.unshift(el);
+    } else if (direction === "forward") {
+      next.splice(Math.min(index + 1, next.length), 0, el);
+    } else if (direction === "backward") {
+      next.splice(Math.max(index - 1, 0), 0, el);
+    }
+    commitElements(next);
+  }
+
   function undo() {
     const { undoStack, redoStack } = historyRef.current;
     if (undoStack.length === 0) return;
@@ -676,6 +698,408 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     setEditingRunIndex(null);
   }
 
+  // --- Per-type element renderers -----------------------------------------
+  // Each function renders exactly ONE element and is dispatched by
+  // renderElement below. Strokes and shapes each get their own small
+  // page-sized <svg> (instead of sharing one page-wide <svg> per type) so
+  // that a single element can independently take its place in the
+  // interleaved, array-order z-stack built by renderPageOverlay.
+
+  function renderStroke(el, pageRef) {
+    const xs = el.points.map((p) => p.x);
+    const ys = el.points.map((p) => p.y);
+    const left = Math.min(...xs);
+    const top = Math.min(...ys);
+    const width = Math.max(...xs) - left;
+    const height = Math.max(...ys) - top;
+    return (
+      <>
+        <svg className="edit-pdf-canvas__strokes" viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position: "absolute", inset: 0 }}>
+          <g onClick={(e) => selectElement(el.id, e)}>
+            <polyline
+              points={el.points.map((p) => `${p.x * 100},${p.y * 100}`).join(" ")}
+              fill="none"
+              stroke={el.color}
+              strokeWidth={el.width / 3}
+              vectorEffect="non-scaling-stroke"
+              className={el.id === selectedId ? "edit-pdf-canvas__stroke edit-pdf-canvas__stroke--selected" : "edit-pdf-canvas__stroke"}
+            />
+          </g>
+        </svg>
+        <div
+          className="edit-pdf-canvas__hit-overlay"
+          style={{ left: `${left * 100}%`, top: `${top * 100}%`, width: `${width * 100}%`, height: `${height * 100}%` }}
+          onMouseDown={(e) => {
+            setSelectedId(el.id);
+            startElementDrag(pageRef, el, "move", e);
+          }}
+          onClick={(e) => e.stopPropagation()}
+        />
+        <button
+          type="button"
+          className="edit-pdf-canvas__element-remove"
+          style={{ left: `${left * 100}%`, top: `${top * 100}%` }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => removeElement(el.id)}
+          aria-label="Remove this stroke"
+        >
+          <X size={12} weight="bold" />
+        </button>
+      </>
+    );
+  }
+
+  function renderShape(el, pageRef) {
+    const stroke = el.color;
+    const fill = el.filled ? el.color : "none";
+    const commonProps = {
+      stroke,
+      fill,
+      strokeWidth: el.width / 3,
+      vectorEffect: "non-scaling-stroke",
+      className: el.id === selectedId ? "edit-pdf-canvas__shape edit-pdf-canvas__shape--selected" : "edit-pdf-canvas__shape",
+    };
+    let shapeContent;
+    if (el.shape === "rectangle") {
+      shapeContent = (
+        <g onClick={(e) => selectElement(el.id, e)}>
+          <rect
+            {...commonProps}
+            x={Math.min(el.x0, el.x1) * 100}
+            y={Math.min(el.y0, el.y1) * 100}
+            width={Math.abs(el.x1 - el.x0) * 100}
+            height={Math.abs(el.y1 - el.y0) * 100}
+          />
+        </g>
+      );
+    } else if (el.shape === "ellipse") {
+      shapeContent = (
+        <g onClick={(e) => selectElement(el.id, e)}>
+          <ellipse
+            {...commonProps}
+            cx={((el.x0 + el.x1) / 2) * 100}
+            cy={((el.y0 + el.y1) / 2) * 100}
+            rx={(Math.abs(el.x1 - el.x0) / 2) * 100}
+            ry={(Math.abs(el.y1 - el.y0) / 2) * 100}
+          />
+        </g>
+      );
+    } else if (el.shape === "arrow") {
+      const x1p = el.x0 * 100, y1p = el.y0 * 100, x2p = el.x1 * 100, y2p = el.y1 * 100;
+      const angle = Math.atan2(y2p - y1p, x2p - x1p);
+      const headLen = Math.max(2, el.width);
+      const headAngle = (25 * Math.PI) / 180;
+      const hx1 = x2p - headLen * Math.cos(angle - headAngle);
+      const hy1 = y2p - headLen * Math.sin(angle - headAngle);
+      const hx2 = x2p - headLen * Math.cos(angle + headAngle);
+      const hy2 = y2p - headLen * Math.sin(angle + headAngle);
+      shapeContent = (
+        <g onClick={(e) => selectElement(el.id, e)}>
+          <line {...commonProps} x1={x1p} y1={y1p} x2={x2p} y2={y2p} />
+          <polygon
+            points={`${hx1},${hy1} ${x2p},${y2p} ${hx2},${hy2}`}
+            fill={el.color}
+            stroke={el.color}
+          />
+        </g>
+      );
+    } else {
+      // line renders as a plain line — the arrow branch above is what makes
+      // it visually distinct from Arrow in the live preview.
+      shapeContent = (
+        <g onClick={(e) => selectElement(el.id, e)}>
+          <line {...commonProps} x1={el.x0 * 100} y1={el.y0 * 100} x2={el.x1 * 100} y2={el.y1 * 100} />
+        </g>
+      );
+    }
+    const left = Math.min(el.x0, el.x1);
+    const top = Math.min(el.y0, el.y1);
+    const width = Math.abs(el.x1 - el.x0);
+    const height = Math.abs(el.y1 - el.y0);
+    return (
+      <>
+        <svg className="edit-pdf-canvas__shapes" viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position: "absolute", inset: 0 }}>
+          {shapeContent}
+        </svg>
+        <div
+          className="edit-pdf-canvas__hit-overlay"
+          style={{ left: `${left * 100}%`, top: `${top * 100}%`, width: `${width * 100}%`, height: `${height * 100}%` }}
+          onMouseDown={(e) => {
+            setSelectedId(el.id);
+            startElementDrag(pageRef, el, "move", e);
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            className="edit-pdf-canvas__shape-resize-handle"
+            onMouseDown={(e) => startElementDrag(pageRef, el, "resize-corner-xy", e)}
+          />
+        </div>
+        <button
+          type="button"
+          className="edit-pdf-canvas__element-remove"
+          style={{ left: `${left * 100}%`, top: `${top * 100}%` }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => removeElement(el.id)}
+          aria-label="Remove this shape"
+        >
+          <X size={12} weight="bold" />
+        </button>
+      </>
+    );
+  }
+
+  function renderHighlight(el, pageRef) {
+    return (
+      <div
+        className={
+          el.id === selectedId
+            ? "edit-pdf-canvas__highlight edit-pdf-canvas__highlight--selected"
+            : "edit-pdf-canvas__highlight"
+        }
+        style={{
+          left: `${el.left * 100}%`,
+          top: `${el.top * 100}%`,
+          width: `${(1 - el.left - el.right) * 100}%`,
+          height: `${(1 - el.top - el.bottom) * 100}%`,
+          background: `${el.color}${HIGHLIGHT_ALPHA_HEX}`,
+        }}
+        onMouseDown={(e) => {
+          setSelectedId(el.id);
+          startElementDrag(pageRef, el, "move", e);
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div
+          className="edit-pdf-canvas__shape-resize-handle"
+          onMouseDown={(e) => startElementDrag(pageRef, el, "resize", e, { lockAspect: false })}
+        />
+        <button
+          type="button"
+          className="edit-pdf-canvas__box-remove"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            removeElement(el.id);
+          }}
+          aria-label="Remove this highlight"
+        >
+          <X size={12} weight="bold" />
+        </button>
+      </div>
+    );
+  }
+
+  function renderImageElement(el, pageRef) {
+    return (
+      <div
+        className={
+          el.id === selectedId
+            ? "edit-pdf-canvas__image-el edit-pdf-canvas__image-el--selected"
+            : "edit-pdf-canvas__image-el"
+        }
+        style={{ left: `${el.x * 100}%`, top: `${el.y * 100}%`, width: `${el.width * 100}%`, height: `${el.height * 100}%` }}
+        onMouseDown={(e) => {
+          setSelectedId(el.id);
+          startElementDrag(pageRef, el, "move", e);
+        }}
+        // Selection happens on mousedown here (it starts a drag), but the
+        // click that follows would still reach the stage and deselect.
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="edit-pdf-canvas__image-el-handle" onMouseDown={(e) => startElementDrag(pageRef, el, "resize", e, { lockAspect: true })} />
+        <button
+          type="button"
+          className="edit-pdf-canvas__box-remove"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => removeElement(el.id)}
+          aria-label="Remove this image"
+        >
+          <X size={12} weight="bold" />
+        </button>
+      </div>
+    );
+  }
+
+  function renderNewTextElement(el, pageRef) {
+    return (
+      <div
+        className={
+          el.id === selectedId
+            ? "edit-pdf-canvas__new-text-el edit-pdf-canvas__new-text-el--selected"
+            : "edit-pdf-canvas__new-text-el"
+        }
+        style={{ left: `${el.x * 100}%`, top: `${el.y * 100}%`, width: `${el.width * 100}%`, height: `${el.height * 100}%` }}
+        onMouseDown={(e) => {
+          setSelectedId(el.id);
+          startElementDrag(pageRef, el, "move", e);
+        }}
+        onClick={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          openTextDraftForEdit(el);
+        }}
+      >
+        <p
+          style={{
+            fontFamily: newTextFontFamilyCss(el.family),
+            fontWeight: el.bold ? "bold" : "normal",
+            fontStyle: el.italic ? "italic" : "normal",
+            textDecoration: el.underline ? "underline" : "none",
+            color: el.color,
+            fontSize: `${el.size}px`,
+            textAlign: el.align,
+          }}
+        >
+          {el.text}
+        </p>
+        <div
+          className="edit-pdf-canvas__new-text-el-handle"
+          onMouseDown={(e) => startElementDrag(pageRef, el, "resize", e, { lockAspect: false })}
+        />
+        <button
+          type="button"
+          className="edit-pdf-canvas__box-remove"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => removeElement(el.id)}
+          aria-label="Remove this text box"
+        >
+          <X size={12} weight="bold" />
+        </button>
+      </div>
+    );
+  }
+
+  function renderElement(el, pageNumber, pageRef) {
+    if (el.type === "stroke") return renderStroke(el, pageRef);
+    if (el.type === "shape") return renderShape(el, pageRef);
+    if (el.type === "highlight") return renderHighlight(el, pageRef);
+    if (el.type === "image") return renderImageElement(el, pageRef);
+    if (el.type === "new_text") return renderNewTextElement(el, pageRef);
+    return null;
+  }
+
+  function renderTextDraftEditor(pageRef) {
+    return (
+      <div
+        className="edit-pdf-canvas__new-text-editor"
+        style={{ left: `${textDraft.x * 100}%`, top: `${textDraft.y * 100}%`, width: `${textDraft.width * 100}%`, height: `${textDraft.height * 100}%` }}
+        onMouseDown={(e) => e.stopPropagation()}
+        onBlur={handleTextDraftBlur}
+      >
+        <textarea
+          ref={textDraftAreaRef}
+          className="edit-pdf-canvas__new-text-textarea"
+          value={textDraft.text}
+          onChange={(e) => setTextDraft((d) => ({ ...d, text: e.target.value }))}
+          onKeyDown={handleTextDraftKeyDown}
+          style={{
+            fontFamily: newTextFontFamilyCss(textDraft.family),
+            fontWeight: textDraft.bold ? "bold" : "normal",
+            fontStyle: textDraft.italic ? "italic" : "normal",
+            textDecoration: textDraft.underline ? "underline" : "none",
+            color: textDraft.color,
+            fontSize: `${textDraft.size}px`,
+            textAlign: textDraft.align,
+          }}
+        />
+        <div className="edit-pdf-canvas__new-text-style-bar">
+          <select
+            value={textDraft.family}
+            onChange={(e) => setTextDraft((d) => ({ ...d, family: e.target.value }))}
+          >
+            {FAMILY_OPTIONS.map((f) => (
+              <option key={f} value={f}>
+                {f}
+              </option>
+            ))}
+          </select>
+          <input
+            type="number"
+            min={1}
+            value={textDraft.size}
+            onChange={(e) => setTextDraft((d) => ({ ...d, size: Number(e.target.value) }))}
+          />
+          <button
+            type="button"
+            className={textDraft.bold ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+            onClick={() => setTextDraft((d) => ({ ...d, bold: !d.bold }))}
+            aria-label="Bold"
+          >
+            <TextB size={14} weight="bold" />
+          </button>
+          <button
+            type="button"
+            className={textDraft.italic ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+            onClick={() => setTextDraft((d) => ({ ...d, italic: !d.italic }))}
+            aria-label="Italic"
+          >
+            <TextItalic size={14} weight="bold" />
+          </button>
+          <button
+            type="button"
+            className={textDraft.underline ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+            onClick={() => setTextDraft((d) => ({ ...d, underline: !d.underline }))}
+            aria-label="Underline"
+          >
+            <TextAUnderline size={14} weight="bold" />
+          </button>
+          {MARKUP_COLORS.map((c) => (
+            <button
+              key={c}
+              type="button"
+              className={c === textDraft.color ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active" : "edit-pdf-canvas__color-swatch"}
+              style={{ background: c }}
+              onClick={() => setTextDraft((d) => ({ ...d, color: c }))}
+              aria-label={`Color ${c}`}
+            />
+          ))}
+          <button
+            type="button"
+            className={textDraft.align === "left" ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+            onClick={() => setTextDraft((d) => ({ ...d, align: "left" }))}
+            aria-label="Align left"
+          >
+            <TextAlignLeft size={14} weight="bold" />
+          </button>
+          <button
+            type="button"
+            className={textDraft.align === "center" ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+            onClick={() => setTextDraft((d) => ({ ...d, align: "center" }))}
+            aria-label="Align center"
+          >
+            <TextAlignCenter size={14} weight="bold" />
+          </button>
+          <button
+            type="button"
+            className={textDraft.align === "right" ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+            onClick={() => setTextDraft((d) => ({ ...d, align: "right" }))}
+            aria-label="Align right"
+          >
+            <TextAlignRight size={14} weight="bold" />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  function renderTextRun(run, pageNumber) {
+    const pending = pendingTextEditFor(run);
+    return (
+      <div
+        key={run.index}
+        className={pending ? "edit-pdf-canvas__run edit-pdf-canvas__run--queued" : "edit-pdf-canvas__run"}
+        style={{
+          left: `${run.bbox.left * 100}%`,
+          top: `${run.bbox.top * 100}%`,
+          width: `${(1 - run.bbox.left - run.bbox.right) * 100}%`,
+          height: `${(1 - run.bbox.top - run.bbox.bottom) * 100}%`,
+        }}
+        onClick={() => openRunEditor(pageNumber, run)}
+      />
+    );
+  }
+
   function renderPageOverlay(pageNumber, pageRef) {
     return (
       <div
@@ -686,22 +1110,16 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
         onMouseLeave={handleStageMouseUp}
         onClick={handleStageClick}
       >
-        <svg className="edit-pdf-canvas__strokes" viewBox="0 0 100 100" preserveAspectRatio="none">
-          {elements
-            .filter((el) => el.type === "stroke" && el.page === pageNumber)
-            .map((el) => (
-              <g key={el.id} onClick={(e) => selectElement(el.id, e)}>
-                <polyline
-                  points={el.points.map((p) => `${p.x * 100},${p.y * 100}`).join(" ")}
-                  fill="none"
-                  stroke={el.color}
-                  strokeWidth={el.width / 3}
-                  vectorEffect="non-scaling-stroke"
-                  className={el.id === selectedId ? "edit-pdf-canvas__stroke edit-pdf-canvas__stroke--selected" : "edit-pdf-canvas__stroke"}
-                />
-              </g>
-            ))}
-          {activeStroke && activeStroke.page === pageNumber && (
+        {elements
+          .filter((el) => el.page === pageNumber && el.type !== "text_edit" && el.id !== textDraft?.id)
+          .map((el) => (
+            <div key={el.id} style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+              <div style={{ pointerEvents: "auto" }}>{renderElement(el, pageNumber, pageRef)}</div>
+            </div>
+          ))}
+
+        {activeStroke && activeStroke.page === pageNumber && (
+          <svg className="edit-pdf-canvas__strokes" viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position: "absolute", inset: 0 }}>
             <polyline
               points={activeStroke.points.map((p) => `${p.x * 100},${p.y * 100}`).join(" ")}
               fill="none"
@@ -709,111 +1127,10 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               strokeWidth={STROKE_WIDTHS[drawWidth] / 3}
               vectorEffect="non-scaling-stroke"
             />
-          )}
-        </svg>
-
-        {elements
-          .filter((el) => el.type === "stroke" && el.page === pageNumber)
-          .map((el) => {
-            const xs = el.points.map((p) => p.x);
-            const ys = el.points.map((p) => p.y);
-            const left = Math.min(...xs);
-            const top = Math.min(...ys);
-            const width = Math.max(...xs) - left;
-            const height = Math.max(...ys) - top;
-            return (
-              <div key={`${el.id}-hit`}>
-                <div
-                  className="edit-pdf-canvas__hit-overlay"
-                  style={{ left: `${left * 100}%`, top: `${top * 100}%`, width: `${width * 100}%`, height: `${height * 100}%` }}
-                  onMouseDown={(e) => {
-                    setSelectedId(el.id);
-                    startElementDrag(pageRef, el, "move", e);
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                />
-                <button
-                  type="button"
-                  className="edit-pdf-canvas__element-remove"
-                  style={{ left: `${left * 100}%`, top: `${top * 100}%` }}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={() => removeElement(el.id)}
-                  aria-label="Remove this stroke"
-                >
-                  <X size={12} weight="bold" />
-                </button>
-              </div>
-            );
-          })}
-
-        <svg className="edit-pdf-canvas__shapes" viewBox="0 0 100 100" preserveAspectRatio="none" style={{ zIndex: 2 }}>
-          {elements
-            .filter((el) => el.type === "shape" && el.page === pageNumber)
-            .map((el) => {
-              const stroke = el.color;
-              const fill = el.filled ? el.color : "none";
-              const commonProps = {
-                stroke,
-                fill,
-                strokeWidth: el.width / 3,
-                vectorEffect: "non-scaling-stroke",
-                className: el.id === selectedId ? "edit-pdf-canvas__shape edit-pdf-canvas__shape--selected" : "edit-pdf-canvas__shape",
-              };
-              if (el.shape === "rectangle") {
-                return (
-                  <g key={el.id} onClick={(e) => selectElement(el.id, e)}>
-                    <rect
-                      {...commonProps}
-                      x={Math.min(el.x0, el.x1) * 100}
-                      y={Math.min(el.y0, el.y1) * 100}
-                      width={Math.abs(el.x1 - el.x0) * 100}
-                      height={Math.abs(el.y1 - el.y0) * 100}
-                    />
-                  </g>
-                );
-              }
-              if (el.shape === "ellipse") {
-                return (
-                  <g key={el.id} onClick={(e) => selectElement(el.id, e)}>
-                    <ellipse
-                      {...commonProps}
-                      cx={((el.x0 + el.x1) / 2) * 100}
-                      cy={((el.y0 + el.y1) / 2) * 100}
-                      rx={(Math.abs(el.x1 - el.x0) / 2) * 100}
-                      ry={(Math.abs(el.y1 - el.y0) / 2) * 100}
-                    />
-                  </g>
-                );
-              }
-              if (el.shape === "arrow") {
-                const x1p = el.x0 * 100, y1p = el.y0 * 100, x2p = el.x1 * 100, y2p = el.y1 * 100;
-                const angle = Math.atan2(y2p - y1p, x2p - x1p);
-                const headLen = Math.max(2, el.width);
-                const headAngle = (25 * Math.PI) / 180;
-                const hx1 = x2p - headLen * Math.cos(angle - headAngle);
-                const hy1 = y2p - headLen * Math.sin(angle - headAngle);
-                const hx2 = x2p - headLen * Math.cos(angle + headAngle);
-                const hy2 = y2p - headLen * Math.sin(angle + headAngle);
-                return (
-                  <g key={el.id} onClick={(e) => selectElement(el.id, e)}>
-                    <line {...commonProps} x1={x1p} y1={y1p} x2={x2p} y2={y2p} />
-                    <polygon
-                      points={`${hx1},${hy1} ${x2p},${y2p} ${hx2},${hy2}`}
-                      fill={el.color}
-                      stroke={el.color}
-                    />
-                  </g>
-                );
-              }
-              // line renders as a plain line — the arrow branch above is what
-              // now makes it visually distinct from Arrow in the live preview.
-              return (
-                <g key={el.id} onClick={(e) => selectElement(el.id, e)}>
-                  <line {...commonProps} x1={el.x0 * 100} y1={el.y0 * 100} x2={el.x1 * 100} y2={el.y1 * 100} />
-                </g>
-              );
-            })}
-          {shapeDragPage === pageNumber && shapeDragStart && shapeDragCurrent && (
+          </svg>
+        )}
+        {shapeDragPage === pageNumber && shapeDragStart && shapeDragCurrent && (
+          <svg className="edit-pdf-canvas__shapes" viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position: "absolute", inset: 0 }}>
             <line
               x1={shapeDragStart.x * 100}
               y1={shapeDragStart.y * 100}
@@ -824,87 +1141,8 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               strokeDasharray="2,1"
               vectorEffect="non-scaling-stroke"
             />
-          )}
-        </svg>
-
-        {elements
-          .filter((el) => el.type === "shape" && el.page === pageNumber)
-          .map((el) => {
-            const left = Math.min(el.x0, el.x1);
-            const top = Math.min(el.y0, el.y1);
-            const width = Math.abs(el.x1 - el.x0);
-            const height = Math.abs(el.y1 - el.y0);
-            return (
-              <div key={`${el.id}-hit`}>
-                <div
-                  className="edit-pdf-canvas__hit-overlay"
-                  style={{ left: `${left * 100}%`, top: `${top * 100}%`, width: `${width * 100}%`, height: `${height * 100}%` }}
-                  onMouseDown={(e) => {
-                    setSelectedId(el.id);
-                    startElementDrag(pageRef, el, "move", e);
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div
-                    className="edit-pdf-canvas__shape-resize-handle"
-                    onMouseDown={(e) => startElementDrag(pageRef, el, "resize-corner-xy", e)}
-                  />
-                </div>
-                <button
-                  type="button"
-                  className="edit-pdf-canvas__element-remove"
-                  style={{ left: `${left * 100}%`, top: `${top * 100}%` }}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={() => removeElement(el.id)}
-                  aria-label="Remove this shape"
-                >
-                  <X size={12} weight="bold" />
-                </button>
-              </div>
-            );
-          })}
-
-        {elements
-          .filter((el) => el.type === "highlight" && el.page === pageNumber)
-          .map((el) => (
-            <div
-              key={el.id}
-              className={
-                el.id === selectedId
-                  ? "edit-pdf-canvas__highlight edit-pdf-canvas__highlight--selected"
-                  : "edit-pdf-canvas__highlight"
-              }
-              style={{
-                left: `${el.left * 100}%`,
-                top: `${el.top * 100}%`,
-                width: `${(1 - el.left - el.right) * 100}%`,
-                height: `${(1 - el.top - el.bottom) * 100}%`,
-                background: `${el.color}${HIGHLIGHT_ALPHA_HEX}`,
-              }}
-              onMouseDown={(e) => {
-                setSelectedId(el.id);
-                startElementDrag(pageRef, el, "move", e);
-              }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div
-                className="edit-pdf-canvas__shape-resize-handle"
-                onMouseDown={(e) => startElementDrag(pageRef, el, "resize", e, { lockAspect: false })}
-              />
-              <button
-                type="button"
-                className="edit-pdf-canvas__box-remove"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  removeElement(el.id);
-                }}
-                aria-label="Remove this highlight"
-              >
-                <X size={12} weight="bold" />
-              </button>
-            </div>
-          ))}
+          </svg>
+        )}
         {highlightDragPage === pageNumber && highlightDragStart && highlightDragCurrent && (
           <div
             className="edit-pdf-canvas__highlight edit-pdf-canvas__highlight--dragging"
@@ -918,209 +1156,10 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
           />
         )}
 
-        {elements
-          .filter((el) => el.type === "image" && el.page === pageNumber)
-          .map((el) => (
-            <div
-              key={el.id}
-              className={
-                el.id === selectedId
-                  ? "edit-pdf-canvas__image-el edit-pdf-canvas__image-el--selected"
-                  : "edit-pdf-canvas__image-el"
-              }
-              style={{ left: `${el.x * 100}%`, top: `${el.y * 100}%`, width: `${el.width * 100}%`, height: `${el.height * 100}%` }}
-              onMouseDown={(e) => {
-                setSelectedId(el.id);
-                startElementDrag(pageRef, el, "move", e);
-              }}
-              // Selection happens on mousedown here (it starts a drag), but the
-              // click that follows would still reach the stage and deselect.
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="edit-pdf-canvas__image-el-handle" onMouseDown={(e) => startElementDrag(pageRef, el, "resize", e, { lockAspect: true })} />
-              <button
-                type="button"
-                className="edit-pdf-canvas__box-remove"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={() => removeElement(el.id)}
-                aria-label="Remove this image"
-              >
-                <X size={12} weight="bold" />
-              </button>
-            </div>
-          ))}
-
-        {elements
-          .filter((el) => el.type === "new_text" && el.page === pageNumber && el.id !== textDraft?.id)
-          .map((el) => (
-            <div
-              key={el.id}
-              className={
-                el.id === selectedId
-                  ? "edit-pdf-canvas__new-text-el edit-pdf-canvas__new-text-el--selected"
-                  : "edit-pdf-canvas__new-text-el"
-              }
-              style={{ left: `${el.x * 100}%`, top: `${el.y * 100}%`, width: `${el.width * 100}%`, height: `${el.height * 100}%` }}
-              onMouseDown={(e) => {
-                setSelectedId(el.id);
-                startElementDrag(pageRef, el, "move", e);
-              }}
-              onClick={(e) => e.stopPropagation()}
-              onDoubleClick={(e) => {
-                e.stopPropagation();
-                openTextDraftForEdit(el);
-              }}
-            >
-              <p
-                style={{
-                  fontFamily: newTextFontFamilyCss(el.family),
-                  fontWeight: el.bold ? "bold" : "normal",
-                  fontStyle: el.italic ? "italic" : "normal",
-                  textDecoration: el.underline ? "underline" : "none",
-                  color: el.color,
-                  fontSize: `${el.size}px`,
-                  textAlign: el.align,
-                }}
-              >
-                {el.text}
-              </p>
-              <div
-                className="edit-pdf-canvas__new-text-el-handle"
-                onMouseDown={(e) => startElementDrag(pageRef, el, "resize", e, { lockAspect: false })}
-              />
-              <button
-                type="button"
-                className="edit-pdf-canvas__box-remove"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={() => removeElement(el.id)}
-                aria-label="Remove this text box"
-              >
-                <X size={12} weight="bold" />
-              </button>
-            </div>
-          ))}
-
-        {textDraft && textDraft.page === pageNumber && (
-          <div
-            className="edit-pdf-canvas__new-text-editor"
-            style={{ left: `${textDraft.x * 100}%`, top: `${textDraft.y * 100}%`, width: `${textDraft.width * 100}%`, height: `${textDraft.height * 100}%` }}
-            onMouseDown={(e) => e.stopPropagation()}
-            onBlur={handleTextDraftBlur}
-          >
-            <textarea
-              ref={textDraftAreaRef}
-              className="edit-pdf-canvas__new-text-textarea"
-              value={textDraft.text}
-              onChange={(e) => setTextDraft((d) => ({ ...d, text: e.target.value }))}
-              onKeyDown={handleTextDraftKeyDown}
-              style={{
-                fontFamily: newTextFontFamilyCss(textDraft.family),
-                fontWeight: textDraft.bold ? "bold" : "normal",
-                fontStyle: textDraft.italic ? "italic" : "normal",
-                textDecoration: textDraft.underline ? "underline" : "none",
-                color: textDraft.color,
-                fontSize: `${textDraft.size}px`,
-                textAlign: textDraft.align,
-              }}
-            />
-            <div className="edit-pdf-canvas__new-text-style-bar">
-              <select
-                value={textDraft.family}
-                onChange={(e) => setTextDraft((d) => ({ ...d, family: e.target.value }))}
-              >
-                {FAMILY_OPTIONS.map((f) => (
-                  <option key={f} value={f}>
-                    {f}
-                  </option>
-                ))}
-              </select>
-              <input
-                type="number"
-                min={1}
-                value={textDraft.size}
-                onChange={(e) => setTextDraft((d) => ({ ...d, size: Number(e.target.value) }))}
-              />
-              <button
-                type="button"
-                className={textDraft.bold ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
-                onClick={() => setTextDraft((d) => ({ ...d, bold: !d.bold }))}
-                aria-label="Bold"
-              >
-                <TextB size={14} weight="bold" />
-              </button>
-              <button
-                type="button"
-                className={textDraft.italic ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
-                onClick={() => setTextDraft((d) => ({ ...d, italic: !d.italic }))}
-                aria-label="Italic"
-              >
-                <TextItalic size={14} weight="bold" />
-              </button>
-              <button
-                type="button"
-                className={textDraft.underline ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
-                onClick={() => setTextDraft((d) => ({ ...d, underline: !d.underline }))}
-                aria-label="Underline"
-              >
-                <TextAUnderline size={14} weight="bold" />
-              </button>
-              {MARKUP_COLORS.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  className={c === textDraft.color ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active" : "edit-pdf-canvas__color-swatch"}
-                  style={{ background: c }}
-                  onClick={() => setTextDraft((d) => ({ ...d, color: c }))}
-                  aria-label={`Color ${c}`}
-                />
-              ))}
-              <button
-                type="button"
-                className={textDraft.align === "left" ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
-                onClick={() => setTextDraft((d) => ({ ...d, align: "left" }))}
-                aria-label="Align left"
-              >
-                <TextAlignLeft size={14} weight="bold" />
-              </button>
-              <button
-                type="button"
-                className={textDraft.align === "center" ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
-                onClick={() => setTextDraft((d) => ({ ...d, align: "center" }))}
-                aria-label="Align center"
-              >
-                <TextAlignCenter size={14} weight="bold" />
-              </button>
-              <button
-                type="button"
-                className={textDraft.align === "right" ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
-                onClick={() => setTextDraft((d) => ({ ...d, align: "right" }))}
-                aria-label="Align right"
-              >
-                <TextAlignRight size={14} weight="bold" />
-              </button>
-            </div>
-          </div>
-        )}
+        {textDraft && textDraft.page === pageNumber && <>{renderTextDraftEditor(pageRef)}</>}
 
         {activeMode === "text" &&
-          runs
-            .filter((r) => r.page === pageNumber)
-            .map((run) => {
-              const pending = pendingTextEditFor(run);
-              return (
-                <div
-                  key={run.index}
-                  className={pending ? "edit-pdf-canvas__run edit-pdf-canvas__run--queued" : "edit-pdf-canvas__run"}
-                  style={{
-                    left: `${run.bbox.left * 100}%`,
-                    top: `${run.bbox.top * 100}%`,
-                    width: `${(1 - run.bbox.left - run.bbox.right) * 100}%`,
-                    height: `${(1 - run.bbox.top - run.bbox.bottom) * 100}%`,
-                  }}
-                  onClick={() => openRunEditor(pageNumber, run)}
-                />
-              );
-            })}
+          runs.filter((r) => r.page === pageNumber).map((run) => renderTextRun(run, pageNumber))}
       </div>
     );
   }
@@ -1149,6 +1188,21 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
         <button type="button" onClick={redo} disabled={historyRef.current.redoStack.length === 0}>
           <ArrowUUpRight size={16} weight="regular" />
           Redo
+        </button>
+      </div>
+
+      <div className="edit-pdf-canvas__zorder-bar">
+        <button type="button" onClick={() => reorderSelected("back")} disabled={!selectedId}>
+          Send to back
+        </button>
+        <button type="button" onClick={() => reorderSelected("backward")} disabled={!selectedId}>
+          Backward
+        </button>
+        <button type="button" onClick={() => reorderSelected("forward")} disabled={!selectedId}>
+          Forward
+        </button>
+        <button type="button" onClick={() => reorderSelected("front")} disabled={!selectedId}>
+          Bring to front
         </button>
       </div>
 
