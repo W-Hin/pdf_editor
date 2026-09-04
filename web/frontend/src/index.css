@@ -166,9 +166,10 @@ h1 {
 /* ---------- Page scroll viewer ---------- */
 
 .page-scroll-viewer {
-  max-width: 1400px;
-  width: 100%;
-  margin: 0 auto;
+  width: min(1400px, calc(100vw - 2 * var(--space-6)));
+  max-width: none;
+  margin-left: calc(50% - min(700px, calc(50vw - var(--space-6))));
+  margin-right: calc(50% - min(700px, calc(50vw - var(--space-6))));
 }
 
 .page-scroll-viewer__header {
@@ -566,7 +567,14 @@ h1 {
 /* ---------- Redact selector ---------- */
 
 .redact-selector {
-  margin: var(--space-5) 0;
+  /* Top/bottom only — a shorthand `margin` here would also set
+     margin-left/right to 0, clobbering .page-scroll-viewer's centering
+     margins (same specificity, this rule comes later in the cascade).
+     That was invisible while .page-scroll-viewer was width:100% (flush
+     against its parent either way), but breaks the wide, centered layout
+     now that width is capped below the parent's width. */
+  margin-top: var(--space-5);
+  margin-bottom: var(--space-5);
 }
 
 .redact-selector__canvas {

@@ -113,17 +113,17 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     if (!fileId || !pageCount) return;
     let cancelled = false;
     async function loadRuns() {
-      try {
-        const perPage = await Promise.all(
-          Array.from({ length: pageCount }, (_, i) => i + 1).map((pageNumber) =>
-            fetchTextRuns(fileId, pageNumber).then((data) => data.runs.map((r) => ({ ...r, page: pageNumber })))
-          )
-        );
-        if (!cancelled) setRuns(perPage.flat());
-      } catch (err) {
-        console.error("Failed to load text runs:", err);
-        if (!cancelled) setRuns([]);
-      }
+      const perPage = await Promise.all(
+        Array.from({ length: pageCount }, (_, i) => i + 1).map((pageNumber) =>
+          fetchTextRuns(fileId, pageNumber)
+            .then((data) => data.runs.map((r) => ({ ...r, page: pageNumber })))
+            .catch((err) => {
+              console.error(`Failed to load text runs for page ${pageNumber}:`, err);
+              return [];
+            })
+        )
+      );
+      if (!cancelled) setRuns(perPage.flat());
     }
     loadRuns();
     setEditingRunIndex(null);

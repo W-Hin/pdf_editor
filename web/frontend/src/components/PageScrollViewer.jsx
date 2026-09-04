@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { thumbnailUrl } from "../api";
 
-const DEFAULT_MAX_SIZE = 1400;
+const DEFAULT_MAX_SIZE = 1800;
 
 export default function PageScrollViewer({ fileId, pageCount, maxSize = DEFAULT_MAX_SIZE, renderPageOverlay, className = "" }) {
   const [currentPage, setCurrentPage] = useState(1);
