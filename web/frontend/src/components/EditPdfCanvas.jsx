@@ -17,7 +17,7 @@ import {
   ArrowUUpRight,
 } from "@phosphor-icons/react";
 import { downloadUrl, fetchTextRuns, uploadFile } from "../api";
-import PageScrollViewer from "./PageScrollViewer";
+import PageScrollViewer, { DEFAULT_MAX_SIZE as PAGE_THUMBNAIL_MAX_SIZE } from "./PageScrollViewer";
 
 const MODES = [
   { id: "text", label: "Edit Text", icon: CursorText },
@@ -46,6 +46,69 @@ function newTextFontFamilyCss(family) {
   if (family === "times") return '"Times New Roman", Times, serif';
   if (family === "courier") return '"Courier New", Courier, monospace';
   return "Helvetica, Arial, sans-serif";
+}
+
+// Rough width-per-character estimate for the three base-14 families this
+// tool supports, used only to enforce a REASONABLE minimum box size client-
+// side — the backend's own _wrap_text_lines (using the real font metrics)
+// is still what actually determines final layout at Run time. This doesn't
+// need to be exact, just conservative enough that the box the user is
+// allowed to shrink to always fits what they typed.
+const AVG_CHAR_WIDTH_FACTOR = { helvetica: 0.55, times: 0.5, courier: 0.6 };
+
+// A reference page long-edge (in PDF points) used ONLY to convert the pixel
+// estimate above into a page fraction. The frontend has no way to learn a
+// PDF's actual point dimensions (the backend never sends them — thumbnails
+// are rasterized to fit PAGE_THUMBNAIL_MAX_SIZE px and nothing else is
+// exposed), so converting a points-based estimate straight through the
+// on-screen CSS-rendered page rect is wrong on two counts: (1) that rect's
+// size tracks the browser window/layout, not the PDF, so the floor would
+// silently vary with window width; (2) for a typical Letter/A4 page — whose
+// point dimensions (~595-842pt) are much smaller than the ~1800px thumbnail
+// they're rasterized to — dividing by the CSS rect instead of the true point
+// size undershoots the real minimum by roughly 2x, verified empirically to
+// be enough to drop an entire line of text from the exported PDF. Anchoring
+// to the thumbnail's own natural pixel size (fixed by the backend, immune to
+// CSS layout) and US Letter's 792pt long edge — the smaller of the two
+// common page standards, so this stays conservative for A4 too — fixes both
+// problems for the overwhelming majority of real documents; it's still an
+// approximation for unusually large/small custom page sizes, but a
+// conservative one (see estimateMinTextBoxFraction below).
+const TYPICAL_PAGE_LONG_EDGE_PT = 792;
+
+function estimateMinTextBoxSize(text, family, size) {
+  const charWidth = size * (AVG_CHAR_WIDTH_FACTOR[family] ?? 0.55);
+  const lines = text.split("\n").flatMap((paragraph) => {
+    const words = paragraph.split(" ");
+    // Longest single word sets the minimum WIDTH (a box narrower than its
+    // longest word can't usefully wrap at all); count of words roughly
+    // approximates how many lines a very narrow box would need.
+    return words;
+  });
+  const longestWordChars = Math.max(1, ...lines.map((w) => w.length));
+  const minWidthPx = longestWordChars * charWidth;
+  const lineHeight = size * 1.2;
+  const paragraphCount = text.split("\n").length;
+  const minHeightPx = Math.max(lineHeight, paragraphCount * lineHeight);
+  return { minWidthPx, minHeightPx };
+}
+
+// Converts estimateMinTextBoxSize's points-based estimate into a page
+// fraction via the page thumbnail's own natural (raster) pixel size, which —
+// unlike the CSS-rendered page rect — is fixed by the backend independent of
+// browser window width and was itself derived from the real page dimensions
+// (scaled so the longer edge is PAGE_THUMBNAIL_MAX_SIZE px). See
+// TYPICAL_PAGE_LONG_EDGE_PT above for why a reference point size is needed
+// and why it's biased conservative. Returns null if the thumbnail image
+// isn't available/loaded yet, so callers can fall back to a fixed floor.
+function estimateMinTextBoxFraction(text, family, size, pageImg) {
+  if (!pageImg || !pageImg.naturalWidth || !pageImg.naturalHeight) return null;
+  const { minWidthPx, minHeightPx } = estimateMinTextBoxSize(text, family, size);
+  const pxPerPoint = PAGE_THUMBNAIL_MAX_SIZE / TYPICAL_PAGE_LONG_EDGE_PT;
+  return {
+    minWidthFraction: (minWidthPx * pxPerPoint) / pageImg.naturalWidth,
+    minHeightFraction: (minHeightPx * pxPerPoint) / pageImg.naturalHeight,
+  };
 }
 
 const MARKUP_COLORS = ["#1f2937", "#e03131", "#f08c00", "#2f9e44", "#1971c2", "#9c36b5"];
@@ -581,8 +644,24 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
       const height = width * aspect;
       updated = { ...startElement, width, height };
     } else {
-      const width = Math.min(Math.max(0.05, startElement.width + dx), 1 - startElement.x);
-      const height = Math.min(Math.max(0.03, startElement.height + dy), 1 - startElement.y);
+      let minWidth = 0.05;
+      let minHeight = 0.03;
+      if (startElement.type === "new_text") {
+        // Convert the estimated pixel minimums into page fractions via the
+        // thumbnail's natural (raster) size — see estimateMinTextBoxFraction
+        // for why that, not this drag's on-screen CSS rect, is the right
+        // denominator: the CSS rect scales with the browser window, while
+        // the thumbnail's raster size is fixed by the backend and actually
+        // tracks the PDF's own point dimensions.
+        const pageImg = drag.pageRef.current?.querySelector("img");
+        const estimate = estimateMinTextBoxFraction(startElement.text, startElement.family, startElement.size, pageImg);
+        if (estimate) {
+          minWidth = Math.max(0.05, estimate.minWidthFraction);
+          minHeight = Math.max(0.03, estimate.minHeightFraction);
+        }
+      }
+      const width = Math.min(Math.max(minWidth, startElement.width + dx), 1 - startElement.x);
+      const height = Math.min(Math.max(minHeight, startElement.height + dy), 1 - startElement.y);
       updated = { ...startElement, width, height };
     }
     drag.latestElement = updated;
@@ -1339,7 +1418,13 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
         </div>
       )}
 
-      <PageScrollViewer fileId={fileId} pageCount={pageCount} className="edit-pdf-canvas__viewer" renderPageOverlay={renderPageOverlay} />
+      <PageScrollViewer
+        fileId={fileId}
+        pageCount={pageCount}
+        maxSize={PAGE_THUMBNAIL_MAX_SIZE}
+        className="edit-pdf-canvas__viewer"
+        renderPageOverlay={renderPageOverlay}
+      />
 
       <input
         ref={imageFileInputRef}

@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { thumbnailUrl } from "../api";
 
-const DEFAULT_MAX_SIZE = 1800;
+// Exported so callers that need to reason about the thumbnail's actual raster
+// resolution (e.g. EditPdfCanvas's Add Text minimum-size floor, which has to
+// convert a font-size-in-points estimate into a page fraction) can stay in
+// sync with the value actually used here instead of duplicating the literal.
+export const DEFAULT_MAX_SIZE = 1800;
 
 export default function PageScrollViewer({ fileId, pageCount, maxSize = DEFAULT_MAX_SIZE, renderPageOverlay, className = "" }) {
   const [currentPage, setCurrentPage] = useState(1);
