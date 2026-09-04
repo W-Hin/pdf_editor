@@ -16,7 +16,7 @@ import {
   ArrowUUpLeft,
   ArrowUUpRight,
 } from "@phosphor-icons/react";
-import { fetchTextRuns, uploadFile } from "../api";
+import { downloadUrl, fetchTextRuns, uploadFile } from "../api";
 import PageScrollViewer from "./PageScrollViewer";
 
 const MODES = [
@@ -440,7 +440,9 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   function handleImageStageClick(pageNumber, pageRef, e) {
     const point = pointFromEvent(pageRef, e);
     if (!point) return;
-    pendingImageDropRef.current = { page: pageNumber, point };
+    const rect = pageRef.current?.getBoundingClientRect();
+    const pageAspect = rect && rect.width ? rect.height / rect.width : 1; // fallback: assume square if unmeasurable
+    pendingImageDropRef.current = { page: pageNumber, point, pageAspect };
     imageFileInputRef.current?.click();
   }
 
@@ -460,10 +462,15 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     const file = e.target.files[0];
     e.target.value = "";
     if (!file) return;
-    const drop = pendingImageDropRef.current ?? { page: 1, point: { x: 0.375, y: 0.375 } };
+    const drop = pendingImageDropRef.current ?? { page: 1, point: { x: 0.375, y: 0.375 }, pageAspect: 1 };
     const [uploaded, naturalSize] = await Promise.all([uploadFile(file), loadImageNaturalSize(file)]);
     const width = 0.25;
-    const height = Math.min(0.9, width * (naturalSize.height / naturalSize.width));
+    // The image's own pixel aspect ratio, converted into a HEIGHT FRACTION
+    // OF THE PAGE, must account for the page's own (non-square) aspect
+    // ratio — dividing by pageAspect (the rendered page container's actual
+    // height/width ratio) converts "fraction of page width" into "fraction
+    // of page height" correctly, instead of assuming they're the same unit.
+    const height = Math.min(0.9, (width * (naturalSize.height / naturalSize.width)) / drop.pageAspect);
     const x = Math.min(Math.max(drop.point.x - width / 2, 0), 1 - width);
     const y = Math.min(Math.max(drop.point.y - height / 2, 0), 1 - height);
     commitElements([...elements, { id: newElementId(), type: "image", page: drop.page, file_id: uploaded.id, x, y, width, height }]);
@@ -907,7 +914,16 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
         // click that follows would still reach the stage and deselect.
         onClick={(e) => e.stopPropagation()}
       >
+        <img src={downloadUrl(el.file_id)} alt="" className="edit-pdf-canvas__image-el-preview" draggable={false} />
         <div className="edit-pdf-canvas__image-el-handle" onMouseDown={(e) => startElementDrag(pageRef, el, "resize", e, { lockAspect: true })} />
+        <div
+          className="edit-pdf-canvas__image-el-handle edit-pdf-canvas__image-el-handle--width"
+          onMouseDown={(e) => startElementDrag(pageRef, el, "resize-width", e)}
+        />
+        <div
+          className="edit-pdf-canvas__image-el-handle edit-pdf-canvas__image-el-handle--height"
+          onMouseDown={(e) => startElementDrag(pageRef, el, "resize-height", e)}
+        />
         <button
           type="button"
           className="edit-pdf-canvas__box-remove"

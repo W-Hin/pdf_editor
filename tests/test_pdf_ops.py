@@ -1186,6 +1186,42 @@ def test_edit_pdf_image_inserts_into_page(tmp_path):
     assert b > 150 and r < 100 and g < 100
 
 
+def test_edit_pdf_image_stretches_to_exact_non_proportional_box(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    img_pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 100, 50), False)  # 2:1 image
+    img_pix.set_rect(img_pix.irect, (0, 0, 255))
+    img_path = tmp_path / "wide.png"
+    img_pix.save(str(img_path))
+
+    output_path = tmp_path / "output.pdf"
+    # A tall box (not matching the image's own 2:1 proportions) — with
+    # keep_proportion=False the image must STRETCH to fill it exactly,
+    # not letterbox/center within it.
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [{"type": "image", "page": 1, "file_id": "stamp", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.4}],
+        {"stamp": str(img_path)},
+    )
+
+    result = fitz.open(str(output_path))
+    pix = result[0].get_pixmap()
+    result.close()
+    # Box: x[59.5,178.5] y[84.2,420.8] (595*0.1..0.3, 842*0.1..0.5). Sample
+    # near the TOP and BOTTOM of that box — both must be blue if the image
+    # genuinely stretched to fill the full height, not just letterboxed
+    # around its own 2:1 proportions near the vertical center.
+    top = pix.pixel(119, 90)[:3]
+    bottom = pix.pixel(119, 415)[:3]
+    assert top[2] > 150 and top[0] < 100 and top[1] < 100  # blue
+    assert bottom[2] > 150 and bottom[0] < 100 and bottom[1] < 100  # blue
+
+
 def test_edit_pdf_markup_elements_handle_rotated_page(tmp_path):
     """Every markup element must land where the user DREW it on a rotated page.
 

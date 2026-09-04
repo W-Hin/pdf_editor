@@ -729,7 +729,14 @@ def _apply_image(page: fitz.Page, el: dict, image_path: str) -> None:
         # every (page.rotation, rotate) pair: rotate=page.rotation is the one
         # that reproduces the source image upright in DISPLAYED space —
         # (-page.rotation) % 360 lands 180 degrees out.
-        page.insert_image(raw, filename=image_path, rotate=page.rotation % 360)
+        # keep_proportion defaults to True, which auto-fits the image's TRUE
+        # proportions within whatever rect it's given (silently overriding a
+        # non-proportional resize the user made deliberately via an edge
+        # handle). False makes the export always match exactly what the
+        # editor's box showed — the frontend is responsible for starting the
+        # box correctly proportioned (Step 6/7 below) and the user opts into
+        # distortion explicitly via the width-only/height-only handles.
+        page.insert_image(raw, filename=image_path, rotate=page.rotation % 360, keep_proportion=False)
     except Exception as exc:
         raise PDFError(f"Could not insert image '{Path(image_path).name}' into the PDF.") from exc
 
