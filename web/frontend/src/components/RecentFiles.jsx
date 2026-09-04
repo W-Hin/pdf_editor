@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { ClockCounterClockwise, FilePdf, FileDoc, FileImage, DownloadSimple, Trash, WarningCircle } from "@phosphor-icons/react";
+import { ClockCounterClockwise, FilePdf, FileDoc, FileImage, DownloadSimple, Trash, WarningCircle, Eye } from "@phosphor-icons/react";
 import { fetchHistory, deleteHistoryEntry, downloadUrl, thumbnailUrl } from "../api";
 import { isImageFilename } from "../fileTypes";
+import PageScrollViewer from "./PageScrollViewer";
 
 function coverPreviewSrc(entry) {
   const name = entry.filename.toLowerCase();
@@ -21,6 +22,7 @@ export default function RecentFiles() {
   const [entries, setEntries] = useState([]);
   const [error, setError] = useState("");
   const [failedPreviews, setFailedPreviews] = useState(() => new Set());
+  const [expandedId, setExpandedId] = useState(null);
 
   useEffect(() => {
     load();
@@ -90,6 +92,15 @@ export default function RecentFiles() {
                 </div>
               </div>
               <div className="history-list__actions">
+                {entry.page_count ? (
+                  <button
+                    className="icon-button"
+                    onClick={() => setExpandedId((id) => (id === entry.id ? null : entry.id))}
+                  >
+                    <Eye size={15} weight="regular" />
+                    {expandedId === entry.id ? "Hide preview" : "Preview"}
+                  </button>
+                ) : null}
                 <a className="icon-button" href={downloadUrl(entry.id)} download>
                   <DownloadSimple size={15} weight="regular" />
                   Download
@@ -99,6 +110,11 @@ export default function RecentFiles() {
                   Delete
                 </button>
               </div>
+              {expandedId === entry.id && entry.page_count && (
+                <div className="history-list__preview">
+                  <PageScrollViewer fileId={entry.id} pageCount={entry.page_count} />
+                </div>
+              )}
             </li>
           );
         })}

@@ -32,7 +32,8 @@ router = APIRouter(prefix="/tools")
 def _output_response(paths: list[Path], tool: str, source_filenames: list[str]) -> dict:
     outputs = []
     for path in paths:
-        record = storage.record_output(path, tool, source_filenames)
+        page_count = get_page_count(str(path)) if path.suffix.lower() == ".pdf" else None
+        record = storage.record_output(path, tool, source_filenames, page_count=page_count)
         outputs.append(
             {
                 "id": record["id"],

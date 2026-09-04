@@ -36,7 +36,7 @@ def _save_history(records: list[dict]) -> None:
     HISTORY_FILE.write_text(json.dumps(records, indent=2), encoding="utf-8")
 
 
-def record_output(path: Path, tool: str, source_filenames: list[str]) -> dict:
+def record_output(path: Path, tool: str, source_filenames: list[str], page_count: int | None = None) -> dict:
     record = {
         "id": uuid.uuid4().hex[:12],
         "filename": path.name,
@@ -44,6 +44,7 @@ def record_output(path: Path, tool: str, source_filenames: list[str]) -> dict:
         "tool": tool,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "source_filenames": source_filenames,
+        "page_count": page_count,
     }
     records = load_history()
     records.insert(0, record)

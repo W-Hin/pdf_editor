@@ -1303,6 +1303,7 @@ h1 {
 
 .history-list li {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: var(--space-4);
@@ -1363,6 +1364,13 @@ h1 {
   align-items: center;
   gap: var(--space-1);
   flex-shrink: 0;
+}
+
+.history-list__preview {
+  flex-basis: 100%;
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
 }
 
 .icon-button {
