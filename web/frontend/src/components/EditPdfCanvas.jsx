@@ -125,6 +125,87 @@ function estimateMinTextBoxFraction(text, family, size, pageImg) {
   };
 }
 
+function segmentsEqualStyle(a, b) {
+  return a.family === b.family && a.bold === b.bold && a.italic === b.italic && a.size === b.size;
+}
+
+// Merges adjacent segments that ended up with identical style after a split
+// — keeps the list from growing unboundedly across repeated restyles of
+// overlapping ranges (e.g. styling the same word bold twice in a row should
+// not leave two separate bold segments sitting next to each other).
+function mergeAdjacentSegments(segments) {
+  const merged = [];
+  for (const seg of segments) {
+    const last = merged[merged.length - 1];
+    if (last && segmentsEqualStyle(last, seg)) {
+      last.text += seg.text;
+    } else {
+      merged.push({ ...seg });
+    }
+  }
+  return merged;
+}
+
+// Splits whichever segment(s) the [start, end) character range (0-indexed,
+// into the CONCATENATED text of all segments in order) overlaps, at the
+// exact character boundary, and applies `patch` (e.g. {bold: true}) only to
+// the newly-split piece(s) covering the selected text. Every segment fully
+// outside the range is returned unchanged.
+function splitAndRestyleSegments(segments, start, end, patch) {
+  const result = [];
+  let offset = 0;
+  for (const seg of segments) {
+    const segStart = offset;
+    const segEnd = offset + seg.text.length;
+    offset = segEnd;
+    const overlapStart = Math.max(start, segStart);
+    const overlapEnd = Math.min(end, segEnd);
+    if (overlapStart >= overlapEnd) {
+      result.push(seg);
+      continue;
+    }
+    const beforeText = seg.text.slice(0, overlapStart - segStart);
+    const insideText = seg.text.slice(overlapStart - segStart, overlapEnd - segStart);
+    const afterText = seg.text.slice(overlapEnd - segStart);
+    if (beforeText) result.push({ ...seg, text: beforeText });
+    result.push({ ...seg, ...patch, text: insideText });
+    if (afterText) result.push({ ...seg, text: afterText });
+  }
+  return mergeAdjacentSegments(result);
+}
+
+// The style to pre-fill the popover's controls with: the FIRST segment the
+// selection overlaps. If the selection spans multiple differently-styled
+// segments, this is a reasonable single representative rather than an
+// attempt to show a "mixed" state — consistent with this file's existing
+// "first segment wins" default pattern (see openRunEditor's family default).
+function segmentStyleForRange(segments, selection) {
+  let offset = 0;
+  for (const seg of segments) {
+    const segEnd = offset + seg.text.length;
+    if (selection.start < segEnd && selection.end > offset) {
+      return { family: seg.family, bold: seg.bold, italic: seg.italic, size: seg.size };
+    }
+    offset = segEnd;
+  }
+  return { family: "helvetica", bold: false, italic: false, size: 14 };
+}
+
+// Collapses a multi-segment styled line back into ONE segment for phase
+// "type" — concatenates every segment's TEXT (so no characters are lost),
+// using the FIRST segment's style as phase "type"'s single style. This is
+// a deliberate, spec-consistent trade-off: phase "type" is a single-style
+// input by design, so re-entering it to retype necessarily discards any
+// partial styling that existed before — you can't "type into" a
+// multi-styled line while preserving per-character styles without
+// reintroducing the hard live-sync problem this two-phase design exists
+// to avoid.
+function flattenSegmentsForTyping(segments) {
+  const text = segments.map((s) => s.text).join("");
+  const first = segments[0];
+  return { text, family: first.family, bold: first.bold, italic: first.italic, size: first.size };
+}
+
 const MARKUP_COLORS = ["#1f2937", "#e03131", "#f08c00", "#2f9e44", "#1971c2", "#9c36b5"];
 const STROKE_WIDTHS = { thin: 1, medium: 3, thick: 6 };
 
@@ -866,6 +947,45 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     }
   }
 
+  // Only ever called from the styled-text view's onMouseUp (phase "style").
+  // Deliberately the ONLY place `runEditor.selection` is ever written — see
+  // this plan's Global Constraints on why it must never be cleared
+  // reactively by native-selection-collapse or a global selectionchange
+  // listener (doing so would let the popover unmount itself mid-click on
+  // its own controls, the exact bug class Sub-project 4's fix wave found).
+  function handleStyleSelectionChange(run) {
+    const sel = window.getSelection();
+    const container = document.querySelector(`[data-run-style-text="${runEditor.page}-${run.index}"]`);
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !container || !container.contains(sel.anchorNode) || !container.contains(sel.focusNode)) {
+      setRunEditor((r) => (r ? { ...r, selection: null } : r));
+      return;
+    }
+    const anchorSpan = sel.anchorNode.nodeType === Node.TEXT_NODE ? sel.anchorNode.parentElement : sel.anchorNode;
+    const focusSpan = sel.focusNode.nodeType === Node.TEXT_NODE ? sel.focusNode.parentElement : sel.focusNode;
+    const anchorGlobal = Number(anchorSpan.dataset.segStart) + sel.anchorOffset;
+    const focusGlobal = Number(focusSpan.dataset.segStart) + sel.focusOffset;
+    const start = Math.min(anchorGlobal, focusGlobal);
+    const end = Math.max(anchorGlobal, focusGlobal);
+    setRunEditor((r) => (r ? { ...r, selection: start === end ? null : { start, end } } : r));
+  }
+
+  function applySelectionStyle(run, patch) {
+    if (!runEditor || !runEditor.selection) return;
+    const { start, end } = runEditor.selection;
+    const newSegments = splitAndRestyleSegments(runEditor.segments, start, end, patch);
+    setRunEditor((r) => ({ ...r, segments: newSegments }));
+    const pending = pendingTextEditFor(run);
+    const newEl = {
+      id: pending?.id ?? newElementId(),
+      type: "text_edit",
+      page: runEditor.page,
+      run_index: runEditor.runIndex,
+      segments: newSegments,
+    };
+    const next = pending ? elements.map((el) => (el.id === newEl.id ? newEl : el)) : [...elements, newEl];
+    commitElements(next);
+  }
+
   // --- Per-type element renderers -----------------------------------------
   // Each function renders exactly ONE element and is dispatched by
   // renderElement below. Strokes and shapes each get their own small
@@ -1261,7 +1381,112 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   }
 
   function renderRunStyleOverlay(run) {
-    return null; // replaced in the next task
+    let offset = 0;
+    const spanEls = runEditor.segments.map((seg, i) => {
+      const start = offset;
+      offset += seg.text.length;
+      return (
+        <span
+          key={i}
+          data-seg-start={start}
+          style={{
+            fontFamily: newTextFontFamilyCss(seg.family),
+            fontWeight: seg.bold ? "bold" : "normal",
+            fontStyle: seg.italic ? "italic" : "normal",
+            fontSize: `${seg.size}px`,
+          }}
+        >
+          {seg.text}
+        </span>
+      );
+    });
+    return (
+      <div
+        key={run.index}
+        className="edit-pdf-canvas__run-editor-inline"
+        style={{
+          left: `${run.bbox.left * 100}%`,
+          top: `${run.bbox.top * 100}%`,
+          width: `${(1 - run.bbox.left - run.bbox.right) * 100}%`,
+          height: `${(1 - run.bbox.top - run.bbox.bottom) * 100}%`,
+        }}
+        onMouseDown={(e) => e.stopPropagation()}
+        onBlur={handleRunEditorBlur}
+      >
+        <div
+          className="edit-pdf-canvas__run-style-text"
+          data-run-style-text={`${runEditor.page}-${run.index}`}
+          onMouseUp={() => handleStyleSelectionChange(run)}
+        >
+          {spanEls}
+        </div>
+        <div className="edit-pdf-canvas__new-text-style-bar">
+          <button
+            type="button"
+            className="edit-pdf-canvas__width-button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setRunEditor((r) => ({ ...r, phase: "type", segments: [flattenSegmentsForTyping(r.segments)], selection: null }))}
+          >
+            Edit text
+          </button>
+          {pendingTextEditFor(run) && (
+            <button
+              type="button"
+              className="edit-pdf-canvas__width-button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => revertRunEditor(run)}
+            >
+              Revert
+            </button>
+          )}
+        </div>
+        {runEditor.selection && renderStylePopover(run)}
+      </div>
+    );
+  }
+
+  function renderStylePopover(run) {
+    const style = segmentStyleForRange(runEditor.segments, runEditor.selection);
+    return (
+      <div className="edit-pdf-canvas__style-popover">
+        <select
+          value={style.family}
+          onMouseDown={(e) => e.stopPropagation()}
+          onChange={(e) => applySelectionStyle(run, { family: e.target.value })}
+        >
+          {FAMILY_OPTIONS.map((f) => (
+            <option key={f} value={f}>
+              {f}
+            </option>
+          ))}
+        </select>
+        <input
+          type="number"
+          min={1}
+          value={style.size}
+          onMouseDown={(e) => e.stopPropagation()}
+          onChange={(e) => applySelectionStyle(run, { size: Number(e.target.value) })}
+        />
+        <button
+          type="button"
+          className={style.bold ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => applySelectionStyle(run, { bold: !style.bold })}
+          aria-label="Bold selection"
+        >
+          <TextB size={14} weight="bold" />
+        </button>
+        <button
+          type="button"
+          className={style.italic ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => applySelectionStyle(run, { italic: !style.italic })}
+          aria-label="Italicize selection"
+        >
+          <TextItalic size={14} weight="bold" />
+        </button>
+      </div>
+    );
   }
 
   function renderRunEditorOverlay(run) {
