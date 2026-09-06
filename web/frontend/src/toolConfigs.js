@@ -208,6 +208,11 @@ export const TOOL_CONFIGS = {
     endpoint: "to-word",
     fields: [],
   },
+  "compare-pdf": {
+    title: "Compare PDF",
+    category: "Edit",
+    fields: [],
+  },
   "images-to-pdf": {
     title: "Images to PDF",
     category: "Convert",

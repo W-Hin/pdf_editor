@@ -19,6 +19,7 @@ import {
   Signature,
   ListChecks,
   File,
+  FileMagnifyingGlass,
 } from "@phosphor-icons/react";
 import { TOOL_CONFIGS } from "../toolConfigs";
 import RecentFiles from "./RecentFiles.jsx";
@@ -43,6 +44,7 @@ const TOOL_ICONS = {
   "edit-pdf": NotePencil,
   sign: Signature,
   "fill-form": ListChecks,
+  "compare-pdf": FileMagnifyingGlass,
 };
 
 // Development-time early warning: a tool added to TOOL_CONFIGS without a

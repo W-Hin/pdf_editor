@@ -50,6 +50,20 @@ export async function runTool(toolPath, body) {
   return res.json();
 }
 
+export async function comparePdf(fileIdA, fileIdB) {
+  const res = await request("/compare", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file_id_a: fileIdA, file_id_b: fileIdB }),
+  });
+  return res.json();
+}
+
+export async function fetchCompareVisual(fileIdA, fileIdB, pageNum) {
+  const res = await request(`/compare/${fileIdA}/${fileIdB}/${pageNum}/visual`);
+  return res.json();
+}
+
 export async function fetchHistory() {
   const res = await request("/history");
   return res.json();

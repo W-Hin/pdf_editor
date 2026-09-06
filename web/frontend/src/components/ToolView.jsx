@@ -23,6 +23,7 @@ import RedactSelector from "./RedactSelector";
 import EditPdfCanvas from "./EditPdfCanvas";
 import SignCanvas from "./SignCanvas";
 import FormFillCanvas from "./FormFillCanvas";
+import ComparePdfView from "./ComparePdfView.jsx";
 
 // Number fields (e.g. split's "pages per file") must be a whole number no
 // smaller than field.min — used by both the preview and the actual submitted
@@ -44,6 +45,18 @@ export default function ToolView() {
   const { toolId } = useParams();
   const navigate = useNavigate();
   const config = TOOL_CONFIGS[toolId];
+
+  // Compare PDF's flow (two files, no Run/download step, live inspection
+  // only) is different enough from every other tool's "upload → configure →
+  // Run → download" shape that it doesn't fit this component's generic
+  // rendering at all. It still needs a TOOL_CONFIGS entry so it appears as a
+  // normal tile in the grid (ToolGrid.jsx always navigates tiles to
+  // `/tool/${toolId}`) — this is the one point where that navigation gets
+  // redirected to its own dedicated page instead of this component's own
+  // upload/preview/Run logic below.
+  if (toolId === "compare-pdf") {
+    return <ComparePdfView />;
+  }
 
   const [files, setFiles] = useState([]);
   const [fieldValues, setFieldValues] = useState(() =>

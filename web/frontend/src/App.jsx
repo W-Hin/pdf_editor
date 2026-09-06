@@ -2,6 +2,7 @@ import { Routes, Route, Link } from "react-router-dom";
 import { FilePdf, ClockCounterClockwise } from "@phosphor-icons/react";
 import ToolGrid from "./components/ToolGrid.jsx";
 import ToolView from "./components/ToolView.jsx";
+import ComparePdfView from "./components/ComparePdfView.jsx";
 import UpdateBanner from "./components/UpdateBanner.jsx";
 
 export default function App() {
@@ -23,6 +24,7 @@ export default function App() {
       <main className="app__main">
         <Routes>
           <Route path="/" element={<ToolGrid />} />
+          <Route path="/compare" element={<ComparePdfView />} />
           <Route path="/tool/:toolId" element={<ToolView />} />
         </Routes>
       </main>
