@@ -284,7 +284,18 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   // listener permanently inert. Close any open run editor directly on the
   // mode change so it can never survive a mode switch by any trigger.
   useEffect(() => {
-    if (activeMode !== "text") setRunEditor(null);
+    if (activeMode !== "text") {
+      // Phase "type" may hold text the user typed but hasn't committed yet
+      // (no blur ever fired on this path — see comment above) — commit it
+      // via the same path handleRunEditorBlur uses rather than discarding it
+      // with a bare setRunEditor(null). Phase "style" has nothing pending
+      // (every restyle already commits immediately) AND commitRunEditor
+      // itself is unsafe there: it only ever writes editor.segments[0] into
+      // a single-segment element, so calling it while phase "style" holds
+      // multiple styled segments would silently collapse them back into one.
+      if (runEditor?.phase === "type") commitRunEditor();
+      else setRunEditor(null);
+    }
   }, [activeMode]);
 
   // Phase-"style" close-on-outside-click. Attached only while phase ===
