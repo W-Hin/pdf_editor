@@ -234,6 +234,10 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   // "style" and multi-element segments reachable.
   const [runEditor, setRunEditor] = useState(null);
   const runEditorInputRef = useRef(null);
+  // Wraps phase-"style"'s inline editor (renderRunStyleOverlay). Used by the
+  // outside-click effect below instead of onBlur — see that effect's comment
+  // for why blur's relatedTarget is unreliable here.
+  const runStyleWrapperRef = useRef(null);
   const [drawColor, setDrawColor] = useState(MARKUP_COLORS[0]);
   const [drawWidth, setDrawWidth] = useState("medium");
   const [activeStroke, setActiveStroke] = useState(null); // { page, points } | null
@@ -270,6 +274,36 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   useEffect(() => {
     if (runEditor) runEditorInputRef.current?.focus();
   }, [runEditor?.page, runEditor?.runIndex]);
+
+  // Phase-"style" close-on-outside-click. Attached only while phase ===
+  // "style" (phase "type" keeps using onBlur/handleRunEditorBlur below,
+  // since its only focusable children are the <input> itself and
+  // preventDefault()-guarded buttons, for which blur's relatedTarget works
+  // correctly). Phase "style" also renders non-focusable <span>s as its
+  // styled text, and the popover's family <select>/size <input> take real
+  // DOM focus by design — starting a new drag-selection on a <span> while
+  // one of those holds focus fires a blur with relatedTarget: null (a
+  // <span> isn't a native focus target), which is indistinguishable from a
+  // genuine outside click using relatedTarget alone. A mousedown-time
+  // "is this inside the wrapper" check (the standard pattern for dismissing
+  // popovers with non-focusable content) sidesteps that ambiguity entirely.
+  // Listens on the capture phase so it still sees the click even though the
+  // wrapper's own onMouseDown calls stopPropagation() during the bubble
+  // phase. Re-running this effect on every `runEditor` change (not just
+  // when the phase flag flips) guarantees a fresh listener is attached
+  // whenever phase "style" becomes active, and torn down the instant it
+  // isn't — so this can never fire while phase is "type" or while there is
+  // no editor open at all.
+  useEffect(() => {
+    if (runEditor?.phase !== "style") return;
+    function handleDocumentMouseDown(e) {
+      if (runStyleWrapperRef.current && !runStyleWrapperRef.current.contains(e.target)) {
+        setRunEditor(null);
+      }
+    }
+    document.addEventListener("mousedown", handleDocumentMouseDown, true);
+    return () => document.removeEventListener("mousedown", handleDocumentMouseDown, true);
+  }, [runEditor]);
 
   useEffect(() => {
     if (!fileId || !pageCount) return;
@@ -940,10 +974,15 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     }));
   }
 
+  // Only ever wired to phase "type"'s wrapper (renderRunEditorOverlay) —
+  // phase "style" closes via the document-mousedown outside-click effect
+  // above instead (see that effect's comment for why blur's relatedTarget
+  // is unreliable for phase "style"'s non-focusable spans). The phase guard
+  // below is a defensive no-op should this ever be wired elsewhere.
   function handleRunEditorBlur(e) {
+    if (runEditor?.phase !== "type") return;
     if (!e.currentTarget.contains(e.relatedTarget)) {
-      if (runEditor?.phase === "type") commitRunEditor();
-      else setRunEditor(null);
+      commitRunEditor();
     }
   }
 
@@ -1403,6 +1442,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     return (
       <div
         key={run.index}
+        ref={runStyleWrapperRef}
         className="edit-pdf-canvas__run-editor-inline"
         style={{
           left: `${run.bbox.left * 100}%`,
@@ -1411,7 +1451,6 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
           height: `${(1 - run.bbox.top - run.bbox.bottom) * 100}%`,
         }}
         onMouseDown={(e) => e.stopPropagation()}
-        onBlur={handleRunEditorBlur}
       >
         <div
           className="edit-pdf-canvas__run-style-text"
