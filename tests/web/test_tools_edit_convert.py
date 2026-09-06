@@ -329,7 +329,10 @@ def test_edit_pdf_text_edit_element_succeeds():
         json={
             "file_id": upload["id"],
             "elements": [
-                {"type": "text_edit", "page": 1, "run_index": 0, "text": "Replaced", "font_override": None}
+                {
+                    "type": "text_edit", "page": 1, "run_index": 0,
+                    "segments": [{"text": "Replaced", "family": "helvetica", "bold": False, "italic": False, "size": 14}],
+                }
             ],
         },
     )

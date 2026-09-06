@@ -895,7 +895,10 @@ def test_edit_pdf_text_edit_replaces_text_and_keeps_surrounding_content(tmp_path
     edit_pdf(
         str(input_path),
         str(output_path),
-        [{"type": "text_edit", "page": 1, "run_index": 0, "text": "Goodbye Mars", "font_override": None}],
+        [{
+            "type": "text_edit", "page": 1, "run_index": 0,
+            "segments": [{"text": "Goodbye Mars", "family": "helvetica", "bold": False, "italic": False, "size": 14}],
+        }],
         {},
     )
 
@@ -926,7 +929,10 @@ def test_edit_pdf_text_edit_handles_rotated_page(tmp_path):
     edit_pdf(
         str(input_path),
         str(output_path),
-        [{"type": "text_edit", "page": 1, "run_index": target["index"], "text": "OMEGA REPLACED", "font_override": None}],
+        [{
+            "type": "text_edit", "page": 1, "run_index": target["index"],
+            "segments": [{"text": "OMEGA REPLACED", "family": "helvetica", "bold": False, "italic": False, "size": 11}],
+        }],
         {},
     )
 
@@ -951,7 +957,10 @@ def test_edit_pdf_text_edit_auto_shrinks_when_overflowing(tmp_path):
     edit_pdf(
         str(input_path),
         str(output_path),
-        [{"type": "text_edit", "page": 1, "run_index": 0, "text": long_text, "font_override": None}],
+        [{
+            "type": "text_edit", "page": 1, "run_index": 0,
+            "segments": [{"text": long_text, "family": "helvetica", "bold": False, "italic": False, "size": 20}],
+        }],
         {},
     )
 
@@ -964,39 +973,10 @@ def test_edit_pdf_text_edit_auto_shrinks_when_overflowing(tmp_path):
     assert spans[0]["size"] >= 6  # not below the floor
 
 
-def test_edit_pdf_text_edit_uses_subset_embedded_font(tmp_path):
-    """Covers the embedded-font branch of _apply_text_edit end-to-end, using
-    doc.subset_fonts() to reproduce how Word/LaTeX exports actually embed
-    fonts: get_page_fonts() then reports a subset-prefixed basefont (e.g.
-    "AEDWKD+Arial Regular") that does not exactly match the span's "font"
-    value from get_text("dict") ("Arial Regular") — _extract_embedded_font
-    must strip that prefix to find and use the real embedded font instead of
-    silently falling back to a base-14 font.
-
-    This test also exercises the two ordering fixes found in review: width
-    is measured with fitz.Font(fontbuffer=...).text_length() rather than the
-    base-14-only fitz.get_text_length() (which raises ValueError for an
-    internal fontname), and the embedded font is re-registered via
-    insert_font() after page.apply_redactions() has already run (which wipes
-    the page's font resources) rather than before.
-    """
-    font_path = Path("C:/Windows/Fonts/arial.ttf")
-    if not font_path.exists():
-        pytest.skip("arial.ttf not available on this machine")
-
-    # The original text must contain every glyph the replacement text needs:
-    # doc.subset_fonts() strips glyph data for characters that never appear
-    # on the page, so a replacement using a letter absent from the original
-    # (e.g. original "Embedded Original" replaced with "...Replaced", which
-    # needs an "R"/"p"/"c" the subset never kept) renders with missing/wrong
-    # glyphs — a real limitation of subsetting, not a bug in edit_pdf.
-    original_text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz"
-
+def test_edit_pdf_text_edit_places_multiple_segments_side_by_side(tmp_path):
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
-    page.insert_font(fontname="F0", fontfile=str(font_path), set_simple=True)
-    page.insert_text((72, 100), original_text, fontsize=14, fontname="F0")
-    doc.subset_fonts()
+    page.insert_text((72, 100), "This is the original run text here", fontsize=14, fontname="helv")
     input_path = tmp_path / "input.pdf"
     doc.save(str(input_path))
     doc.close()
@@ -1005,23 +985,70 @@ def test_edit_pdf_text_edit_uses_subset_embedded_font(tmp_path):
     edit_pdf(
         str(input_path),
         str(output_path),
-        [{"type": "text_edit", "page": 1, "run_index": 0, "text": "Embedded Replaced", "font_override": None}],
+        [{
+            "type": "text_edit", "page": 1, "run_index": 0,
+            "segments": [
+                {"text": "Hello ", "family": "helvetica", "bold": False, "italic": False, "size": 14},
+                {"text": "World", "family": "helvetica", "bold": True, "italic": False, "size": 14},
+            ],
+        }],
         {},
     )
 
     result = fitz.open(str(output_path))
-    text = result[0].get_text()
+    d = result[0].get_text("dict")
     result.close()
-    assert original_text not in text
-    # Asserted as two substrings rather than one "Embedded Replaced" phrase:
-    # re-inserting a raw embedded font buffer maps the space glyph to U+00A0
-    # (non-breaking space) rather than U+0020 on extraction here, a benign
-    # codepoint quirk of the font buffer path, not a correctness issue —
-    # "Replaced" rendering intact (not the missing/garbled glyphs seen when
-    # the original text lacks a needed letter) is what proves the real
-    # embedded font's glyphs were used, not a silent Helvetica fallback.
-    assert "Embedded" in text
-    assert "Replaced" in text
+    spans = [s for b in d["blocks"] for l in b.get("lines", []) for s in l["spans"]]
+    assert len(spans) == 2
+    assert spans[0]["text"] == "Hello "
+    assert spans[0]["font"] == "Helvetica"
+    assert not (spans[0]["flags"] & 16)  # not bold
+    assert spans[1]["text"] == "World"
+    assert spans[1]["font"] == "Helvetica-Bold"
+    assert spans[1]["flags"] & 16  # bold
+    # Both segments sit on the same baseline; the second starts exactly where
+    # the first's measured width ends (verified empirically: 72.0 -> 107.78).
+    assert spans[0]["origin"][1] == spans[1]["origin"][1]
+    assert spans[1]["origin"][0] > spans[0]["origin"][0]
+    assert spans[1]["origin"][0] == pytest.approx(72.0 + fitz.get_text_length("Hello ", fontname="helv", fontsize=14), abs=0.5)
+
+
+def test_edit_pdf_text_edit_shrinks_all_segments_by_the_same_proportional_factor(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "Hi there", fontsize=14, fontname="helv")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [{
+            "type": "text_edit", "page": 1, "run_index": 0,
+            # Combined width (~100.6pt at these sizes) overflows the original
+            # run's ~49pt width, forcing a shrink. 20pt/30pt has a 1.5 ratio —
+            # verified empirically: at scale 0.5 (the shrink floor), this
+            # produces exactly 10pt/15pt, preserving the 1.5 ratio exactly.
+            "segments": [
+                {"text": "Hi", "family": "helvetica", "bold": False, "italic": False, "size": 20},
+                {"text": " there", "family": "helvetica", "bold": True, "italic": False, "size": 30},
+            ],
+        }],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    d = result[0].get_text("dict")
+    result.close()
+    spans = [s for b in d["blocks"] for l in b.get("lines", []) for s in l["spans"]]
+    assert len(spans) == 2
+    assert spans[0]["size"] < 20  # actually shrunk
+    assert spans[1]["size"] < 30  # actually shrunk
+    # The RATIO between the two sizes must be preserved (proportional, not
+    # independent, shrinking) — not just that both got smaller.
+    assert spans[1]["size"] / spans[0]["size"] == pytest.approx(30 / 20, rel=0.01)
 
 
 def test_edit_pdf_stroke_draws_into_content_stream(tmp_path):
@@ -1789,7 +1816,10 @@ def test_edit_pdf_mixed_elements_all_apply_together(tmp_path):
         str(input_path),
         str(output_path),
         [
-            {"type": "text_edit", "page": 1, "run_index": 0, "text": "Replaced", "font_override": None},
+            {
+                "type": "text_edit", "page": 1, "run_index": 0,
+                "segments": [{"text": "Replaced", "family": "helvetica", "bold": False, "italic": False, "size": 14}],
+            },
             {"type": "shape", "page": 1, "shape": "rectangle", "x0": 0.5, "y0": 0.5, "x1": 0.6, "y1": 0.55, "color": "#000000", "width": 1, "filled": False},
             {"type": "highlight", "page": 1, "top": 0.6, "right": 0.3, "bottom": 0.3, "left": 0.3, "color": "#00ffff"},
         ],
@@ -1847,7 +1877,10 @@ def test_edit_pdf_rejects_invalid_run_index(tmp_path):
         edit_pdf(
             str(input_path),
             str(output_path),
-            [{"type": "text_edit", "page": 1, "run_index": 5, "text": "x", "font_override": None}],
+            [{
+                "type": "text_edit", "page": 1, "run_index": 5,
+                "segments": [{"text": "x", "family": "helvetica", "bold": False, "italic": False, "size": 14}],
+            }],
             {},
         )
 

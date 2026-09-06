@@ -287,13 +287,14 @@ def images_to_pdf_route(req: ImagesToPdfRequest):
     return _output_response([output_path], "Images to PDF", source_names)
 
 
-class FontOverride(BaseModel):
+class TextSegment(BaseModel):
+    text: str
     family: str
     bold: bool
     italic: bool
-    # A blanked number input arrives as 0 from the frontend; insert_text() accepts
-    # fontsize=0 silently, which erases the original run and renders the
-    # replacement invisibly. Reject it at the model boundary instead.
+    # A blanked number input arrives as 0 from the frontend; insert_text()
+    # accepts fontsize=0 silently, rendering the segment invisible. Reject it
+    # here, matching FontOverride.size/NewTextElement.size's identical guard.
     size: float = Field(gt=0)
 
 
@@ -301,8 +302,7 @@ class TextEditElement(BaseModel):
     type: Literal["text_edit"]
     page: int
     run_index: int
-    text: str
-    font_override: FontOverride | None = None
+    segments: list[TextSegment] = Field(min_length=1)
 
 
 class StrokePoint(BaseModel):
