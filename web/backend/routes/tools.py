@@ -25,15 +25,24 @@ from app.core.pdf_ops import (
     rotate_pages,
     split_pdf,
 )
+from app.core.pdf_repair import protect_pdf, repair_pdf
 from web.backend import storage
 
 router = APIRouter(prefix="/tools")
 
 
-def _output_response(paths: list[Path], tool: str, source_filenames: list[str]) -> dict:
+def _output_response(paths: list[Path], tool: str, source_filenames: list[str], message: str | None = None) -> dict:
     outputs = []
     for path in paths:
-        page_count = get_page_count(str(path)) if path.suffix.lower() == ".pdf" else None
+        page_count = None
+        if path.suffix.lower() == ".pdf":
+            try:
+                page_count = get_page_count(str(path))
+            except PDFError:
+                # An encrypted output (e.g. from Protect) can't be opened without
+                # its password — fall back to no page count rather than 422ing
+                # on the tool's own successful output.
+                page_count = None
         record = storage.record_output(path, tool, source_filenames, page_count=page_count)
         outputs.append(
             {
@@ -42,7 +51,7 @@ def _output_response(paths: list[Path], tool: str, source_filenames: list[str]) 
                 "download_url": f"/api/files/{record['id']}/download",
             }
         )
-    return {"outputs": outputs}
+    return {"outputs": outputs, "message": message}
 
 
 def _sanitize_output_filename(filename: str) -> str:
@@ -243,6 +252,40 @@ def compress(req: CompressRequest):
     output_path = storage.output_path_for(stem, "_compressed")
     compress_pdf(input_path, str(output_path), image_quality=req.image_quality)
     return _output_response([output_path], "Compress PDF", [Path(input_path).name])
+
+
+class RepairRequest(BaseModel):
+    file_id: str
+
+
+@router.post("/repair")
+def repair_route(req: RepairRequest):
+    input_path = str(storage.resolve_file(req.file_id))
+    stem = Path(input_path).stem
+    output_path = storage.output_path_for(stem, "_repaired")
+    result = repair_pdf(input_path, str(output_path))
+    if result["warnings_count"] == 0:
+        message = f"File is healthy — {result['page_count']} page{'s' if result['page_count'] != 1 else ''}."
+    else:
+        message = (
+            f"Recovered {result['page_count']} page{'s' if result['page_count'] != 1 else ''} "
+            f"after {result['warnings_count']} structural issue{'s' if result['warnings_count'] != 1 else ''} found."
+        )
+    return _output_response([output_path], "Repair PDF", [Path(input_path).name], message=message)
+
+
+class ProtectRequest(BaseModel):
+    file_id: str
+    password: str
+
+
+@router.post("/protect")
+def protect_route(req: ProtectRequest):
+    input_path = str(storage.resolve_file(req.file_id))
+    stem = Path(input_path).stem
+    output_path = storage.output_path_for(stem, "_protected")
+    protect_pdf(input_path, str(output_path), req.password)
+    return _output_response([output_path], "Protect PDF", [Path(input_path).name])
 
 
 class ToImagesRequest(BaseModel):
