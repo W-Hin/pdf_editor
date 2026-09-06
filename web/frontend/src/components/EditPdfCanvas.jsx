@@ -273,7 +273,19 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
   useEffect(() => {
     if (runEditor) runEditorInputRef.current?.focus();
-  }, [runEditor?.page, runEditor?.runIndex]);
+  }, [runEditor?.page, runEditor?.runIndex, runEditor?.phase]);
+
+  // The run-editor overlays (both phases) only render while activeMode ===
+  // "text". Switching to a different mode by any means that doesn't route
+  // through a mousedown on the mode button (e.g. keyboard activation via
+  // Tab+Enter/Space, or a programmatic .click()) unmounts the overlay
+  // without ever triggering the phase-"style" outside-click listener below,
+  // which would otherwise leave runStyleWrapperRef.current null and that
+  // listener permanently inert. Close any open run editor directly on the
+  // mode change so it can never survive a mode switch by any trigger.
+  useEffect(() => {
+    if (activeMode !== "text") setRunEditor(null);
+  }, [activeMode]);
 
   // Phase-"style" close-on-outside-click. Attached only while phase ===
   // "style" (phase "type" keeps using onBlur/handleRunEditorBlur below,
@@ -297,7 +309,11 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   useEffect(() => {
     if (runEditor?.phase !== "style") return;
     function handleDocumentMouseDown(e) {
-      if (runStyleWrapperRef.current && !runStyleWrapperRef.current.contains(e.target)) {
+      // A null ref means the overlay is already unmounted (e.g. activeMode
+      // changed away from "text" without going through this mousedown path)
+      // — treat that as definitely outside rather than silently skipping,
+      // so this listener can't get stuck permanently inert.
+      if (!runStyleWrapperRef.current || !runStyleWrapperRef.current.contains(e.target)) {
         setRunEditor(null);
       }
     }
