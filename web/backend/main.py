@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from app.core.errors import PDFError
-from web.backend.routes import files, history, tools, version
+from web.backend.routes import compare, files, history, tools, version
 
 app = FastAPI(title="PDF Editor")
 
@@ -20,6 +20,7 @@ async def missing_file_handler(request, exc: FileNotFoundError):
     return JSONResponse(status_code=404, content={"detail": "File not found — please re-upload."})
 
 
+app.include_router(compare.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
 app.include_router(history.router, prefix="/api")
 app.include_router(tools.router, prefix="/api")
