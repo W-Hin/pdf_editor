@@ -85,7 +85,10 @@ export default function ToolGrid() {
                   // instead of crashing the whole grid.
                   const Icon = TOOL_ICONS[toolId] ?? File;
                   return (
-                    <button key={toolId} onClick={() => navigate(`/tool/${toolId}`)}>
+                    <button
+                      key={toolId}
+                      onClick={() => navigate(toolId === "compare-pdf" ? "/compare" : `/tool/${toolId}`)}
+                    >
                       <span className="tool-grid__icon">
                         <Icon size={20} weight="regular" />
                       </span>

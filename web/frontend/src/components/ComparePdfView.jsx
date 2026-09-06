@@ -10,6 +10,7 @@ export default function ComparePdfView() {
   const [error, setError] = useState("");
   const [result, setResult] = useState(null); // { page_count_a, page_count_b, pages }
   const [visualByPage, setVisualByPage] = useState({}); // pageNum -> data | "loading"
+  const [naturalSizes, setNaturalSizes] = useState({}); // pageNum -> { a: {w,h}, b: {w,h} }
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState("1");
   const containerRefsRef = useRef([]);
@@ -33,7 +34,9 @@ export default function ComparePdfView() {
     setError("");
     setResult(null);
     setVisualByPage({});
+    setNaturalSizes({});
     fetchedRef.current = new Set();
+    visibilityRef.current = new Map();
     try {
       const data = await comparePdf(fileA.id, fileB.id);
       setResult(data);
@@ -68,6 +71,7 @@ export default function ComparePdfView() {
         let bestPage = null;
         let bestRatio = 0;
         for (const [pageNumber, ratio] of visibilityRef.current) {
+          if (pageNumber > totalPages) continue;
           if (ratio > bestRatio) {
             bestRatio = ratio;
             bestPage = pageNumber;
@@ -108,30 +112,64 @@ export default function ComparePdfView() {
     );
   }
 
+  function handleImageLoad(pageNumber, which, e) {
+    const { naturalWidth, naturalHeight } = e.target;
+    setNaturalSizes((prev) => ({
+      ...prev,
+      [pageNumber]: { ...prev[pageNumber], [which]: { w: naturalWidth, h: naturalHeight } },
+    }));
+  }
+
   function renderVisual(pageNumber) {
     const data = visualByPage[pageNumber];
     if (!data) return null;
     if (data === "loading") return <p className="compare-pdf__visual-status">Loading visual diff…</p>;
     if (data.error) return <p className="compare-pdf__visual-status">{data.error}</p>;
+    // diff_page_visual (backend) normalizes box coordinates as fractions of a
+    // shared PADDED UNION CANVAS (max width/height of the two renders, each
+    // render padded into its top-left corner) — not as fractions of either
+    // image's own size. Each <img>'s naturalWidth/naturalHeight (once loaded)
+    // equals that same render's actual pixel size, so the union canvas size
+    // can be derived on the frontend as the max of the two, without any
+    // backend response-shape change. Boxes are positioned in canvas-pixel
+    // space first, then converted to a percentage of EACH image's own
+    // natural size — correct on both panels even when the two documents'
+    // pages differ in size. Boxes are withheld until both images have
+    // reported their natural size, so nothing is drawn at the wrong place
+    // during the brief window before both loads complete.
+    const sizes = naturalSizes[pageNumber];
+    const sizeA = sizes?.a;
+    const sizeB = sizes?.b;
+    const canvasW = sizeA && sizeB ? Math.max(sizeA.w, sizeB.w) : null;
+    const canvasH = sizeA && sizeB ? Math.max(sizeA.h, sizeB.h) : null;
     return (
       <div className="compare-pdf__visual-pair">
-        {[data.image_a, data.image_b].map((src, i) => (
-          <div key={i} className="compare-pdf__visual-image-wrap">
-            <img src={src} alt={`Page ${pageNumber}, document ${i === 0 ? "A" : "B"}`} />
-            {data.boxes.map((box, bi) => (
-              <div
-                key={bi}
-                className="compare-pdf__diff-box"
-                style={{
-                  left: `${box.x0 * 100}%`,
-                  top: `${box.y0 * 100}%`,
-                  width: `${(box.x1 - box.x0) * 100}%`,
-                  height: `${(box.y1 - box.y0) * 100}%`,
-                }}
+        {[data.image_a, data.image_b].map((src, i) => {
+          const which = i === 0 ? "a" : "b";
+          const mySize = which === "a" ? sizeA : sizeB;
+          return (
+            <div key={i} className="compare-pdf__visual-image-wrap">
+              <img
+                src={src}
+                alt={`Page ${pageNumber}, document ${i === 0 ? "A" : "B"}`}
+                onLoad={(e) => handleImageLoad(pageNumber, which, e)}
               />
-            ))}
-          </div>
-        ))}
+              {canvasW && canvasH && mySize &&
+                data.boxes.map((box, bi) => (
+                  <div
+                    key={bi}
+                    className="compare-pdf__diff-box"
+                    style={{
+                      left: `${((box.x0 * canvasW) / mySize.w) * 100}%`,
+                      top: `${((box.y0 * canvasH) / mySize.h) * 100}%`,
+                      width: `${(((box.x1 - box.x0) * canvasW) / mySize.w) * 100}%`,
+                      height: `${(((box.y1 - box.y0) * canvasH) / mySize.h) * 100}%`,
+                    }}
+                  />
+                ))}
+            </div>
+          );
+        })}
       </div>
     );
   }

@@ -301,10 +301,12 @@ def pdf_to_markdown_zip(input_path: str, output_path: str) -> None:
         markdown_text = pymupdf4llm.to_markdown(input_path, write_images=True, image_path=image_dir)
         # pymupdf4llm embeds each image reference as an ABSOLUTE filesystem
         # path into image_dir (verified empirically: "![](C:/Users/.../
-        # tmpXXXX/images/input.pdf-0001-01.png)") — meaningless once this zip
-        # is extracted anywhere else. Images are stored FLAT at the zip's own
-        # root, next to document.md, so rewriting each reference down to just
-        # its filename makes the link correctly relative once extracted.
+        # tmpXXXX/input.pdf-0001-01.png)" — images land FLAT directly inside
+        # image_dir, no subdirectory) — meaningless once this zip is
+        # extracted anywhere else. Images are stored FLAT at the zip's own
+        # root, next to document.md, so rewriting each reference down to
+        # just its filename makes the link correctly relative once
+        # extracted.
         image_dir_prefix = Path(image_dir).as_posix() + "/"
         markdown_text = markdown_text.replace(image_dir_prefix, "")
         with zipfile.ZipFile(output_path, "w") as zf:

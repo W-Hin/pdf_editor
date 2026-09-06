@@ -1553,6 +1553,7 @@ h1 {
 .compare-pdf__visual-pair {
   display: flex;
   gap: var(--space-3);
+  align-items: flex-start;
 }
 
 .compare-pdf__visual-image-wrap {
