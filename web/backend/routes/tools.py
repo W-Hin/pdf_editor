@@ -17,6 +17,7 @@ from app.core.pdf_ops import (
     get_page_count,
     images_to_pdf,
     merge_pdfs,
+    pdf_to_markdown_zip,
     redact_pdf,
     remove_pages,
     render_to_images,
@@ -269,6 +270,19 @@ def to_word(req: ToWordRequest):
     output_path = storage.output_path_for(stem, "", ".docx")
     convert_to_word(input_path, str(output_path))
     return _output_response([output_path], "PDF to Word", [Path(input_path).name])
+
+
+class PdfToMarkdownRequest(BaseModel):
+    file_id: str
+
+
+@router.post("/pdf-to-markdown")
+def pdf_to_markdown_route(req: PdfToMarkdownRequest):
+    input_path = str(storage.resolve_file(req.file_id))
+    stem = Path(input_path).stem
+    output_path = storage.output_path_for(stem, "_markdown", ext=".zip")
+    pdf_to_markdown_zip(input_path, str(output_path))
+    return _output_response([output_path], "PDF to Markdown", [Path(input_path).name])
 
 
 class ImagesToPdfRequest(BaseModel):

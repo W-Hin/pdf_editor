@@ -1,9 +1,10 @@
 import fitz
 import pytest
+import zipfile
 from pathlib import Path
 
 from app.core.errors import PDFError
-from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf, add_page_numbers, images_to_pdf, redact_pdf, extract_text_runs, edit_pdf, extract_form_fields, fill_form
+from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf, add_page_numbers, images_to_pdf, redact_pdf, extract_text_runs, edit_pdf, extract_form_fields, fill_form, pdf_to_markdown_zip
 
 
 def test_open_pdf_missing_file_raises(tmp_path):
@@ -2262,3 +2263,56 @@ def test_fill_form_rejects_out_of_range_index(tmp_path):
     output_path = tmp_path / "filled.pdf"
     with pytest.raises(PDFError):
         fill_form(str(input_path), str(output_path), [{"page": 1, "index": 5, "value": "x"}])
+
+
+def test_pdf_to_markdown_zip_contains_markdown_and_extracted_image(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 72), "My Heading", fontsize=24)
+    page.insert_text((72, 120), "A paragraph of body text follows here.", fontsize=12)
+    img_pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 40), False)
+    img_pix.set_rect(img_pix.irect, (255, 0, 0))
+    page.insert_image(fitz.Rect(72, 400, 172, 500), pixmap=img_pix)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.zip"
+    pdf_to_markdown_zip(str(input_path), str(output_path))
+
+    assert output_path.exists()
+    with zipfile.ZipFile(output_path) as zf:
+        names = zf.namelist()
+        md_names = [n for n in names if n.endswith(".md")]
+        image_names = [n for n in names if n.lower().endswith((".png", ".jpg", ".jpeg"))]
+        assert len(md_names) == 1
+        assert len(image_names) >= 1
+        md_text = zf.read(md_names[0]).decode("utf-8")
+        assert "My Heading" in md_text
+        assert "A paragraph of body text follows here." in md_text
+
+
+def test_pdf_to_markdown_zip_rewrites_image_paths_as_relative(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    img_pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 40), False)
+    img_pix.set_rect(img_pix.irect, (255, 0, 0))
+    page.insert_image(fitz.Rect(72, 400, 172, 500), pixmap=img_pix)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.zip"
+    pdf_to_markdown_zip(str(input_path), str(output_path))
+
+    with zipfile.ZipFile(output_path) as zf:
+        md_names = [n for n in zf.namelist() if n.endswith(".md")]
+        image_names = [n for n in zf.namelist() if n.lower().endswith((".png", ".jpg", ".jpeg"))]
+        md_text = zf.read(md_names[0]).decode("utf-8")
+        assert len(image_names) >= 1
+        # The markdown's image reference must be exactly the bare filename of
+        # an image actually present in this same zip — not an absolute path
+        # pointing at a temp directory that no longer exists once extracted.
+        image_name = image_names[0]
+        assert f"]({image_name})" in md_text
+        assert ":" not in md_text.split("![")[1].split(")")[0]  # no drive letter / absolute path leaked through

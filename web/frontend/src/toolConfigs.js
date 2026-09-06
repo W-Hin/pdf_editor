@@ -208,6 +208,15 @@ export const TOOL_CONFIGS = {
     endpoint: "to-word",
     fields: [],
   },
+  "pdf-to-markdown": {
+    title: "PDF to Markdown",
+    category: "Convert",
+    multiFile: false,
+    mode: "view",
+    endpoint: "pdf-to-markdown",
+    previewNote: "PDF to Markdown extracts text and images — the result can't be previewed as a PDF page.",
+    fields: [],
+  },
   "compare-pdf": {
     title: "Compare PDF",
     category: "Edit",

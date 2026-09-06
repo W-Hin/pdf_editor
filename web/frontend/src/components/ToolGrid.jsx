@@ -20,6 +20,7 @@ import {
   ListChecks,
   File,
   FileMagnifyingGlass,
+  FileText,
 } from "@phosphor-icons/react";
 import { TOOL_CONFIGS } from "../toolConfigs";
 import RecentFiles from "./RecentFiles.jsx";
@@ -39,6 +40,7 @@ const TOOL_ICONS = {
   "add-page-numbers": ListNumbers,
   "to-images": Image,
   "to-word": FileDoc,
+  "pdf-to-markdown": FileText,
   "images-to-pdf": FileImage,
   redact: Eraser,
   "edit-pdf": NotePencil,
