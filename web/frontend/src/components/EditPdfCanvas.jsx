@@ -131,15 +131,15 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   const [elements, setElements] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [runs, setRuns] = useState([]);
-  const [editingRunIndex, setEditingRunIndex] = useState(null);
-  const [editingRunPage, setEditingRunPage] = useState(null);
-  const [draftText, setDraftText] = useState("");
-  const [draftOverride, setDraftOverride] = useState(null);
-  // The family dropdown always defaults to "helvetica" regardless of the run's
-  // detected font, so comparing its VALUE against "helvetica" cannot tell
-  // "explicitly chose Helvetica on a Times run" from "never touched it" — and
-  // silently drops the user's choice. Track the interaction itself instead.
-  const [draftFamilyTouched, setDraftFamilyTouched] = useState(false);
+  // Null when no run is being edited. { page, runIndex, text, family, bold,
+  // italic, size, familyTouched } while the inline editor is open — mirrors
+  // textDraft's null-object pattern below. familyTouched exists for the same
+  // reason the old draftFamilyTouched did: the family dropdown always starts
+  // at "helvetica" regardless of the run's detected font, so comparing its
+  // VALUE against "helvetica" can't distinguish "explicitly chose Helvetica
+  // on a Times run" from "never touched it" — track the interaction itself.
+  const [runEditor, setRunEditor] = useState(null);
+  const runEditorInputRef = useRef(null);
   const [drawColor, setDrawColor] = useState(MARKUP_COLORS[0]);
   const [drawWidth, setDrawWidth] = useState("medium");
   const [activeStroke, setActiveStroke] = useState(null); // { page, points } | null
@@ -174,6 +174,10 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   }, [textDraft?.id]);
 
   useEffect(() => {
+    if (runEditor) runEditorInputRef.current?.focus();
+  }, [runEditor?.page, runEditor?.runIndex]);
+
+  useEffect(() => {
     if (!fileId || !pageCount) return;
     let cancelled = false;
     async function loadRuns() {
@@ -190,7 +194,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
       if (!cancelled) setRuns(perPage.flat());
     }
     loadRuns();
-    setEditingRunIndex(null);
+    setRunEditor(null);
     return () => {
       cancelled = true;
     };
@@ -254,7 +258,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     }
 
     function handleKeyDown(e) {
-      if (textDraft || isTypingTarget(document.activeElement)) return;
+      if (textDraft || runEditor || isTypingTarget(document.activeElement)) return;
       const ctrl = e.ctrlKey || e.metaKey;
       if (!ctrl) {
         if (e.key === "Escape") setSelectedId(null);
@@ -288,7 +292,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [elements, selectedId, textDraft]);
+  }, [elements, selectedId, textDraft, runEditor]);
 
   if (!fileId || !pageCount) return null;
 
@@ -777,44 +781,63 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
   function openRunEditor(pageNumber, run) {
     const pending = pendingTextEditFor(run);
-    setEditingRunIndex(run.index);
-    setEditingRunPage(pageNumber);
-    setDraftText(pending ? pending.text : run.text);
     // Re-opening a queued edit that already carries an override means its
     // family was an explicit choice — keep it explicit.
-    setDraftFamilyTouched(Boolean(pending?.font_override));
-    setDraftOverride(
-      pending?.font_override ?? {
-        family: "helvetica",
-        bold: run.bold,
-        italic: run.italic,
-        size: run.size,
-      }
-    );
+    setRunEditor({
+      page: pageNumber,
+      runIndex: run.index,
+      text: pending ? pending.text : run.text,
+      family: pending?.font_override?.family ?? "helvetica",
+      bold: pending?.font_override?.bold ?? run.bold,
+      italic: pending?.font_override?.italic ?? run.italic,
+      size: pending?.font_override?.size ?? run.size,
+      familyTouched: Boolean(pending?.font_override),
+    });
   }
 
-  function submitRunEditor(run) {
+  function commitRunEditor() {
+    const editor = runEditor;
+    setRunEditor(null);
+    if (!editor) return;
+    const run = runs.find((r) => r.index === editor.runIndex && r.page === editor.page);
+    if (!run) return;
     const pending = pendingTextEditFor(run);
     const overrideChanged =
-      draftFamilyTouched || draftOverride.bold !== run.bold || draftOverride.italic !== run.italic || draftOverride.size !== run.size;
+      editor.familyTouched || editor.bold !== run.bold || editor.italic !== run.italic || editor.size !== run.size;
+    const textChanged = editor.text !== run.text;
+    // Nothing pending and nothing changed from the run's own detected
+    // text/font — the user opened the editor and closed it without editing
+    // anything. Skip queuing a no-op text_edit so merely looking at a run
+    // doesn't clutter `elements`/undo history. An empty text IS a real
+    // change whenever the run originally had text (textChanged catches
+    // this), and is deliberately committed as an erase per this
+    // sub-project's design — never treated as "nothing to do".
+    if (!pending && !textChanged && !overrideChanged) return;
     const newEl = {
       id: pending?.id ?? newElementId(),
       type: "text_edit",
-      page: editingRunPage,
-      run_index: run.index,
-      text: draftText,
-      font_override: overrideChanged ? draftOverride : null,
+      page: editor.page,
+      run_index: editor.runIndex,
+      text: editor.text,
+      font_override: overrideChanged ? { family: editor.family, bold: editor.bold, italic: editor.italic, size: editor.size } : null,
     };
     const next = pending ? elements.map((el) => (el.id === newEl.id ? newEl : el)) : [...elements, newEl];
     commitElements(next);
-    setEditingRunIndex(null);
   }
 
-  function removeTextEdit(run) {
+  function revertRunEditor(run) {
     const pending = pendingTextEditFor(run);
-    if (!pending) return;
-    commitElements(elements.filter((el) => el.id !== pending.id));
-    setEditingRunIndex(null);
+    if (pending) commitElements(elements.filter((el) => el.id !== pending.id));
+    // Reset the still-open editor's fields back to the run's own detected
+    // text/font so the input reflects the original immediately — no need to
+    // close and reopen it to see the un-edited state.
+    setRunEditor((e) => ({ ...e, text: run.text, family: "helvetica", bold: run.bold, italic: run.italic, size: run.size, familyTouched: false }));
+  }
+
+  function handleRunEditorBlur(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      commitRunEditor();
+    }
   }
 
   // --- Per-type element renderers -----------------------------------------
@@ -1211,7 +1234,80 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     );
   }
 
+  function renderRunEditorOverlay(run) {
+    return (
+      <div
+        key={run.index}
+        className="edit-pdf-canvas__run-editor-inline"
+        style={{
+          left: `${run.bbox.left * 100}%`,
+          top: `${run.bbox.top * 100}%`,
+          width: `${(1 - run.bbox.left - run.bbox.right) * 100}%`,
+          height: `${(1 - run.bbox.top - run.bbox.bottom) * 100}%`,
+        }}
+        onMouseDown={(e) => e.stopPropagation()}
+        onBlur={handleRunEditorBlur}
+      >
+        <input
+          ref={runEditorInputRef}
+          type="text"
+          className="edit-pdf-canvas__run-editor-input"
+          value={runEditor.text}
+          onChange={(e) => setRunEditor((r) => ({ ...r, text: e.target.value }))}
+          style={{
+            fontFamily: newTextFontFamilyCss(runEditor.family),
+            fontWeight: runEditor.bold ? "bold" : "normal",
+            fontStyle: runEditor.italic ? "italic" : "normal",
+            fontSize: `${runEditor.size}px`,
+          }}
+        />
+        <div className="edit-pdf-canvas__new-text-style-bar">
+          <select
+            value={runEditor.family}
+            onChange={(e) => setRunEditor((r) => ({ ...r, family: e.target.value, familyTouched: true }))}
+          >
+            {FAMILY_OPTIONS.map((f) => (
+              <option key={f} value={f}>
+                {f}
+              </option>
+            ))}
+          </select>
+          <input
+            type="number"
+            min={1}
+            value={runEditor.size}
+            onChange={(e) => setRunEditor((r) => ({ ...r, size: Number(e.target.value) }))}
+          />
+          <button
+            type="button"
+            className={runEditor.bold ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+            onClick={() => setRunEditor((r) => ({ ...r, bold: !r.bold }))}
+            aria-label="Bold"
+          >
+            <TextB size={14} weight="bold" />
+          </button>
+          <button
+            type="button"
+            className={runEditor.italic ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+            onClick={() => setRunEditor((r) => ({ ...r, italic: !r.italic }))}
+            aria-label="Italic"
+          >
+            <TextItalic size={14} weight="bold" />
+          </button>
+          {pendingTextEditFor(run) && (
+            <button type="button" className="edit-pdf-canvas__width-button" onClick={() => revertRunEditor(run)}>
+              Revert
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   function renderTextRun(run, pageNumber) {
+    if (runEditor && runEditor.page === pageNumber && runEditor.runIndex === run.index) {
+      return renderRunEditorOverlay(run);
+    }
     const pending = pendingTextEditFor(run);
     return (
       <div
@@ -1223,7 +1319,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
           width: `${(1 - run.bbox.left - run.bbox.right) * 100}%`,
           height: `${(1 - run.bbox.top - run.bbox.bottom) * 100}%`,
         }}
-        onClick={() => openRunEditor(pageNumber, run)}
+        onDoubleClick={() => openRunEditor(pageNumber, run)}
       />
     );
   }
@@ -1467,68 +1563,6 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
         onChange={handleImageFileSelected}
       />
 
-      {activeMode === "text" && editingRunIndex !== null && (
-        <div className="edit-pdf-canvas__run-editor">
-          {(() => {
-            const run = runs.find((r) => r.index === editingRunIndex && r.page === editingRunPage);
-            if (!run) return null;
-            const pending = pendingTextEditFor(run);
-            return (
-              <>
-                <label className="field">
-                  Replacement text
-                  <input type="text" value={draftText} onChange={(e) => setDraftText(e.target.value)} />
-                </label>
-                <p className="edit-pdf-canvas__detected">
-                  Detected: {run.font}, {run.size.toFixed(1)}pt{run.bold ? ", bold" : ""}
-                  {run.italic ? ", italic" : ""}
-                </p>
-                <label className="field">
-                  Font family override
-                  <select
-                    value={draftOverride.family}
-                    onChange={(e) => {
-                      setDraftFamilyTouched(true);
-                      setDraftOverride((o) => ({ ...o, family: e.target.value }));
-                    }}
-                  >
-                    {FAMILY_OPTIONS.map((f) => (
-                      <option key={f} value={f}>
-                        {f}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field field--checkbox">
-                  <input type="checkbox" checked={draftOverride.bold} onChange={(e) => setDraftOverride((o) => ({ ...o, bold: e.target.checked }))} />
-                  Bold
-                </label>
-                <label className="field field--checkbox">
-                  <input type="checkbox" checked={draftOverride.italic} onChange={(e) => setDraftOverride((o) => ({ ...o, italic: e.target.checked }))} />
-                  Italic
-                </label>
-                <label className="field">
-                  Font size
-                  <input type="number" min={1} value={draftOverride.size} onChange={(e) => setDraftOverride((o) => ({ ...o, size: Number(e.target.value) }))} />
-                </label>
-                <div className="edit-pdf-canvas__run-editor-actions">
-                  <button type="button" onClick={() => submitRunEditor(run)}>
-                    {pending ? "Update edit" : "Add edit"}
-                  </button>
-                  {pending && (
-                    <button type="button" onClick={() => removeTextEdit(run)}>
-                      Remove edit
-                    </button>
-                  )}
-                  <button type="button" onClick={() => setEditingRunIndex(null)}>
-                    Cancel
-                  </button>
-                </div>
-              </>
-            );
-          })()}
-        </div>
-      )}
     </div>
   );
 }
