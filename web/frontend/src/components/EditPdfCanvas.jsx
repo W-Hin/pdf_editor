@@ -48,6 +48,20 @@ function newTextFontFamilyCss(family) {
   return "Helvetica, Arial, sans-serif";
 }
 
+// Mirrors app/core/pdf_ops.py's _closest_base14_family exactly, so a
+// freshly-opened run's default style is the closest base-14 APPROXIMATION
+// of its actually-detected font (serif -> times, monospace -> courier, else
+// helvetica) instead of always defaulting to helvetica regardless of the
+// run's real font — see this plan's Global Constraints for why the run's
+// actual embedded font itself can no longer be preserved once any edit
+// exists.
+function closestBase14Family(fontName) {
+  const lowered = (fontName || "").toLowerCase();
+  if (lowered.includes("times") || lowered.includes("serif") || lowered.includes("georgia")) return "times";
+  if (lowered.includes("courier") || lowered.includes("mono") || lowered.includes("consolas")) return "courier";
+  return "helvetica";
+}
+
 // Rough width-per-character estimate for the three base-14 families this
 // tool supports, used only to enforce a REASONABLE minimum box size client-
 // side — the backend's own _wrap_text_lines (using the real font metrics)
@@ -131,13 +145,12 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   const [elements, setElements] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [runs, setRuns] = useState([]);
-  // Null when no run is being edited. { page, runIndex, text, family, bold,
-  // italic, size, familyTouched } while the inline editor is open — mirrors
-  // textDraft's null-object pattern below. familyTouched exists for the same
-  // reason the old draftFamilyTouched did: the family dropdown always starts
-  // at "helvetica" regardless of the run's detected font, so comparing its
-  // VALUE against "helvetica" can't distinguish "explicitly chose Helvetica
-  // on a Times run" from "never touched it" — track the interaction itself.
+  // Null when no run is being edited. { page, runIndex, phase: "type" |
+  // "style", segments: [{text, family, bold, italic, size}, ...], selection:
+  // {start, end} | null } while the inline editor is open — mirrors
+  // textDraft's null-object pattern below. This task only ever produces
+  // phase "type" with a single-element segments array; Task 3 makes phase
+  // "style" and multi-element segments reachable.
   const [runEditor, setRunEditor] = useState(null);
   const runEditorInputRef = useRef(null);
   const [drawColor, setDrawColor] = useState(MARKUP_COLORS[0]);
@@ -781,20 +794,27 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
   function openRunEditor(pageNumber, run) {
     const pending = pendingTextEditFor(run);
-    // Re-opening a queued edit that already carries an override means its
-    // family was an explicit choice — keep it explicit.
+    // No pending edit: nothing to style yet, open straight into typing.
+    // A pending edit already exists: open into the styling view instead
+    // (Task 3) — reopening an already-committed run is normally to review
+    // or restyle it, not retype it from scratch. "Edit text" (Task 3) is
+    // the explicit way back into phase "type" from there.
+    const segments = pending
+      ? pending.segments
+      : [{ text: run.text, family: closestBase14Family(run.font), bold: run.bold, italic: run.italic, size: run.size }];
     setRunEditor({
       page: pageNumber,
       runIndex: run.index,
-      text: pending ? pending.text : run.text,
-      family: pending?.font_override?.family ?? "helvetica",
-      bold: pending?.font_override?.bold ?? run.bold,
-      italic: pending?.font_override?.italic ?? run.italic,
-      size: pending?.font_override?.size ?? run.size,
-      familyTouched: Boolean(pending?.font_override),
+      phase: pending ? "style" : "type",
+      segments,
+      selection: null,
     });
   }
 
+  // Only ever called while phase === "type" (see handleRunEditorBlur) — in
+  // phase "style", every restyle action already commits immediately
+  // (Task 3's applySelectionStyle), so there is nothing left to commit on
+  // blur there.
   function commitRunEditor() {
     const editor = runEditor;
     setRunEditor(null);
@@ -802,24 +822,24 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     const run = runs.find((r) => r.index === editor.runIndex && r.page === editor.page);
     if (!run) return;
     const pending = pendingTextEditFor(run);
-    const overrideChanged =
-      editor.familyTouched || editor.bold !== run.bold || editor.italic !== run.italic || editor.size !== run.size;
-    const textChanged = editor.text !== run.text;
+    const seg = editor.segments[0];
+    const isDefaultStyle =
+      seg.family === closestBase14Family(run.font) && seg.bold === run.bold && seg.italic === run.italic && seg.size === run.size;
+    const textChanged = seg.text !== run.text;
     // Nothing pending and nothing changed from the run's own detected
-    // text/font — the user opened the editor and closed it without editing
-    // anything. Skip queuing a no-op text_edit so merely looking at a run
-    // doesn't clutter `elements`/undo history. An empty text IS a real
-    // change whenever the run originally had text (textChanged catches
+    // text/default style — the user opened the editor and closed it without
+    // editing anything. Skip queuing a no-op text_edit so merely looking at
+    // a run doesn't clutter `elements`/undo history. An empty text IS a
+    // real change whenever the run originally had text (textChanged catches
     // this), and is deliberately committed as an erase per this
     // sub-project's design — never treated as "nothing to do".
-    if (!pending && !textChanged && !overrideChanged) return;
+    if (!pending && !textChanged && isDefaultStyle) return;
     const newEl = {
       id: pending?.id ?? newElementId(),
       type: "text_edit",
       page: editor.page,
       run_index: editor.runIndex,
-      text: editor.text,
-      font_override: overrideChanged ? { family: editor.family, bold: editor.bold, italic: editor.italic, size: editor.size } : null,
+      segments: [{ text: seg.text, family: seg.family, bold: seg.bold, italic: seg.italic, size: seg.size }],
     };
     const next = pending ? elements.map((el) => (el.id === newEl.id ? newEl : el)) : [...elements, newEl];
     commitElements(next);
@@ -828,15 +848,21 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   function revertRunEditor(run) {
     const pending = pendingTextEditFor(run);
     if (pending) commitElements(elements.filter((el) => el.id !== pending.id));
-    // Reset the still-open editor's fields back to the run's own detected
-    // text/font so the input reflects the original immediately — no need to
-    // close and reopen it to see the un-edited state.
-    setRunEditor((e) => ({ ...e, text: run.text, family: "helvetica", bold: run.bold, italic: run.italic, size: run.size, familyTouched: false }));
+    // Reset the still-open editor back to phase "type" showing the run's own
+    // detected text/font — nothing styled remains once reverted, so there is
+    // nothing left to show in phase "style".
+    setRunEditor((e) => ({
+      ...e,
+      phase: "type",
+      segments: [{ text: run.text, family: closestBase14Family(run.font), bold: run.bold, italic: run.italic, size: run.size }],
+      selection: null,
+    }));
   }
 
   function handleRunEditorBlur(e) {
     if (!e.currentTarget.contains(e.relatedTarget)) {
-      commitRunEditor();
+      if (runEditor?.phase === "type") commitRunEditor();
+      else setRunEditor(null);
     }
   }
 
@@ -1234,7 +1260,18 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     );
   }
 
+  function renderRunStyleOverlay(run) {
+    return null; // replaced in the next task
+  }
+
   function renderRunEditorOverlay(run) {
+    if (runEditor.phase === "style") {
+      return renderRunStyleOverlay(run); // Task 3
+    }
+    const seg = runEditor.segments[0];
+    function updateSeg(patch) {
+      setRunEditor((r) => ({ ...r, segments: [{ ...r.segments[0], ...patch }] }));
+    }
     return (
       <div
         key={run.index}
@@ -1252,44 +1289,36 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
           ref={runEditorInputRef}
           type="text"
           className="edit-pdf-canvas__run-editor-input"
-          value={runEditor.text}
-          onChange={(e) => setRunEditor((r) => ({ ...r, text: e.target.value }))}
+          value={seg.text}
+          onChange={(e) => updateSeg({ text: e.target.value })}
           style={{
-            fontFamily: newTextFontFamilyCss(runEditor.family),
-            fontWeight: runEditor.bold ? "bold" : "normal",
-            fontStyle: runEditor.italic ? "italic" : "normal",
-            fontSize: `${runEditor.size}px`,
+            fontFamily: newTextFontFamilyCss(seg.family),
+            fontWeight: seg.bold ? "bold" : "normal",
+            fontStyle: seg.italic ? "italic" : "normal",
+            fontSize: `${seg.size}px`,
           }}
         />
         <div className="edit-pdf-canvas__new-text-style-bar">
-          <select
-            value={runEditor.family}
-            onChange={(e) => setRunEditor((r) => ({ ...r, family: e.target.value, familyTouched: true }))}
-          >
+          <select value={seg.family} onChange={(e) => updateSeg({ family: e.target.value })}>
             {FAMILY_OPTIONS.map((f) => (
               <option key={f} value={f}>
                 {f}
               </option>
             ))}
           </select>
-          <input
-            type="number"
-            min={1}
-            value={runEditor.size}
-            onChange={(e) => setRunEditor((r) => ({ ...r, size: Number(e.target.value) }))}
-          />
+          <input type="number" min={1} value={seg.size} onChange={(e) => updateSeg({ size: Number(e.target.value) })} />
           <button
             type="button"
-            className={runEditor.bold ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
-            onClick={() => setRunEditor((r) => ({ ...r, bold: !r.bold }))}
+            className={seg.bold ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+            onClick={() => updateSeg({ bold: !seg.bold })}
             aria-label="Bold"
           >
             <TextB size={14} weight="bold" />
           </button>
           <button
             type="button"
-            className={runEditor.italic ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
-            onClick={() => setRunEditor((r) => ({ ...r, italic: !r.italic }))}
+            className={seg.italic ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+            onClick={() => updateSeg({ italic: !seg.italic })}
             aria-label="Italic"
           >
             <TextItalic size={14} weight="bold" />

@@ -482,15 +482,6 @@ def _base14_alias(family: str, bold: bool, italic: bool) -> str:
     return _FONT_ALIASES.get(key, _FONT_ALIASES[("helvetica", bool(bold), bool(italic))])
 
 
-def _closest_base14_family(font_name: str) -> str:
-    lowered = font_name.lower()
-    if "times" in lowered or "serif" in lowered or "georgia" in lowered:
-        return "times"
-    if "courier" in lowered or "mono" in lowered or "consolas" in lowered:
-        return "courier"
-    return "helvetica"
-
-
 def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
     value = hex_color.lstrip("#")
     if len(value) != 6:
