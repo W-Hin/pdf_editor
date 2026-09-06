@@ -1295,7 +1295,12 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
             <TextItalic size={14} weight="bold" />
           </button>
           {pendingTextEditFor(run) && (
-            <button type="button" className="edit-pdf-canvas__width-button" onClick={() => revertRunEditor(run)}>
+            <button
+              type="button"
+              className="edit-pdf-canvas__width-button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => revertRunEditor(run)}
+            >
               Revert
             </button>
           )}
