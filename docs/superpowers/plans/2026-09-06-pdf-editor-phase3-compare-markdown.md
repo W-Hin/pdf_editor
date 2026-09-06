@@ -990,6 +990,14 @@ Add the function (anywhere reasonable among the other top-level, non-`_`-prefixe
 def pdf_to_markdown_zip(input_path: str, output_path: str) -> None:
     with tempfile.TemporaryDirectory() as image_dir:
         markdown_text = pymupdf4llm.to_markdown(input_path, write_images=True, image_path=image_dir)
+        # pymupdf4llm embeds each image reference as an ABSOLUTE filesystem
+        # path into image_dir (verified empirically: "![](C:/Users/.../
+        # tmpXXXX/images/input.pdf-0001-01.png)") — meaningless once this zip
+        # is extracted anywhere else. Images are stored FLAT at the zip's own
+        # root, next to document.md, so rewriting each reference down to just
+        # its filename makes the link correctly relative once extracted.
+        image_dir_prefix = Path(image_dir).as_posix() + "/"
+        markdown_text = markdown_text.replace(image_dir_prefix, "")
         with zipfile.ZipFile(output_path, "w") as zf:
             zf.writestr("document.md", markdown_text)
             for image_path in Path(image_dir).iterdir():
@@ -997,6 +1005,35 @@ def pdf_to_markdown_zip(input_path: str, output_path: str) -> None:
 ```
 
 (`Path` is already imported at the top of `pdf_ops.py` — confirm this before adding the function; if it's imported under a different alias, adjust accordingly.)
+
+Also add a dedicated test asserting this rewrite actually happened — a separate test function from the one written in Step 1:
+
+```python
+def test_pdf_to_markdown_zip_rewrites_image_paths_as_relative(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    img_pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 40), False)
+    img_pix.set_rect(img_pix.irect, (255, 0, 0))
+    page.insert_image(fitz.Rect(72, 400, 172, 500), pixmap=img_pix)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.zip"
+    pdf_to_markdown_zip(str(input_path), str(output_path))
+
+    with zipfile.ZipFile(output_path) as zf:
+        md_names = [n for n in zf.namelist() if n.endswith(".md")]
+        image_names = [n for n in zf.namelist() if n.lower().endswith((".png", ".jpg", ".jpeg"))]
+        md_text = zf.read(md_names[0]).decode("utf-8")
+        assert len(image_names) >= 1
+        # The markdown's image reference must be exactly the bare filename of
+        # an image actually present in this same zip — not an absolute path
+        # pointing at a temp directory that no longer exists once extracted.
+        image_name = image_names[0]
+        assert f"]({image_name})" in md_text
+        assert ":" not in md_text.split("![")[1].split(")")[0]  # no drive letter / absolute path leaked through
+```
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -1054,10 +1091,21 @@ const TOOL_ICONS = {
 
 Add a line `pymupdf4llm>=0.0.17` to `requirements.txt`.
 
+Note (verified empirically while dispatching this task, not previously known when the spec/plan
+were written): `pymupdf4llm` pulls in `pymupdf_layout`, `onnxruntime`, `protobuf`, and `networkx`
+as transitive dependencies — a noticeably heavier install than the spec's "pure-Python wheel"
+framing implied, though still no EXTERNAL system binary (everything is pip-installable). This
+doesn't change this task's scope or the Phase 3 queue ordering (it's still lighter than a bundled
+Tesseract/LibreOffice/Ghostscript), but is worth being aware of for the eventual PyInstaller
+packaging step — `onnxruntime` in particular is a large wheel and may need an explicit
+`--collect-all` entry when this app is eventually bundled, the same way `uvicorn`/`fastapi`/
+`starlette` already are in `.github/workflows/release.yml`. Not this task's job to fix — just
+flagging it in the report as a real installed-footprint change.
+
 - [ ] **Step 8: Run the full backend test suite**
 
 Run: `./venv/Scripts/python.exe -m pytest tests/ -v`
-Expected: all passing (193 before this task; 194 expected after).
+Expected: all passing (194 before this task — 191 from Tasks 1-2 plus 3 from Task 3's frontend-only work not adding backend tests, so still 194 carried over; 196 expected after this task's 2 new tests).
 
 - [ ] **Step 9: Verify the frontend build**
 
@@ -1083,7 +1131,7 @@ No `Co-Authored-By` trailer.
 
 ## Final check
 
-- [ ] Run the full backend test suite once more: `./venv/Scripts/python.exe -m pytest tests/ -v` — all passing (194).
+- [ ] Run the full backend test suite once more: `./venv/Scripts/python.exe -m pytest tests/ -v` — all passing (196).
 - [ ] Run `cd web/frontend && npm run build` once more — clean build.
 - [ ] Confirm `git log --oneline` shows one commit per task above (4 total), in order, none carrying a `Co-Authored-By` trailer (all are `feat:`).
 - [ ] Confirm the "Compare PDF" and "PDF to Markdown" tiles both appear correctly in the tool grid, under the right categories, with real (non-fallback) icons.
