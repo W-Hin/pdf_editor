@@ -448,6 +448,7 @@ export default function ToolView() {
           ) : field.type === "password" ? (
             <input
               type="password"
+              maxLength={field.maxLength}
               value={fieldValues[field.name]}
               onChange={(e) => updateField(field.name, e.target.value)}
             />

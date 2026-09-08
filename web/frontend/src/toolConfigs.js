@@ -237,7 +237,7 @@ export const TOOL_CONFIGS = {
     multiFile: false,
     mode: "view",
     endpoint: "protect",
-    fields: [{ name: "password", label: "Password", type: "password", default: "" }],
+    fields: [{ name: "password", label: "Password", type: "password", default: "", maxLength: 127 }],
   },
   "unlock-pdf": {
     title: "Unlock PDF",
