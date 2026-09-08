@@ -145,7 +145,7 @@ export default function ToolView() {
         body.values = formValues;
       }
       const data = await runTool(config.endpoint, body);
-      setResult(data.outputs);
+      setResult(data);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -445,6 +445,12 @@ export default function ToolView() {
               value={fieldValues[field.name]}
               onChange={(e) => updateField(field.name, Number(e.target.value))}
             />
+          ) : field.type === "password" ? (
+            <input
+              type="password"
+              value={fieldValues[field.name]}
+              onChange={(e) => updateField(field.name, e.target.value)}
+            />
           ) : (
             <input
               type="text"
@@ -476,9 +482,10 @@ export default function ToolView() {
         <div className="result">
           <p className="result__title">
             <CheckCircle size={18} weight="fill" />
-            Done — {result.length} file{result.length === 1 ? "" : "s"} created.
+            Done — {result.outputs.length} file{result.outputs.length === 1 ? "" : "s"} created.
           </p>
-          {result.map((out) => (
+          {result.message && <p className="result__message">{result.message}</p>}
+          {result.outputs.map((out) => (
             <a key={out.id} href={downloadUrl(out.id)} download>
               <DownloadSimple size={16} weight="regular" />
               Download {out.filename}

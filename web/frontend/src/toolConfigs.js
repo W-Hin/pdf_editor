@@ -222,6 +222,28 @@ export const TOOL_CONFIGS = {
     category: "Edit",
     fields: [],
   },
+  repair: {
+    title: "Repair PDF",
+    category: "Optimize",
+    multiFile: false,
+    mode: "view",
+    endpoint: "repair",
+    previewNote: "Repair fixes the file's internal structure, not its visual content — there's nothing meaningful to preview before running.",
+    fields: [],
+  },
+  protect: {
+    title: "Protect PDF",
+    category: "Optimize",
+    multiFile: false,
+    mode: "view",
+    endpoint: "protect",
+    fields: [{ name: "password", label: "Password", type: "password", default: "" }],
+  },
+  "unlock-pdf": {
+    title: "Unlock PDF",
+    category: "Optimize",
+    fields: [],
+  },
   "images-to-pdf": {
     title: "Images to PDF",
     category: "Convert",

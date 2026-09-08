@@ -21,6 +21,9 @@ import {
   File,
   FileMagnifyingGlass,
   FileText,
+  Wrench,
+  Lock,
+  LockOpen,
 } from "@phosphor-icons/react";
 import { TOOL_CONFIGS } from "../toolConfigs";
 import RecentFiles from "./RecentFiles.jsx";
@@ -47,6 +50,17 @@ const TOOL_ICONS = {
   sign: Signature,
   "fill-form": ListChecks,
   "compare-pdf": FileMagnifyingGlass,
+  repair: Wrench,
+  protect: Lock,
+  "unlock-pdf": LockOpen,
+};
+
+// Tools whose interaction model differs enough from the standard "pick
+// file(s) → configure → Run → download" flow that they render their own
+// dedicated page instead of going through ToolView's generic flow.
+const DEDICATED_ROUTES = {
+  "compare-pdf": "/compare",
+  "unlock-pdf": "/unlock",
 };
 
 // Development-time early warning: a tool added to TOOL_CONFIGS without a
@@ -85,10 +99,7 @@ export default function ToolGrid() {
                   // instead of crashing the whole grid.
                   const Icon = TOOL_ICONS[toolId] ?? File;
                   return (
-                    <button
-                      key={toolId}
-                      onClick={() => navigate(toolId === "compare-pdf" ? "/compare" : `/tool/${toolId}`)}
-                    >
+                    <button key={toolId} onClick={() => navigate(DEDICATED_ROUTES[toolId] ?? `/tool/${toolId}`)}>
                       <span className="tool-grid__icon">
                         <Icon size={20} weight="regular" />
                       </span>

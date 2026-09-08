@@ -3,6 +3,7 @@ import { FilePdf, ClockCounterClockwise } from "@phosphor-icons/react";
 import ToolGrid from "./components/ToolGrid.jsx";
 import ToolView from "./components/ToolView.jsx";
 import ComparePdfView from "./components/ComparePdfView.jsx";
+import UnlockPdfView from "./components/UnlockPdfView.jsx";
 import UpdateBanner from "./components/UpdateBanner.jsx";
 
 export default function App() {
@@ -25,6 +26,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<ToolGrid />} />
           <Route path="/compare" element={<ComparePdfView />} />
+          <Route path="/unlock" element={<UnlockPdfView />} />
           <Route path="/tool/:toolId" element={<ToolView />} />
         </Routes>
       </main>

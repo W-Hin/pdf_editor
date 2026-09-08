@@ -1357,6 +1357,12 @@ h1 {
   font-size: 14px;
 }
 
+.result__message {
+  font-size: 13px;
+  color: var(--color-muted-foreground);
+  margin: 0 0 var(--space-2);
+}
+
 .result a {
   display: flex;
   align-items: center;

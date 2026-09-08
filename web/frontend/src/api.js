@@ -50,6 +50,14 @@ export async function runTool(toolPath, body) {
   return res.json();
 }
 
+export async function unlockPdf(file, password) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("password", password);
+  const res = await request("/tools/unlock", { method: "POST", body: formData });
+  return res.json();
+}
+
 export async function comparePdf(fileIdA, fileIdB) {
   const res = await request("/compare", {
     method: "POST",
