@@ -1,7 +1,8 @@
+import tempfile
 from pathlib import Path
 from typing import Annotated, Literal, Union
 
-from fastapi import APIRouter
+from fastapi import APIRouter, File, Form, UploadFile
 from pydantic import BaseModel, Field
 
 from app.core.convert import convert_to_word
@@ -25,7 +26,7 @@ from app.core.pdf_ops import (
     rotate_pages,
     split_pdf,
 )
-from app.core.pdf_repair import protect_pdf, repair_pdf
+from app.core.pdf_repair import protect_pdf, repair_pdf, unlock_pdf
 from web.backend import storage
 
 router = APIRouter(prefix="/tools")
@@ -272,6 +273,21 @@ def repair_route(req: RepairRequest):
             f"after {result['warnings_count']} structural issue{'s' if result['warnings_count'] != 1 else ''} found."
         )
     return _output_response([output_path], "Repair PDF", [Path(input_path).name], message=message)
+
+
+@router.post("/unlock")
+async def unlock_route(file: UploadFile = File(...), password: str = Form(...)):
+    content = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(content)
+        input_path = tmp.name
+    try:
+        stem = Path(file.filename or "unlocked").stem
+        output_path = storage.output_path_for(stem, "_unlocked")
+        unlock_pdf(input_path, str(output_path), password)
+        return _output_response([output_path], "Unlock PDF", [file.filename or "unlocked.pdf"])
+    finally:
+        Path(input_path).unlink(missing_ok=True)
 
 
 class ProtectRequest(BaseModel):
