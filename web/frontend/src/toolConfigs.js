@@ -217,6 +217,15 @@ export const TOOL_CONFIGS = {
     previewNote: "PDF to Markdown extracts text and images — the result can't be previewed as a PDF page.",
     fields: [],
   },
+  "pdf-to-pptx": {
+    title: "PDF to PowerPoint",
+    category: "Convert",
+    multiFile: false,
+    mode: "view",
+    endpoint: "pdf-to-pptx",
+    previewNote: "PDF to PowerPoint rebuilds positioned text boxes — complex layouts may not convert perfectly, and the result can't be previewed as a PDF page.",
+    fields: [],
+  },
   "compare-pdf": {
     title: "Compare PDF",
     category: "Edit",

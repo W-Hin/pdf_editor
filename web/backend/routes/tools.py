@@ -27,6 +27,7 @@ from app.core.pdf_ops import (
     split_pdf,
 )
 from app.core.pdf_repair import protect_pdf, repair_pdf, unlock_pdf
+from app.core.pdf_to_office import pdf_to_pptx
 from web.backend import storage
 
 router = APIRouter(prefix="/tools")
@@ -342,6 +343,19 @@ def pdf_to_markdown_route(req: PdfToMarkdownRequest):
     output_path = storage.output_path_for(stem, "_markdown", ext=".zip")
     pdf_to_markdown_zip(input_path, str(output_path))
     return _output_response([output_path], "PDF to Markdown", [Path(input_path).name])
+
+
+class ToPptxRequest(BaseModel):
+    file_id: str
+
+
+@router.post("/pdf-to-pptx")
+def pdf_to_pptx_route(req: ToPptxRequest):
+    input_path = str(storage.resolve_file(req.file_id))
+    stem = Path(input_path).stem
+    output_path = storage.output_path_for(stem, "", ".pptx")
+    pdf_to_pptx(input_path, str(output_path))
+    return _output_response([output_path], "PDF to PowerPoint", [Path(input_path).name])
 
 
 class ImagesToPdfRequest(BaseModel):
