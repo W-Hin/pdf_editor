@@ -1,3 +1,4 @@
+import openpyxl
 from pptx import Presentation
 from pptx.util import Emu, Pt
 
@@ -73,5 +74,25 @@ def pdf_to_pptx(input_path: str, output_path: str) -> None:
                         run.font.italic = bool(flags & 2)
                         run.font.name = _PPTX_FONT_NAMES[_closest_base14_family(span["font"])]
         prs.save(output_path)
+    finally:
+        doc.close()
+
+
+def pdf_to_xlsx(input_path: str, output_path: str) -> None:
+    doc = open_pdf(input_path)
+    try:
+        workbook = openpyxl.Workbook()
+        workbook.remove(workbook.active)  # default blank sheet — replaced by real ones below
+        table_count = 0
+        for page_index, page in enumerate(doc, start=1):
+            tables = page.find_tables()
+            for table_index, table in enumerate(tables.tables, start=1):
+                table_count += 1
+                sheet = workbook.create_sheet(f"Page{page_index}_Table{table_index}")
+                for row in table.extract():
+                    sheet.append(row)
+        if table_count == 0:
+            raise PDFError("No tables found in this document.")
+        workbook.save(output_path)
     finally:
         doc.close()

@@ -120,3 +120,74 @@ def test_pdf_to_pptx_skips_image_blocks(tmp_path):
 def test_pdf_to_pptx_raises_for_missing_file(tmp_path):
     with pytest.raises(PDFError):
         pdf_to_pptx(str(tmp_path / "does_not_exist.pdf"), str(tmp_path / "output.pptx"))
+
+
+import openpyxl
+
+from app.core.pdf_to_office import pdf_to_xlsx
+
+
+def _draw_ruled_table(page, x0, y0, col_w, row_h, values):
+    rows = len(values)
+    cols = len(values[0])
+    for r in range(rows + 1):
+        page.draw_line((x0, y0 + r * row_h), (x0 + cols * col_w, y0 + r * row_h))
+    for c in range(cols + 1):
+        page.draw_line((x0 + c * col_w, y0), (x0 + c * col_w, y0 + rows * row_h))
+    for r, row in enumerate(values):
+        for c, val in enumerate(row):
+            page.insert_text((x0 + c * col_w + 10, y0 + r * row_h + 20), val, fontsize=12)
+
+
+def test_pdf_to_xlsx_extracts_detected_table(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    _draw_ruled_table(page, 72, 100, 100, 30, [("A1", "B1"), ("A2", "B2")])
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.xlsx"
+    pdf_to_xlsx(str(input_path), str(output_path))
+
+    assert output_path.exists()
+    workbook = openpyxl.load_workbook(str(output_path))
+    assert workbook.sheetnames == ["Page1_Table1"]
+    sheet = workbook["Page1_Table1"]
+    # Exact cell values verified empirically against this exact fixture this
+    # session — PyMuPDF's find_tables()/extract() on a real ruled table.
+    assert list(sheet.iter_rows(values_only=True)) == [("A1", "B1"), ("A2", "B2")]
+
+
+def test_pdf_to_xlsx_skips_pages_without_tables(tmp_path):
+    doc = fitz.open()
+    text_page = doc.new_page(width=612, height=792)
+    text_page.insert_text((72, 100), "Just plain text, no table here.", fontsize=12)
+    table_page = doc.new_page(width=612, height=792)
+    _draw_ruled_table(table_page, 72, 100, 100, 30, [("X1", "Y1"), ("X2", "Y2")])
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.xlsx"
+    pdf_to_xlsx(str(input_path), str(output_path))
+
+    workbook = openpyxl.load_workbook(str(output_path))
+    # Page 1 (text-only) contributes nothing; only page 2's table becomes a
+    # sheet — verified empirically this session on this exact two-page shape.
+    assert workbook.sheetnames == ["Page2_Table1"]
+    assert list(workbook["Page2_Table1"].iter_rows(values_only=True)) == [("X1", "Y1"), ("X2", "Y2")]
+
+
+def test_pdf_to_xlsx_raises_when_no_tables_found(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 100), "No tables anywhere in this document.", fontsize=12)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.xlsx"
+    with pytest.raises(PDFError):
+        pdf_to_xlsx(str(input_path), str(output_path))
+    assert not output_path.exists()
