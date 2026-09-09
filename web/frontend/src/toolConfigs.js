@@ -226,6 +226,15 @@ export const TOOL_CONFIGS = {
     previewNote: "PDF to PowerPoint rebuilds positioned text boxes — complex layouts may not convert perfectly, and the result can't be previewed as a PDF page.",
     fields: [],
   },
+  "pdf-to-xlsx": {
+    title: "PDF to Excel",
+    category: "Convert",
+    multiFile: false,
+    mode: "view",
+    endpoint: "pdf-to-xlsx",
+    previewNote: "PDF to Excel only includes pages with a detected table — the result can't be previewed as a PDF page.",
+    fields: [],
+  },
   "compare-pdf": {
     title: "Compare PDF",
     category: "Edit",
