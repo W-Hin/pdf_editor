@@ -1,4 +1,5 @@
 import openpyxl
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from pptx import Presentation
 from pptx.util import Emu, Pt
 
@@ -6,6 +7,22 @@ from app.core.errors import PDFError
 from app.core.pdf_ops import open_pdf
 
 _EMU_PER_POINT = 12700
+
+# python-pptx's own valid ranges (ST_TextFontSize / slide dimension XML
+# types) — out-of-range values raise a raw ValueError from python-pptx
+# itself rather than this codebase's PDFError. Rather than failing the
+# entire best-effort conversion for one degenerate span or an oversized
+# page, clamp into range so the conversion completes.
+_MIN_PPTX_FONT_PT = 1.0
+_MAX_PPTX_FONT_PT = 4000.0
+
+_MIN_SLIDE_EMU = 914400  # 1 inch — python-pptx's own minimum slide dimension
+_MAX_SLIDE_EMU = 51206400  # 56 inches — python-pptx's own maximum slide dimension
+
+
+def _clamp_emu(value: int) -> int:
+    return max(_MIN_SLIDE_EMU, min(_MAX_SLIDE_EMU, value))
+
 
 # Maps this codebase's three base-14-style families (the same three
 # app/core/pdf_ops.py's _base14_alias already recognizes for user-chosen
@@ -45,8 +62,8 @@ def pdf_to_pptx(input_path: str, output_path: str) -> None:
                 # common case of a uniform-page-size document; a later page of a
                 # different size still gets text-accurate, absolutely-positioned
                 # boxes, just against a canvas sized to page 1.
-                prs.slide_width = Emu(round(page.rect.width * _EMU_PER_POINT))
-                prs.slide_height = Emu(round(page.rect.height * _EMU_PER_POINT))
+                prs.slide_width = Emu(_clamp_emu(round(page.rect.width * _EMU_PER_POINT)))
+                prs.slide_height = Emu(_clamp_emu(round(page.rect.height * _EMU_PER_POINT)))
                 slide_size_set = True
 
             slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank layout
@@ -68,7 +85,8 @@ def pdf_to_pptx(input_path: str, output_path: str) -> None:
                     for span in line["spans"]:
                         run = paragraph.add_run()
                         run.text = span["text"]
-                        run.font.size = Pt(span["size"])
+                        font_size_pt = max(_MIN_PPTX_FONT_PT, min(_MAX_PPTX_FONT_PT, span["size"]))
+                        run.font.size = Pt(font_size_pt)
                         flags = span["flags"]
                         run.font.bold = bool(flags & 16)
                         run.font.italic = bool(flags & 2)
@@ -90,7 +108,10 @@ def pdf_to_xlsx(input_path: str, output_path: str) -> None:
                 table_count += 1
                 sheet = workbook.create_sheet(f"Page{page_index}_Table{table_index}")
                 for row in table.extract():
-                    sheet.append(row)
+                    cleaned_row = [
+                        ILLEGAL_CHARACTERS_RE.sub("", cell) if isinstance(cell, str) else cell for cell in row
+                    ]
+                    sheet.append(cleaned_row)
         if table_count == 0:
             raise PDFError("No tables found in this document.")
         workbook.save(output_path)

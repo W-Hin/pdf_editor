@@ -1,6 +1,7 @@
 import fitz
 import pytest
 from pptx import Presentation
+from pptx.util import Pt
 
 from app.core.errors import PDFError
 from app.core.pdf_to_office import pdf_to_pptx
@@ -122,6 +123,71 @@ def test_pdf_to_pptx_raises_for_missing_file(tmp_path):
         pdf_to_pptx(str(tmp_path / "does_not_exist.pdf"), str(tmp_path / "output.pptx"))
 
 
+def test_pdf_to_pptx_clamps_sub_minimum_font_size(tmp_path):
+    # python-pptx's ST_TextFontSize XML type only accepts 1pt-4000pt
+    # (100-400000 centipoints); a hidden OCR layer / micro-print / a
+    # text-matrix-scaled artifact can produce a span under 1pt. Without
+    # clamping, `run.font.size = Pt(0.5)` raises a raw ValueError from
+    # python-pptx that would kill the entire conversion for one span.
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 100), "tiny", fontsize=0.5)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    # Confirm the fixture actually reproduces the trigger condition: the
+    # extracted span size is under python-pptx's 1pt minimum.
+    check_doc = fitz.open(str(input_path))
+    spans = [
+        span
+        for block in check_doc[0].get_text("dict")["blocks"]
+        if "lines" in block
+        for line in block["lines"]
+        for span in line["spans"]
+    ]
+    check_doc.close()
+    assert spans[0]["size"] < 1.0
+
+    output_path = tmp_path / "output.pptx"
+    pdf_to_pptx(str(input_path), str(output_path))  # must not raise ValueError
+
+    prs = Presentation(str(output_path))
+    run = prs.slides[0].shapes[0].text_frame.paragraphs[0].runs[0]
+    assert run.text == "tiny"
+    # Clamped to the minimum valid size, verified empirically this session:
+    # int(Pt(1.0)) == 12700 centipoints.
+    assert run.font.size == Pt(1.0)
+
+
+def test_pdf_to_pptx_clamps_oversized_page_dimensions(tmp_path):
+    # python-pptx bounds slide dimensions to 1-56 inches (914400-51206400
+    # EMU). A large-format plotter/poster page bigger than 56in on both
+    # sides (60in x 60in = 4320pt x 4320pt, since 1pt = 1/72in) exceeds
+    # that on both width and height and, without clamping, raises a raw
+    # ValueError from python-pptx when setting prs.slide_width/slide_height.
+    doc = fitz.open()
+    page = doc.new_page(width=4320, height=4320)  # 60in x 60in at 72pt/in
+    page.insert_text((72, 100), "poster text", fontsize=12)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    # Confirm the fixture actually reproduces the trigger condition: the
+    # unclamped EMU values exceed python-pptx's 51206400 EMU maximum on
+    # both axes (verified empirically: round(4320 * 12700) == 54864000).
+    assert round(4320 * 12700) > 51206400
+
+    output_path = tmp_path / "output.pptx"
+    pdf_to_pptx(str(input_path), str(output_path))  # must not raise ValueError
+
+    prs = Presentation(str(output_path))
+    # Clamped to python-pptx's own maximum, verified empirically this
+    # session: Emu(51206400) round-trips unchanged (56 inches, the ceiling).
+    assert prs.slide_width == 51206400
+    assert prs.slide_height == 51206400
+
+
 import openpyxl
 
 from app.core.pdf_to_office import pdf_to_xlsx
@@ -191,3 +257,56 @@ def test_pdf_to_xlsx_raises_when_no_tables_found(tmp_path):
     with pytest.raises(PDFError):
         pdf_to_xlsx(str(input_path), str(output_path))
     assert not output_path.exists()
+
+
+def test_pdf_to_xlsx_sanitizes_illegal_control_characters(tmp_path):
+    # openpyxl raises IllegalCharacterError (a ValueError subclass) if any
+    # string cell contains an ASCII control character (\x00-\x08, \x0b-\x0c,
+    # \x0e-\x1f). PyMuPDF can round-trip these through a PDF's own
+    # ToUnicode CMap into extracted table-cell text via page.insert_text()
+    # followed by find_tables()/extract() — confirmed empirically this
+    # session: a control character (chr(0x02), STX) embedded in text drawn
+    # with insert_text() survives PyMuPDF's own extraction pipeline intact,
+    # so this fixture exercises the real code path end-to-end rather than
+    # a synthetic string. (Tried and confirmed working on the first
+    # attempt — no fallback to monkeypatching find_tables() was needed.)
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    bad_cell = "A1" + chr(0x02) + "x"  # STX control char mid-string
+    _draw_ruled_table(page, 72, 100, 100, 30, [(bad_cell, "B1"), ("A2", "B2")])
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    # Confirm the fixture actually reproduces the trigger condition: the
+    # extracted cell text still contains the raw control character before
+    # any sanitization, and openpyxl really does reject it unsanitized.
+    #
+    # Note: this module's app.core.pdf_ops (imported transitively via
+    # app.core.pdf_to_office, already imported at the top of this test
+    # file) itself imports pymupdf4llm, which has a confirmed empirical
+    # side effect of changing PyMuPDF's global table-extraction strategy —
+    # so "A1" + chr(0x02) + "x" round-trips as "A1 x\n\x02" here (word
+    # split with an inserted space/newline, control char moved to the
+    # end), not a byte-for-byte passthrough. The illegal character is
+    # still present either way, which is all this test depends on.
+    check_doc = fitz.open(str(input_path))
+    extracted = check_doc[0].find_tables().tables[0].extract()
+    check_doc.close()
+    dirty_cell = extracted[0][0]
+    assert "\x02" in dirty_cell
+    with pytest.raises(openpyxl.utils.exceptions.IllegalCharacterError):
+        openpyxl.Workbook().active.append(extracted[0])
+
+    output_path = tmp_path / "output.xlsx"
+    pdf_to_xlsx(str(input_path), str(output_path))  # must not raise IllegalCharacterError
+
+    workbook = openpyxl.load_workbook(str(output_path))
+    sheet = workbook["Page1_Table1"]
+    rows = list(sheet.iter_rows(values_only=True))
+    # The control character is stripped; everything else in the cell
+    # (including the legal '\n') survives — verified empirically this
+    # session against this exact fixture.
+    expected_cell = dirty_cell.replace("\x02", "")
+    assert rows == [(expected_cell, "B1"), ("A2", "B2")]
+    assert "\x02" not in rows[0][0]
