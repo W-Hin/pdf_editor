@@ -53,6 +53,7 @@ jobs:
           --collect-all uvicorn --collect-all fastapi --collect-all starlette
           --add-data "web/frontend/dist;frontend/dist"
           --add-data "VERSION;."
+          --add-data "ocr_binaries;ocr_binaries"
           -y web/launch.py
 
       - name: Build the installer (Inno Setup)

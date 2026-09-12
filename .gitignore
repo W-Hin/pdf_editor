@@ -9,3 +9,4 @@ build/
 web/frontend/node_modules/
 web/frontend/dist/
 installer_output/
+ocr_binaries/
