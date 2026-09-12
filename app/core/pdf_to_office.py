@@ -1,3 +1,4 @@
+import fitz
 import openpyxl
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from pptx import Presentation
@@ -67,7 +68,10 @@ def pdf_to_pptx(input_path: str, output_path: str) -> None:
                 slide_size_set = True
 
             slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank layout
-            blocks = page.get_text("dict")["blocks"]
+            # See the identical comment in app/core/compare_pdf.py's
+            # extract_page_texts for why an explicit clip=INFINITE_RECT is
+            # needed here rather than the default get_text("dict").
+            blocks = page.get_textpage(clip=fitz.INFINITE_RECT()).extractDICT()["blocks"]
             for block in blocks:
                 if "lines" not in block:
                     continue  # an image block, not text

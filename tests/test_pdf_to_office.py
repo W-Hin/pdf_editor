@@ -118,6 +118,71 @@ def test_pdf_to_pptx_skips_image_blocks(tmp_path):
     assert shapes[0].text_frame.paragraphs[0].runs[0].text == "Some text"
 
 
+def _build_rotated_ocr_pdf(tmp_path, ocr_pdf_fn):
+    """Build a page with real text, rotate its raster 90 degrees, OCR it via
+    this app's own ocr_pdf (which always passes rotate_pages=True) - this is
+    the exact scenario that silently drops text under PyMuPDF's default
+    clip, verified this session."""
+    import io
+
+    from PIL import Image
+
+    sentence_block = (
+        "This is a longer paragraph of text used to verify automatic page "
+        "orientation detection. " * 6
+    )
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_textbox(fitz.Rect(72, 72, 540, 720), sentence_block, fontsize=12)
+    zoom = 300 / 72
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+    png_bytes = pix.tobytes("png")
+    doc.close()
+
+    img = Image.open(io.BytesIO(png_bytes))
+    rotated = img.rotate(90, expand=True)
+    buf = io.BytesIO()
+    rotated.save(buf, format="PNG")
+
+    out = fitz.open()
+    out_page = out.new_page(width=792, height=612)
+    out_page.insert_image(out_page.rect, stream=buf.getvalue())
+    input_path = tmp_path / "sideways_input.pdf"
+    out.save(str(input_path))
+    out.close()
+
+    ocr_output = tmp_path / "ocred.pdf"
+    ocr_pdf_fn(str(input_path), str(ocr_output), languages=["eng"], convert_to_pdfa=False)
+    return str(ocr_output)
+
+
+def test_pdf_to_pptx_builds_textboxes_from_a_rotated_ocred_page(tmp_path):
+    # Regression test for the bug found during the OCR feature review: a page
+    # auto-rotated by app/core/ocr.py's ocr_pdf (rotate_pages=True) gets a
+    # real, correctly-embedded invisible OCR text layer whose glyphs sit
+    # outside MuPDF's default get_text("dict") clip (the page's own computed
+    # bounding box), so the old code produced zero text shapes instead of a
+    # textbox with the OCR'd sentence. Verified this session with a real
+    # ocrmypdf run on a sideways-rotated scanned page.
+    from app.core.ocr import ocr_pdf
+
+    input_path = _build_rotated_ocr_pdf(tmp_path, ocr_pdf)
+
+    output_path = tmp_path / "output.pptx"
+    pdf_to_pptx(input_path, str(output_path))
+
+    prs = Presentation(str(output_path))
+    shapes = list(prs.slides[0].shapes)
+    assert len(shapes) >= 1
+    all_text = "".join(
+        run.text
+        for shape in shapes
+        for para in shape.text_frame.paragraphs
+        for run in para.runs
+    )
+    assert "verify automatic page orientation detection" in all_text
+
+
 def test_pdf_to_pptx_raises_for_missing_file(tmp_path):
     with pytest.raises(PDFError):
         pdf_to_pptx(str(tmp_path / "does_not_exist.pdf"), str(tmp_path / "output.pptx"))
