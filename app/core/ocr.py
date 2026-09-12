@@ -5,6 +5,7 @@ import ocrmypdf
 import ocrmypdf.exceptions
 
 from app.core.errors import PDFError
+from app.core.pdf_ops import open_pdf
 
 _binaries_ensured = False
 
@@ -36,9 +37,7 @@ def _ensure_ocr_binaries_on_path() -> None:
 
 
 def _count_pages_with_text(path: str) -> int:
-    import fitz
-
-    doc = fitz.open(path)
+    doc = open_pdf(path)
     try:
         return sum(1 for page in doc if page.get_text().strip())
     finally:

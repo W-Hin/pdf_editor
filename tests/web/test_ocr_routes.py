@@ -42,3 +42,22 @@ def test_pdf_to_pdfa_route_succeeds():
     response = client.post("/api/tools/pdf-to-pdfa", json={"file_id": file_id})
     assert response.status_code == 200
     assert len(response.json()["outputs"]) == 1
+
+
+def test_ocr_route_rejects_encrypted_file_with_422_not_500():
+    # Reproduces the reviewer's exact repro: run a plain PDF through Protect
+    # to get a genuinely-encrypted output, then submit that output's id to
+    # the OCR route (storage.resolve_file accepts any existing output's id
+    # for any tool route). Before the fix, _count_pages_with_text's bare
+    # fitz.open() let PyMuPDF's exception escape unwrapped as a raw 500.
+    file_id = _upload_image_only_pdf()
+    protect_response = client.post("/api/tools/protect", json={"file_id": file_id, "password": "hunter2"})
+    assert protect_response.status_code == 200
+    encrypted_id = protect_response.json()["outputs"][0]["id"]
+
+    response = client.post(
+        "/api/tools/ocr", json={"file_id": encrypted_id, "languages": ["eng"], "convert_to_pdfa": False}
+    )
+
+    assert response.status_code == 422
+    assert "password-protected" in response.json()["detail"]

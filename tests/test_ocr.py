@@ -3,6 +3,7 @@ import shutil
 from pathlib import Path
 
 import fitz
+import pikepdf
 import pytest
 
 from app.core.errors import PDFError
@@ -109,6 +110,17 @@ def test_ocr_pdf_rejects_empty_language_list(tmp_path):
 
     with pytest.raises(PDFError):
         ocr_pdf(str(input_path), str(tmp_path / "output.pdf"), languages=[], convert_to_pdfa=False)
+
+
+def test_ocr_pdf_raises_pdferror_for_encrypted_file(tmp_path):
+    input_path = tmp_path / "encrypted.pdf"
+    pdf = pikepdf.new()
+    pdf.add_blank_page(page_size=(612, 792))
+    pdf.save(str(input_path), encryption=pikepdf.Encryption(user="secret123", owner="secret123", R=6))
+    pdf.close()
+
+    with pytest.raises(PDFError):
+        ocr_pdf(str(input_path), str(tmp_path / "output.pdf"), languages=["eng"], convert_to_pdfa=False)
 
 
 def test_ocr_pdf_uses_only_vendored_binaries(tmp_path, monkeypatch):
