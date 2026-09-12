@@ -27,7 +27,14 @@ _DIFF_GRID_CELL_PX = 20
 def extract_page_texts(path: str) -> list[str]:
     doc = open_pdf(path)
     try:
-        return [doc[i].get_text() for i in range(doc.page_count)]
+        # Explicit clip=INFINITE_RECT (rather than the default get_text(),
+        # which clips to the page's own computed bounding box) is required
+        # here: a page that's been auto-rotated by this app's own OCR tool
+        # (app/core/ocr.py's rotate_pages=True) gets a real, correctly-
+        # embedded invisible text layer whose glyphs MuPDF's default clip
+        # excludes, silently returning empty text instead of an error.
+        # Verified this session: this has zero effect on normal pages.
+        return [doc[i].get_textpage(clip=fitz.INFINITE_RECT()).extractText() for i in range(doc.page_count)]
     finally:
         doc.close()
 
