@@ -74,3 +74,18 @@ def ocr_pdf(input_path: str, output_path: str, languages: list[str], convert_to_
     pages_skipped = pages_with_text_before
     pages_ocred = total_pages - pages_skipped
     return {"pages_ocred": pages_ocred, "pages_skipped": pages_skipped}
+
+
+def pdf_to_pdfa(input_path: str, output_path: str) -> None:
+    _ensure_ocr_binaries_on_path()
+    try:
+        ocrmypdf.ocr(
+            input_path,
+            output_path,
+            skip_text=True,
+            tesseract_timeout=0,
+            output_type="pdfa",
+            progress_bar=False,
+        )
+    except ocrmypdf.exceptions.ExitCodeException as exc:
+        raise PDFError(f"PDF/A conversion failed: {exc}") from exc

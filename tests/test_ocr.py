@@ -182,3 +182,38 @@ def test_ensure_ocr_binaries_on_path_wins_priority_over_competing_binaries(tmp_p
     assert gswin64c_resolved is not None and ocr_binaries_dir in gswin64c_resolved
     assert str(fake_bin_dir) not in tesseract_resolved
     assert str(fake_bin_dir) not in gswin64c_resolved
+
+
+from app.core.ocr import pdf_to_pdfa
+
+
+def test_pdf_to_pdfa_converts_text_only_document_without_ocr(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 100), "This document already has real text.", fontsize=14)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    pdf_to_pdfa(str(input_path), str(output_path))
+
+    assert output_path.exists()
+    after = fitz.open(str(output_path))
+    assert "This document already has real text." in after[0].get_text()
+    after.close()
+    assert _has_pdfa_identifier(str(output_path))
+
+
+def test_pdf_to_pdfa_on_image_only_document_does_not_ocr(tmp_path):
+    # pdf_to_pdfa is a pure format conversion - it must NOT add a text layer,
+    # even to a page that has none (that's ocr_pdf's job, not this one's).
+    input_path = tmp_path / "input.pdf"
+    _make_image_only_pdf(input_path, text="Should not be OCR'd by pdf_to_pdfa.")
+
+    output_path = tmp_path / "output.pdf"
+    pdf_to_pdfa(str(input_path), str(output_path))
+
+    after = fitz.open(str(output_path))
+    assert after[0].get_text().strip() == ""
+    after.close()
