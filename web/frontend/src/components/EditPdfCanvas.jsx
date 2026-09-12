@@ -243,6 +243,18 @@ const STROKE_WIDTHS = { thin: 1, medium: 3, thick: 6 };
 // so a stray click never commits a degenerate element the backend then rejects.
 const MIN_DRAG_FRACTION = 0.02;
 
+// Nudge step sizes, as fractions of the page (element coordinates are
+// stored as 0-1 fractions, not pixel counts). Reasoned against
+// pasteClipboard's own OFFSET = 0.03 (a one-time diagonal "paste nearby"
+// jump) as a reference point: on a typical on-screen render of a US Letter
+// page (612x792pt, commonly rendered somewhere around 600-900px tall),
+// 0.004 works out to roughly 3-4px per keypress (a precise, perceptible
+// nudge, not a sub-pixel no-op), and 0.02 works out to roughly 16px (a
+// clear, deliberate move, slightly more conservative than paste's one-time
+// offset since nudge is meant to feel incremental and repeatable).
+const NUDGE_SMALL_STEP = 0.004;
+const NUDGE_BIG_STEP = 0.02;
+
 // Alpha suffix for an 8-digit hex colour, matching the 0.4 fill opacity
 // edit_pdf renders highlights at. Baking translucency into the colour (rather
 // than using CSS `opacity`) keeps the element's children — the remove button —
@@ -445,7 +457,25 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
       if (textDraft || runEditor || isTypingTarget(document.activeElement)) return;
       const ctrl = e.ctrlKey || e.metaKey;
       if (!ctrl) {
-        if (e.key === "Escape") setSelectedId(null);
+        if (e.key === "Escape") {
+          setSelectedId(null);
+        } else if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
+          e.preventDefault();
+          removeElement(selectedId);
+        } else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key) && selectedId) {
+          const el = elements.find((item) => item.id === selectedId);
+          if (el && el.type !== "text_edit") {
+            e.preventDefault();
+            const step = e.shiftKey ? NUDGE_BIG_STEP : NUDGE_SMALL_STEP;
+            let dx = 0;
+            let dy = 0;
+            if (e.key === "ArrowLeft") dx = -step;
+            else if (e.key === "ArrowRight") dx = step;
+            else if (e.key === "ArrowUp") dy = -step;
+            else dy = step;
+            commitElements(elements.map((item) => (item.id === selectedId ? moveElement(item, dx, dy) : item)));
+          }
+        }
         return;
       }
       if (e.key === "z" || e.key === "Z") {
