@@ -48,6 +48,35 @@ function newTextFontFamilyCss(family) {
   return "Helvetica, Arial, sans-serif";
 }
 
+// Renders a row of preset color swatch buttons plus a native color picker
+// input for anything else. The native <input type="color"> is genuinely
+// free (built into every browser, zero new dependencies) and produces the
+// exact #rrggbb hex format the backend already accepts with no whitelist —
+// verified against app/core/pdf_ops.py's _hex_to_rgb this session.
+function renderColorOptions(colors, activeColor, onPick) {
+  return (
+    <>
+      {colors.map((c) => (
+        <button
+          key={c}
+          type="button"
+          className={c === activeColor ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active" : "edit-pdf-canvas__color-swatch"}
+          style={{ background: c }}
+          onClick={() => onPick(c)}
+          aria-label={`Color ${c}`}
+        />
+      ))}
+      <input
+        type="color"
+        className="edit-pdf-canvas__color-picker-input"
+        value={activeColor}
+        onChange={(e) => onPick(e.target.value)}
+        aria-label="Custom color"
+      />
+    </>
+  );
+}
+
 // Mirrors app/core/pdf_ops.py's _closest_base14_family exactly, so a
 // freshly-opened run's default style is the closest base-14 APPROXIMATION
 // of its actually-detected font (serif -> times, monospace -> courier, else
@@ -206,7 +235,7 @@ function flattenSegmentsForTyping(segments) {
   return { text, family: first.family, bold: first.bold, italic: first.italic, size: first.size };
 }
 
-const MARKUP_COLORS = ["#1f2937", "#e03131", "#f08c00", "#2f9e44", "#1971c2", "#9c36b5"];
+const MARKUP_COLORS = ["#1f2937", "#e03131", "#f08c00", "#2f9e44", "#1971c2", "#9c36b5", "#ffffff"];
 const STROKE_WIDTHS = { thin: 1, medium: 3, thick: 6 };
 
 // Smallest drag (as a fraction of the page) that counts as a real gesture
@@ -1407,16 +1436,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
           >
             <TextAUnderline size={14} weight="bold" />
           </button>
-          {MARKUP_COLORS.map((c) => (
-            <button
-              key={c}
-              type="button"
-              className={c === textDraft.color ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active" : "edit-pdf-canvas__color-swatch"}
-              style={{ background: c }}
-              onClick={() => setTextDraft((d) => ({ ...d, color: c }))}
-              aria-label={`Color ${c}`}
-            />
-          ))}
+          {renderColorOptions(MARKUP_COLORS, textDraft.color, (c) => setTextDraft((d) => ({ ...d, color: c })))}
           <button
             type="button"
             className={textDraft.align === "left" ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
@@ -1757,22 +1777,13 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
       {activeMode === "draw" && (
         <div className="edit-pdf-canvas__style-bar">
-          {MARKUP_COLORS.map((c) => (
-            <button
-              key={c}
-              type="button"
-              className={
-                (selectedElementForStyle?.type === "stroke" ? selectedElementForStyle.color === c : c === drawColor)
-                  ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active"
-                  : "edit-pdf-canvas__color-swatch"
-              }
-              style={{ background: c }}
-              onClick={() => {
-                if (!updateSelectedElementStyle("stroke", { color: c })) setDrawColor(c);
-              }}
-              aria-label={`Color ${c}`}
-            />
-          ))}
+          {renderColorOptions(
+            MARKUP_COLORS,
+            selectedElementForStyle?.type === "stroke" ? selectedElementForStyle.color : drawColor,
+            (c) => {
+              if (!updateSelectedElementStyle("stroke", { color: c })) setDrawColor(c);
+            }
+          )}
           {Object.keys(STROKE_WIDTHS).map((w) => (
             <button
               key={w}
@@ -1804,22 +1815,13 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               {s}
             </button>
           ))}
-          {MARKUP_COLORS.map((c) => (
-            <button
-              key={c}
-              type="button"
-              className={
-                (selectedElementForStyle?.type === "shape" ? selectedElementForStyle.color === c : c === shapeColor)
-                  ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active"
-                  : "edit-pdf-canvas__color-swatch"
-              }
-              style={{ background: c }}
-              onClick={() => {
-                if (!updateSelectedElementStyle("shape", { color: c })) setShapeColor(c);
-              }}
-              aria-label={`Color ${c}`}
-            />
-          ))}
+          {renderColorOptions(
+            MARKUP_COLORS,
+            selectedElementForStyle?.type === "shape" ? selectedElementForStyle.color : shapeColor,
+            (c) => {
+              if (!updateSelectedElementStyle("shape", { color: c })) setShapeColor(c);
+            }
+          )}
           {Object.keys(STROKE_WIDTHS).map((w) => (
             <button
               key={w}
@@ -1853,22 +1855,13 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
       {activeMode === "highlight" && (
         <div className="edit-pdf-canvas__style-bar">
-          {["#ffd43b", "#69db7c", "#66d9e8", "#ff8787"].map((c) => (
-            <button
-              key={c}
-              type="button"
-              className={
-                (selectedElementForStyle?.type === "highlight" ? selectedElementForStyle.color === c : c === highlightColor)
-                  ? "edit-pdf-canvas__color-swatch edit-pdf-canvas__color-swatch--active"
-                  : "edit-pdf-canvas__color-swatch"
-              }
-              style={{ background: c }}
-              onClick={() => {
-                if (!updateSelectedElementStyle("highlight", { color: c })) setHighlightColor(c);
-              }}
-              aria-label={`Color ${c}`}
-            />
-          ))}
+          {renderColorOptions(
+            ["#ffd43b", "#69db7c", "#66d9e8", "#ff8787"],
+            selectedElementForStyle?.type === "highlight" ? selectedElementForStyle.color : highlightColor,
+            (c) => {
+              if (!updateSelectedElementStyle("highlight", { color: c })) setHighlightColor(c);
+            }
+          )}
         </div>
       )}
 

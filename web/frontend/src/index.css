@@ -877,6 +877,35 @@ h1 {
   border-color: var(--color-accent);
 }
 
+/* Reset the native color input's default browser chrome (padding, border)
+   so it reads as one more circular swatch alongside the preset buttons,
+   rather than a visually distinct rectangular control. */
+.edit-pdf-canvas__color-picker-input {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 2px solid var(--color-border);
+  border-radius: 50%;
+  cursor: pointer;
+  overflow: hidden;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.edit-pdf-canvas__color-picker-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.edit-pdf-canvas__color-picker-input::-webkit-color-swatch {
+  border: none;
+  border-radius: 50%;
+}
+
+.edit-pdf-canvas__color-picker-input::-moz-color-swatch {
+  border: none;
+  border-radius: 50%;
+}
+
 .edit-pdf-canvas__width-button {
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--color-border);
