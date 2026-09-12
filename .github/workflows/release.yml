@@ -39,9 +39,38 @@ jobs:
           pip install -r requirements.txt
 
       - name: Install and vendor OCR binaries
+        shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           choco install tesseract ghostscript -y --no-progress
+
+          # Chocolatey's `tesseract` package (like the winget package used on the
+          # dev machine) only bundles eng + osd. The other 7 languages this
+          # feature promises (see the OCR tool's language checkboxes) are
+          # downloaded here from the official tessdata_fast repo and handed to
+          # vendor_ocr_binaries.py via TESSDATA_FALLBACK_DIR, the mechanism it
+          # already supports for exactly this case.
+          $fallbackDir = "$env:RUNNER_TEMP\extra_tessdata"
+          New-Item -ItemType Directory -Force -Path $fallbackDir | Out-Null
+          $extraLangs = @("spa", "fra", "deu", "por", "chi_sim", "jpn", "ara")
+          foreach ($lang in $extraLangs) {
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/$lang.traineddata" -OutFile "$fallbackDir\$lang.traineddata"
+          }
+
+          $env:TESSDATA_FALLBACK_DIR = $fallbackDir
           python scripts/vendor_ocr_binaries.py
+
+          # Belt and suspenders: vendor_ocr_binaries.py only warns (does not
+          # fail) on missing optional languages, so verify here and fail the
+          # build loudly rather than silently shipping partial-language OCR.
+          $tessdataDir = "ocr_binaries/tesseract/tessdata"
+          $expectedLangs = @("eng", "osd", "spa", "fra", "deu", "por", "chi_sim", "jpn", "ara")
+          $missing = $expectedLangs | Where-Object { -not (Test-Path "$tessdataDir/$_.traineddata") }
+          if ($missing.Count -gt 0) {
+            throw "Vendored tessdata is missing language file(s): $($missing -join ', '). Expected all $($expectedLangs.Count) languages under $tessdataDir."
+          }
+          Write-Output "Verified all $($expectedLangs.Count) tessdata languages are present: $($expectedLangs -join ', ')"
 
       - name: Run the test suite
         run: pytest -q
