@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.core.convert import convert_to_word
 from app.core.errors import PDFError
+from app.core.ocr import ocr_pdf, pdf_to_pdfa
 from app.core.pdf_ops import (
     add_page_numbers,
     add_watermark,
@@ -369,6 +370,41 @@ def pdf_to_xlsx_route(req: ToXlsxRequest):
     output_path = storage.output_path_for(stem, "", ".xlsx")
     pdf_to_xlsx(input_path, str(output_path))
     return _output_response([output_path], "PDF to Excel", [Path(input_path).name])
+
+
+class OcrRequest(BaseModel):
+    file_id: str
+    languages: list[str]
+    convert_to_pdfa: bool = False
+
+
+@router.post("/ocr")
+def ocr_route(req: OcrRequest):
+    input_path = str(storage.resolve_file(req.file_id))
+    stem = Path(input_path).stem
+    output_path = storage.output_path_for(stem, "_ocr")
+    result = ocr_pdf(input_path, str(output_path), req.languages, req.convert_to_pdfa)
+    if result["pages_skipped"] == 0:
+        message = f"OCR'd all {result['pages_ocred']} page{'s' if result['pages_ocred'] != 1 else ''}."
+    else:
+        message = (
+            f"OCR'd {result['pages_ocred']} of {result['pages_ocred'] + result['pages_skipped']} pages "
+            f"— {result['pages_skipped']} already had text."
+        )
+    return _output_response([output_path], "OCR PDF", [Path(input_path).name], message=message)
+
+
+class PdfToPdfaRequest(BaseModel):
+    file_id: str
+
+
+@router.post("/pdf-to-pdfa")
+def pdf_to_pdfa_route(req: PdfToPdfaRequest):
+    input_path = str(storage.resolve_file(req.file_id))
+    stem = Path(input_path).stem
+    output_path = storage.output_path_for(stem, "_pdfa")
+    pdf_to_pdfa(input_path, str(output_path))
+    return _output_response([output_path], "PDF to PDF/A", [Path(input_path).name])
 
 
 class ImagesToPdfRequest(BaseModel):
