@@ -408,59 +408,95 @@ export default function ToolView() {
 
       {renderPreview()}
 
-      {config.fields.map((field) => (
-        <label key={field.name} className="field">
-          {field.label}
-          {field.type === "select" ? (
-            <select
-              value={fieldValues[field.name]}
-              onChange={(e) => {
-                const raw = e.target.value;
-                updateField(field.name, typeof field.default === "number" ? Number(raw) : raw);
-              }}
-            >
-              {field.options.map((opt) => {
-                const optValue = typeof opt === "object" ? opt.value : opt;
-                const optLabel = typeof opt === "object" ? opt.label : opt;
-                return (
-                  <option key={optValue} value={optValue}>
-                    {optLabel}
-                  </option>
-                );
-              })}
-            </select>
-          ) : field.type === "range" ? (
+      {config.fields.map((field) =>
+        field.type === "checkbox-group" ? (
+          <div key={field.name} className="field field--checkbox-group">
+            <span className="field__label">{field.label}</span>
+            {field.options.map((opt) => (
+              <label key={opt.value} className="field__checkbox-option">
+                <input
+                  type="checkbox"
+                  checked={fieldValues[field.name].includes(opt.value)}
+                  onChange={(e) => {
+                    const current = fieldValues[field.name];
+                    const next = e.target.checked
+                      ? [...current, opt.value]
+                      : current.filter((v) => v !== opt.value);
+                    updateField(field.name, next);
+                  }}
+                />
+                {opt.label}
+              </label>
+            ))}
+          </div>
+        ) : field.type === "checkbox" ? (
+          <label key={field.name} className="field field--checkbox">
             <input
-              type="range"
-              min={field.min}
-              max={field.max}
-              value={fieldValues[field.name]}
-              onChange={(e) => updateField(field.name, Number(e.target.value))}
+              type="checkbox"
+              checked={fieldValues[field.name]}
+              onChange={(e) => updateField(field.name, e.target.checked)}
             />
-          ) : field.type === "number" ? (
-            <input
-              type="number"
-              min={field.min}
-              step={1}
-              value={fieldValues[field.name]}
-              onChange={(e) => updateField(field.name, Number(e.target.value))}
-            />
-          ) : field.type === "password" ? (
-            <input
-              type="password"
-              maxLength={field.maxLength}
-              value={fieldValues[field.name]}
-              onChange={(e) => updateField(field.name, e.target.value)}
-            />
-          ) : (
-            <input
-              type="text"
-              value={fieldValues[field.name]}
-              onChange={(e) => updateField(field.name, e.target.value)}
-            />
-          )}
-        </label>
-      ))}
+            {field.label}
+            {field.tooltip && (
+              <span className="field__tooltip" title={field.tooltip}>
+                <Info size={14} weight="regular" />
+              </span>
+            )}
+          </label>
+        ) : (
+          <label key={field.name} className="field">
+            {field.label}
+            {field.type === "select" ? (
+              <select
+                value={fieldValues[field.name]}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  updateField(field.name, typeof field.default === "number" ? Number(raw) : raw);
+                }}
+              >
+                {field.options.map((opt) => {
+                  const optValue = typeof opt === "object" ? opt.value : opt;
+                  const optLabel = typeof opt === "object" ? opt.label : opt;
+                  return (
+                    <option key={optValue} value={optValue}>
+                      {optLabel}
+                    </option>
+                  );
+                })}
+              </select>
+            ) : field.type === "range" ? (
+              <input
+                type="range"
+                min={field.min}
+                max={field.max}
+                value={fieldValues[field.name]}
+                onChange={(e) => updateField(field.name, Number(e.target.value))}
+              />
+            ) : field.type === "number" ? (
+              <input
+                type="number"
+                min={field.min}
+                step={1}
+                value={fieldValues[field.name]}
+                onChange={(e) => updateField(field.name, Number(e.target.value))}
+              />
+            ) : field.type === "password" ? (
+              <input
+                type="password"
+                maxLength={field.maxLength}
+                value={fieldValues[field.name]}
+                onChange={(e) => updateField(field.name, e.target.value)}
+              />
+            ) : (
+              <input
+                type="text"
+                value={fieldValues[field.name]}
+                onChange={(e) => updateField(field.name, e.target.value)}
+              />
+            )}
+          </label>
+        )
+      )}
 
       <button
         className="run-button"
@@ -471,7 +507,8 @@ export default function ToolView() {
           (config.preview === "redact" && redactions.length === 0) ||
           (config.preview === "edit-pdf" && elements.length === 0) ||
           (config.preview === "sign" && elements.length === 0) ||
-          (config.preview === "fill-form" && formValues.length === 0)
+          (config.preview === "fill-form" && formValues.length === 0) ||
+          config.fields.some((f) => f.required && fieldValues[f.name].length === 0)
         }
         onClick={handleRun}
       >

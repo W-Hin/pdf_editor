@@ -26,6 +26,8 @@ import {
   Wrench,
   Lock,
   LockOpen,
+  Scan,
+  Archive,
 } from "@phosphor-icons/react";
 import { TOOL_CONFIGS } from "../toolConfigs";
 import RecentFiles from "./RecentFiles.jsx";
@@ -57,6 +59,8 @@ const TOOL_ICONS = {
   repair: Wrench,
   protect: Lock,
   "unlock-pdf": LockOpen,
+  ocr: Scan,
+  "pdf-to-pdfa": Archive,
 };
 
 // Tools whose interaction model differs enough from the standard "pick

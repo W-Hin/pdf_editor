@@ -1313,6 +1313,35 @@ h1 {
   accent-color: var(--color-accent);
 }
 
+.field--checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-foreground);
+}
+
+.field__checkbox-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 400;
+}
+
+.field__checkbox-option input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+
+.field__tooltip {
+  display: inline-flex;
+  align-items: center;
+  color: var(--color-muted-foreground);
+  cursor: help;
+}
+
 /* Inside the markup style bar the field is a flex item in a row, so .field's
    own vertical margin would only make the bar taller. */
 .edit-pdf-canvas__style-bar .field--checkbox {
