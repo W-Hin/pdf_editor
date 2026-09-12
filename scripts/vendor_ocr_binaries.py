@@ -11,6 +11,7 @@ Source locations expected (Windows default install paths):
   Ghostscript: C:\\Program Files\\gs\\gs<version>\\ (auto-detected by glob)
 """
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -20,6 +21,15 @@ DEST = REPO_ROOT / "ocr_binaries"
 
 TESSERACT_SRC = Path(r"C:\Program Files\Tesseract-OCR")
 TESSDATA_LANGUAGES = ["eng", "osd", "spa", "fra", "deu", "por", "chi_sim", "jpn", "ara"]
+
+# Optional fallback source directory for .traineddata files not present under
+# TESSERACT_SRC/tessdata (e.g. language packs downloaded straight from the
+# official tesseract-ocr/tessdata_fast GitHub repo, staged locally instead of
+# installed system-wide). Set TESSDATA_FALLBACK_DIR to that directory before
+# re-running this script; each language still sourced from TESSERACT_SRC take
+# priority, and where a language comes from is printed so the run stays
+# self-documenting.
+TESSDATA_FALLBACK_DIR_ENV = "TESSDATA_FALLBACK_DIR"
 
 GS_ROOT = Path(r"C:\Program Files\gs")
 
@@ -47,20 +57,36 @@ def vendor_tesseract() -> None:
 
     tessdata_dest = dest / "tessdata"
     tessdata_dest.mkdir()
+    fallback_dir_raw = os.environ.get(TESSDATA_FALLBACK_DIR_ENV)
+    fallback_dir = Path(fallback_dir_raw) if fallback_dir_raw else None
+
     missing_languages = []
+    sourced_from_fallback = []
     for lang in TESSDATA_LANGUAGES:
         src_file = TESSERACT_SRC / "tessdata" / f"{lang}.traineddata"
-        if not src_file.exists():
-            missing_languages.append(lang)
+        if src_file.exists():
+            shutil.copy2(src_file, tessdata_dest / src_file.name)
             continue
-        shutil.copy2(src_file, tessdata_dest / src_file.name)
+        fallback_file = fallback_dir / f"{lang}.traineddata" if fallback_dir else None
+        if fallback_file is not None and fallback_file.exists():
+            shutil.copy2(fallback_file, tessdata_dest / fallback_file.name)
+            sourced_from_fallback.append(lang)
+            continue
+        missing_languages.append(lang)
     if "eng" in missing_languages:
         sys.exit(f"Missing required trained-data file: {TESSERACT_SRC / 'tessdata' / 'eng.traineddata'}")
+    if sourced_from_fallback:
+        print(
+            f"NOTE: {len(sourced_from_fallback)} language pack(s) not installed under "
+            f"{TESSERACT_SRC / 'tessdata'}, sourced instead from {TESSDATA_FALLBACK_DIR_ENV}="
+            f"{fallback_dir}: {', '.join(sourced_from_fallback)}"
+        )
     if missing_languages:
         print(
             f"WARNING: {len(missing_languages)} language pack(s) not installed on this machine, "
             f"skipped: {', '.join(missing_languages)}. Install them under "
-            f"{TESSERACT_SRC / 'tessdata'} and re-run this script to add them."
+            f"{TESSERACT_SRC / 'tessdata'} (or point {TESSDATA_FALLBACK_DIR_ENV} at a staging "
+            "directory containing them) and re-run this script to add them."
         )
     shutil.copytree(TESSERACT_SRC / "tessdata" / "configs", tessdata_dest / "configs")
     shutil.copytree(TESSERACT_SRC / "tessdata" / "tessconfigs", tessdata_dest / "tessconfigs")

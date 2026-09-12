@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -8,11 +9,18 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TESSERACT_DIR = REPO_ROOT / "ocr_binaries" / "tesseract"
 GHOSTSCRIPT_BIN_DIR = REPO_ROOT / "ocr_binaries" / "ghostscript" / "bin"
 
+TESSDATA_LANGUAGES = ["eng", "osd", "spa", "fra", "deu", "por", "chi_sim", "jpn", "ara"]
+
 
 def test_vendored_tesseract_and_ghostscript_exist():
     assert (TESSERACT_DIR / "tesseract.exe").exists(), "Run scripts/vendor_ocr_binaries.py first."
     assert (GHOSTSCRIPT_BIN_DIR / "gswin64c.exe").exists(), "Run scripts/vendor_ocr_binaries.py first."
-    assert (TESSERACT_DIR / "tessdata" / "eng.traineddata").exists()
+    for lang in TESSDATA_LANGUAGES:
+        assert (TESSERACT_DIR / "tessdata" / f"{lang}.traineddata").exists(), (
+            f"Missing vendored {lang}.traineddata. Run scripts/vendor_ocr_binaries.py "
+            "(with TESSDATA_FALLBACK_DIR set if a language pack isn't installed under "
+            r"C:\Program Files\Tesseract-OCR\tessdata)."
+        )
     assert (TESSERACT_DIR / "tessdata" / "configs").is_dir()
     assert (TESSERACT_DIR / "tessdata" / "tessconfigs").is_dir()
     assert (TESSERACT_DIR / "tessdata" / "pdf.ttf").exists()
@@ -71,7 +79,12 @@ def test_vendored_ocrmypdf_end_to_end_with_isolated_path(tmp_path):
         f"ocrmypdf.ocr({str(input_path)!r}, {str(output_path)!r}, "
         "skip_text=True, output_type='pdfa', progress_bar=False)\n"
     )
-    result = subprocess.run(["python", "-c", script], capture_output=True, text=True)
+    # Use sys.executable, not the bare string "python": on Windows a venv's
+    # python.exe (using the newer venvlauncher.exe stub) re-execs the base
+    # interpreter, so a bare "python" on PATH in a child subprocess can
+    # resolve to the base/system install instead of this venv. sys.executable
+    # guarantees the child uses the exact interpreter running pytest itself.
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert output_path.exists()
 
