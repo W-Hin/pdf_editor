@@ -38,7 +38,13 @@ empirically end-to-end:
   `Tesseract-OCR`/`gs` (confirmed by reading `ocrmypdf/subprocess/_windows.py`'s `SHIMS` list).
   `PATH` is checked first in that list, so explicitly prepending our bundled binaries' folder to
   `os.environ["PATH"]` at app startup is what guarantees our tested, vendored copies are used
-  rather than whatever might (or might not) already be installed on an end user's machine.
+  rather than whatever might (or might not) already be installed on an end user's machine. This
+  was proven, not just reasoned about: a dedicated isolation test set `os.environ["PATH"]` (via
+  Python, before importing `ocrmypdf` — matching real app startup order) to point at ONLY a
+  trimmed copy of each binary, with no access to the machine's actual Tesseract/Ghostscript
+  installs at all, and confirmed both `ocrmypdf.subprocess`'s own debug log (showing it resolved
+  and ran the trimmed copies' exact paths) and the resulting output (correct OCR'd text, valid
+  PDF/A-2b) end-to-end.
 - A trimmed Tesseract runtime (just `tesseract.exe` + its DLLs + trained-data files, dropping the
   training-tool executables, Java-based `ScrollView` GUI, and docs the full installer ships) is
   ~160MB — dominated by a single unavoidable 101MB `libtesseract-5.dll` (the actual OCR engine,
@@ -122,7 +128,12 @@ Both functions:
 ### Packaging
 
 A new `ocr_binaries/` folder (top-level, git-ignored like `venv/`) holds the vendored runtime:
-`tesseract.exe` + its DLLs + `tessdata/{eng,osd,spa,fra,deu,por,chi_sim,jpn,ara}.traineddata`, and
+`tesseract.exe` + its DLLs + `tessdata/{eng,osd,spa,fra,deu,por,chi_sim,jpn,ara}.traineddata` **plus
+`tessdata/configs/`, `tessdata/tessconfigs/`, and `tessdata/pdf.ttf`** (40KB total, negligible —
+found only after a dedicated isolation test: a `.traineddata`-only `tessdata/` folder fails with
+`TesseractConfigError: Error occurred while parsing a Tesseract configuration file`, because
+`ocrmypdf`'s hocr/pdf output modes need Tesseract's own plain-text config files and PDF-embedding
+font, not just the trained-data models), and
 `gswin64c.exe` + its DLL + `Resource/`, `lib/`, `iccprofiles/` (the exact file sets verified this
 session — `doc/`, `examples/`, training-tool executables, and the 32-bit Ghostscript binary are
 excluded). Populated by a new `scripts/vendor_ocr_binaries.py` (documents exactly which files come
