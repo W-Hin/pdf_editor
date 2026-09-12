@@ -66,7 +66,11 @@ def ocr_pdf(input_path: str, output_path: str, languages: list[str], convert_to_
 
     import fitz
 
-    total_pages = fitz.open(input_path).page_count
+    doc = fitz.open(input_path)
+    try:
+        total_pages = doc.page_count
+    finally:
+        doc.close()
     pages_skipped = pages_with_text_before
     pages_ocred = total_pages - pages_skipped
     return {"pages_ocred": pages_ocred, "pages_skipped": pages_skipped}

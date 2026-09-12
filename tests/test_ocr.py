@@ -1,4 +1,6 @@
 import os
+import shutil
+from pathlib import Path
 
 import fitz
 import pytest
@@ -127,4 +129,56 @@ def test_ocr_pdf_uses_only_vendored_binaries(tmp_path, monkeypatch):
     after = fitz.open(str(output_path))
     assert "This is a scanned-looking test page for OCR verification." in after[0].get_text()
     after.close()
-    assert str((__import__("pathlib").Path(__file__).resolve().parent.parent / "ocr_binaries" / "tesseract")) in os.environ["PATH"]
+
+    # Prove the actual resolution outcome, not just that the vendored path is
+    # present somewhere in the PATH string. shutil.which is the same
+    # resolution mechanism ocrmypdf's Windows fallback code uses internally
+    # (see ocrmypdf/subprocess/_windows.py), so this directly demonstrates
+    # that the app's PATH-prepending wins the ordering race against any
+    # competing system install (PATH, Registry, or otherwise) rather than
+    # merely coexisting with the vendored path in the environment variable.
+    ocr_binaries_dir = str(Path(__file__).resolve().parent.parent / "ocr_binaries")
+    tesseract_resolved = shutil.which("tesseract")
+    gswin64c_resolved = shutil.which("gswin64c")
+    assert tesseract_resolved is not None and ocr_binaries_dir in tesseract_resolved
+    assert gswin64c_resolved is not None and ocr_binaries_dir in gswin64c_resolved
+
+
+def test_ensure_ocr_binaries_on_path_wins_priority_over_competing_binaries(tmp_path, monkeypatch):
+    # The test above proves OCR works correctly on a PATH that has been reset
+    # to contain no competing Tesseract/Ghostscript at all - but that alone
+    # can't distinguish "vendored dirs were prepended" from "vendored dirs
+    # were merely appended somewhere" or even "not added at all, and
+    # something else (e.g. the Windows Registry) supplied the binaries",
+    # since there's nothing on PATH for the vendored copies to lose an
+    # ordering fight against.
+    #
+    # This test closes that gap directly: it places FAKE competing
+    # "tesseract.exe"/"gswin64c.exe" files earlier on PATH than anything
+    # else, simulating a real end-user machine with its own separate
+    # Tesseract/Ghostscript install, then proves _ensure_ocr_binaries_on_path
+    # makes shutil.which - the exact resolution mechanism ocrmypdf's Windows
+    # fallback code uses internally (see ocrmypdf/subprocess/_windows.py) -
+    # resolve to the VENDORED binaries specifically, not the competing ones.
+    # An append-instead-of-prepend implementation would fail this test,
+    # because the fake competing binaries would win the resolution race.
+    import app.core.ocr as ocr_module
+
+    fake_bin_dir = tmp_path / "competing_system_install"
+    fake_bin_dir.mkdir()
+    (fake_bin_dir / "tesseract.exe").write_bytes(b"not the real tesseract")
+    (fake_bin_dir / "gswin64c.exe").write_bytes(b"not the real ghostscript")
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join([str(fake_bin_dir), r"C:\Windows\system32", r"C:\Windows"])
+    )
+    ocr_module._binaries_ensured = False  # reset the memoization for this test
+
+    ocr_module._ensure_ocr_binaries_on_path()
+
+    ocr_binaries_dir = str(Path(__file__).resolve().parent.parent / "ocr_binaries")
+    tesseract_resolved = shutil.which("tesseract")
+    gswin64c_resolved = shutil.which("gswin64c")
+    assert tesseract_resolved is not None and ocr_binaries_dir in tesseract_resolved
+    assert gswin64c_resolved is not None and ocr_binaries_dir in gswin64c_resolved
+    assert str(fake_bin_dir) not in tesseract_resolved
+    assert str(fake_bin_dir) not in gswin64c_resolved
