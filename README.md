@@ -1,9 +1,9 @@
 # PDF Editor
 
-A personal, offline, open-source PDF toolkit — merge, split, remove/extract/reorder
-pages, rotate, crop, add page numbers, watermark, compress, convert PDFs to images
-or Word, and build a PDF from images, all running locally on your own machine. No
-internet connection is used or required.
+A personal, offline, open-source PDF toolkit covering organizing, editing, optimizing,
+and converting PDFs, all running locally on your own machine. No internet connection is
+required — the only thing that ever reaches the network is an optional, best-effort
+check for newer releases, which fails silently if you're offline.
 
 There are two ways to use it:
 
@@ -14,6 +14,18 @@ There are two ways to use it:
 
 Both share the same underlying PDF engine (`app/core/`), so results are identical
 either way — they just differ in the UI.
+
+## Features
+
+- **Organize** — Merge, Split, Remove pages, Extract pages, Reorder pages
+- **Edit** — Rotate, Add watermark, Add page numbers, Crop, Redact, Edit PDF
+  (in-place text/image editing, draw, shapes, highlights), Sign, Fill PDF forms,
+  Compare two PDFs
+- **Optimize** — Compress, Repair a damaged file, Protect with a password, Unlock
+  a password-protected file, OCR (adds a searchable text layer to scanned pages,
+  with optional PDF/A conversion for long-term archiving)
+- **Convert** — PDF to Image, PDF to Word, PDF to Markdown, PDF to PowerPoint,
+  PDF to Excel, Images to PDF
 
 ## Easiest way to get it (Windows, no setup required)
 
@@ -31,6 +43,13 @@ Everything below is for building it from source instead.
 - **Python 3.11+**
 - **Node.js + npm** — only needed for the web app's frontend, and only to build it
   (not needed at runtime once built)
+- **Tesseract + Ghostscript** (only for the OCR/PDF-to-PDF/A tools) — the packaged
+  Windows installer bundles trimmed copies of both, so end users never need to
+  install anything. Building from source instead, `app/core/ocr.py` only looks
+  under a git-ignored `ocr_binaries/` folder at the repo root (it does not fall
+  back to a system-wide install on `PATH`) — install Tesseract and Ghostscript via
+  their normal installers, then run `scripts/vendor_ocr_binaries.py` once to
+  populate that folder. Every other tool works without either.
 
 ## Setup
 
@@ -127,7 +146,8 @@ web/frontend/   — React (Vite) frontend for the web app
 web/launch.py   — starts the web app's local server and opens your browser
 tests/          — pytest suite for both apps
 docs/           — design specs and implementation plans for both builds
-scripts/        — Desktop-shortcut creation script (desktop app)
+scripts/        — Desktop-shortcut creation script, and the one-time OCR-binary
+                  vendoring script used to prepare the packaged installer
 ```
 
 ## Notes
