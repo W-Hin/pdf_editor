@@ -453,9 +453,17 @@ def _page_text_spans(page: fitz.Page) -> list[dict]:
     mediabox space — the space add_redact_annot/insert_text/set_cropbox all
     expect. edit_pdf (Task 3) reuses this exact function so a run_index from
     extract_text_runs always refers to the same span here.
+
+    clip=fitz.INFINITE_RECT() for the same reason compare_pdf.py's
+    extract_page_texts and pdf_to_office.py's pdf_to_pptx need it: PyMuPDF's
+    default text-extraction clip excludes a rotated OCR'd page's invisible
+    text layer entirely (verified empirically — 0 spans with the default
+    clip vs. the expected count with this wider one, on this app's own
+    rotate_pages=True OCR output), which silently made every run on such a
+    page undetectable and unclickable in Edit PDF's text-edit tool.
     """
     spans = []
-    for block in page.get_text("dict")["blocks"]:
+    for block in page.get_textpage(clip=fitz.INFINITE_RECT()).extractDICT()["blocks"]:
         for line in block.get("lines", []):
             for span in line["spans"]:
                 if span["text"].strip():

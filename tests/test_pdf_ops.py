@@ -945,6 +945,49 @@ def test_edit_pdf_text_edit_handles_rotated_page(tmp_path):
     assert "ALPHA KEEP" in text
 
 
+def test_extract_text_runs_finds_text_on_a_rotated_ocred_page(tmp_path):
+    """Regression test for the same clipping bug already fixed this session
+    for Compare PDF (extract_page_texts) and PDF-to-PowerPoint (pdf_to_pptx),
+    but missed here: _page_text_spans's default text-extraction clip excluded
+    a rotated-and-OCR'd page's invisible text layer entirely (verified
+    empirically: 0 spans with the default clip), so a user could never
+    double-click any text on such a page to edit it."""
+    from app.core.ocr import ocr_pdf
+
+    input_path = _build_rotated_ocr_pdf(tmp_path, ocr_pdf)
+    runs = extract_text_runs(input_path, 1)
+    assert len(runs) > 0
+    assert any("This" in r["text"] for r in runs)
+
+
+def test_edit_pdf_text_edit_works_on_a_rotated_ocred_page(tmp_path):
+    """The fix must let edit_pdf actually replace text on such a page too,
+    not just find its runs - exercises the full pipeline (_page_text_spans
+    -> _apply_text_edit -> page.apply_redactions) against the same realistic
+    fixture used for the extraction-only test above."""
+    from app.core.ocr import ocr_pdf
+
+    input_path = _build_rotated_ocr_pdf(tmp_path, ocr_pdf)
+    runs = extract_text_runs(input_path, 1)
+    target = next(r for r in runs if r["text"].strip() == "This")
+
+    output_path = tmp_path / "edited.pdf"
+    edit_pdf(
+        input_path,
+        str(output_path),
+        [{
+            "type": "text_edit", "page": 1, "run_index": target["index"],
+            "segments": [{"text": "That", "family": "helvetica", "bold": False, "italic": False, "size": 11}],
+        }],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    text = result[0].get_text()
+    result.close()
+    assert "That" in text
+
+
 def test_edit_pdf_text_edit_moves_replacement_to_an_overridden_position(tmp_path):
     """Verified independently against a throwaway script before writing this
     (see the movable-text-edit plan) — a naive fraction-to-point conversion
