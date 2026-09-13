@@ -34,12 +34,23 @@ TESSDATA_FALLBACK_DIR_ENV = "TESSDATA_FALLBACK_DIR"
 GS_ROOT = Path(r"C:\Program Files\gs")
 
 
+def _gs_version_key(path: Path) -> tuple[int, ...]:
+    version_str = path.name[len("gs"):]  # "gs10.08.0" -> "10.08.0"
+    parts = []
+    for part in version_str.split("."):
+        try:
+            parts.append(int(part))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
 def find_ghostscript_src() -> Path:
-    candidates = sorted(GS_ROOT.glob("gs*"))
+    candidates = sorted(GS_ROOT.glob("gs*"), key=_gs_version_key)
     if not candidates:
         sys.exit(f"No Ghostscript install found under {GS_ROOT} — install it first.")
     if len(candidates) > 1:
-        print(f"Multiple Ghostscript versions found, using the last one: {candidates[-1]}")
+        print(f"Multiple Ghostscript versions found, using the newest one: {candidates[-1]}")
     return candidates[-1]
 
 
