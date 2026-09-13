@@ -439,6 +439,8 @@ class TextEditElement(BaseModel):
     page: int
     run_index: int
     segments: list[TextSegment] = Field(min_length=1)
+    x: float | None = None
+    y: float | None = None
 
 
 class StrokePoint(BaseModel):

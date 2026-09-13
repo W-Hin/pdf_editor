@@ -945,6 +945,140 @@ def test_edit_pdf_text_edit_handles_rotated_page(tmp_path):
     assert "ALPHA KEEP" in text
 
 
+def test_edit_pdf_text_edit_moves_replacement_to_an_overridden_position(tmp_path):
+    """Verified independently against a throwaway script before writing this
+    (see the movable-text-edit plan) — a naive fraction-to-point conversion
+    with no rotate= draws the moved text sideways on a rotated page, and a
+    raw-space segment advance drifts off the wrong axis. Both are exercised
+    here: two differently-styled segments, on a 90-degree-rotated page,
+    moved well away from the original run's own spot."""
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 700), "OMEGA ORIGINAL")  # displayed top-left after rotation
+    page.insert_text((72, 72), "ALPHA KEEP")        # displayed top-right after rotation
+    page.set_rotation(90)
+    input_path = tmp_path / "rotated.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    runs = extract_text_runs(str(input_path), 1)
+    target = next(r for r in runs if r["text"] == "OMEGA ORIGINAL")
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [{
+            "type": "text_edit", "page": 1, "run_index": target["index"],
+            "segments": [
+                {"text": "OMEGA ", "family": "helvetica", "bold": False, "italic": False, "size": 11},
+                {"text": "MOVED", "family": "helvetica", "bold": True, "italic": False, "size": 11},
+            ],
+            "x": 0.5, "y": 0.05,
+        }],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    page2 = result[0]
+    rm = page2.rotation_matrix
+    d = page2.get_text("dict")
+    spans = [s for b in d["blocks"] for l in b["lines"] for s in l["spans"]]
+    result.close()
+
+    full_text = "".join(s["text"] for s in spans)
+    assert "OMEGA ORIGINAL" not in full_text
+    assert "OMEGA " in full_text and "MOVED" in full_text
+
+    omega = next(s for s in spans if s["text"] == "OMEGA ")
+    moved = next(s for s in spans if s["text"] == "MOVED")
+    omega_displayed = fitz.Rect(omega["bbox"]) * rm
+    moved_displayed = fitz.Rect(moved["bbox"]) * rm
+
+    # Lands near the target displayed top-left (396.0, 30.6) — offset by the
+    # original run's own baseline-to-box-top distance, preserved across the
+    # move (this is why it's "near", not exactly on top of, the raw target).
+    assert omega_displayed.x0 == pytest.approx(399.29, abs=0.1)
+    assert omega_displayed.y0 == pytest.approx(18.78, abs=0.1)
+    # The second segment starts exactly where the first ends — contiguous,
+    # reading left-to-right in DISPLAYED space despite the page's rotation.
+    assert moved_displayed.x0 == pytest.approx(omega_displayed.x1, abs=0.01)
+    # Both segments still sit on one shared visual line.
+    assert moved_displayed.y0 == pytest.approx(omega_displayed.y0, abs=1.0)
+
+    # The untouched run is completely unaffected.
+    alpha = next(s for s in spans if s["text"] == "ALPHA KEEP")
+    alpha_displayed = fitz.Rect(alpha["bbox"]) * rm
+    assert alpha_displayed.x0 == pytest.approx(716.71, abs=0.1)
+    assert alpha_displayed.y0 == pytest.approx(72.0, abs=0.1)
+
+
+def test_edit_pdf_text_edit_without_position_is_unchanged(tmp_path):
+    """x/y absent must remain byte-identical to today's in-place behavior —
+    this is the existing test_edit_pdf_text_edit_replaces_text_and_keeps_surrounding_content
+    scenario, re-asserted here specifically to lock in that adding the
+    override path did not disturb the no-override path."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "Hello World", fontsize=14, fontname="helv")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [{
+            "type": "text_edit", "page": 1, "run_index": 0,
+            "segments": [{"text": "Goodbye Mars", "family": "helvetica", "bold": False, "italic": False, "size": 14}],
+        }],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    d = result[0].get_text("dict")
+    result.close()
+    spans = [s for b in d["blocks"] for l in b.get("lines", []) for s in l["spans"]]
+    assert len(spans) == 1
+    assert spans[0]["text"] == "Goodbye Mars"
+    # Unchanged: still starts exactly at the original run's own raw origin.
+    assert spans[0]["origin"][0] == pytest.approx(72.0, abs=0.01)
+
+
+def test_edit_pdf_text_edit_moves_to_a_non_rotated_position(tmp_path):
+    """The simpler, more common case: no page rotation at all. Confirms the
+    baseline_offset math degrades correctly to a flush top-left placement
+    when the original run's origin already sat flush with its own box."""
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 100), "Hello World", fontsize=14, fontname="helv")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(
+        str(input_path),
+        str(output_path),
+        [{
+            "type": "text_edit", "page": 1, "run_index": 0,
+            "segments": [{"text": "Goodbye Mars", "family": "helvetica", "bold": False, "italic": False, "size": 14}],
+            "x": 0.2, "y": 0.5,
+        }],
+        {},
+    )
+
+    result = fitz.open(str(output_path))
+    d = result[0].get_text("dict")
+    result.close()
+    spans = [s for b in d["blocks"] for l in b.get("lines", []) for s in l["spans"]]
+    assert len(spans) == 1
+    assert spans[0]["text"] == "Goodbye Mars"
+    assert spans[0]["bbox"][0] == pytest.approx(122.4, abs=0.05)
+    assert spans[0]["bbox"][1] == pytest.approx(399.19, abs=0.1)
+
+
 def test_edit_pdf_text_edit_auto_shrinks_when_overflowing(tmp_path):
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)

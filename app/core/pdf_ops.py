@@ -577,9 +577,11 @@ def _validate_image_element(el: dict, image_paths: dict[str, str]) -> None:
         raise PDFError("The image must fit within the page.")
 
 
-def _apply_text_edit(page: fitz.Page, span: dict, segments: list[dict]) -> list[tuple]:
+def _apply_text_edit(
+    page: fitz.Page, span: dict, segments: list[dict], override_xy: tuple[float, float] | None = None
+) -> list[tuple]:
     """Adds the redact annotation for this run's original text and returns one
-    (origin, text, fontname, size, color) tuple per segment, in left-to-right
+    (origin, text, fontname, size, color, rotate) tuple per segment, in left-to-right
     order, needed to insert the replacement side-by-side on the same
     baseline.
 
@@ -595,45 +597,51 @@ def _apply_text_edit(page: fitz.Page, span: dict, segments: list[dict]) -> list[
     """
     raw_bbox = fitz.Rect(span["bbox"])
     page.add_redact_annot(raw_bbox, fill=(1, 1, 1))
-
-    # Every segment always specifies an explicit base-14 family/bold/italic —
-    # this run's original detected/embedded font is never reused once any
-    # edit exists, a deliberate simplification (see this plan's Global
-    # Constraints: "embedded/detected-font preservation is removed").
     resolved = [
         (seg["text"], _base14_alias(seg["family"], seg["bold"], seg["italic"]), seg["size"])
         for seg in segments
     ]
     total_measured = sum(fitz.get_text_length(text, fontname=fontname, fontsize=size) for text, fontname, size in resolved)
-
     original_width = raw_bbox.width
     scale = 1.0
     if total_measured > original_width > 0:
-        # ONE shared scale factor applied to every segment — never
-        # independently — is what preserves the relative size differences
-        # between segments. Floored at _TEXT_EDIT_SHRINK_FACTOR so no
-        # segment ever shrinks more than 50% in one step, exactly
-        # generalizing the pre-existing single-segment formula (which is
-        # the N=1 case of this same shape: max(raw_scale, SHRINK_FACTOR)).
         scale = max(_TEXT_EDIT_SHRINK_FACTOR, original_width / total_measured)
-
-    # span["color"] is an sRGB integer; sRGB_to_pdf turns it into the (r, g, b)
-    # float triple insert_text's color= expects. Keeping the run's own colour
-    # means replacement text no longer silently turns black on coloured runs.
-    # Color is NOT per-segment — only family/bold/italic/size are stylable
-    # per this sub-project's scope; every segment on a line keeps the run's
-    # one original color.
     color = fitz.sRGB_to_pdf(span.get("color", 0))
-
     inserts = []
+
+    if override_xy is not None:
+        # The replacement is being drawn at a NEW position the user dragged
+        # it to (a page fraction, matching every other element type's
+        # convention), not at the original run's own spot. Two things the
+        # "redact in place" case gets for free break once position and
+        # redaction diverge — both verified empirically against a real
+        # rotated PDF before writing this (see the movable-text-edit plan):
+        # insert_text's default rotate=0 only looks right when reusing the
+        # original run's own raw origin, and the multi-segment x-advance
+        # must happen in DISPLAYED space, not raw space, or later segments
+        # drift off the wrong axis once the page is rotated.
+        rect = page.rect
+        dm = page.derotation_matrix
+        rm = page.rotation_matrix
+        displayed_bbox = raw_bbox * rm
+        baseline_offset = (fitz.Point(*span["origin"]) * rm) - displayed_bbox.tl
+        x_frac, y_frac = override_xy
+        new_topleft_displayed = fitz.Point(rect.x0 + x_frac * rect.width, rect.y0 + y_frac * rect.height)
+        cursor_displayed = new_topleft_displayed + baseline_offset
+        rotate = page.rotation % 360
+        for text, fontname, size in resolved:
+            final_size = max(size * scale, _TEXT_EDIT_MIN_SIZE)
+            origin = fitz.Point(cursor_displayed.x, cursor_displayed.y) * dm
+            inserts.append((origin, text, fontname, final_size, color, rotate))
+            advance = fitz.get_text_length(text, fontname=fontname, fontsize=final_size)
+            cursor_displayed = fitz.Point(cursor_displayed.x + advance, cursor_displayed.y)
+        return inserts
+
     x = raw_bbox.x0
     y = span["origin"][1]
     for text, fontname, size in resolved:
-        # Absolute floor applied to each segment's FINAL size, same safety
-        # net the single-segment formula already had via
-        # max(_TEXT_EDIT_MIN_SIZE, ...).
         final_size = max(size * scale, _TEXT_EDIT_MIN_SIZE)
-        inserts.append((fitz.Point(x, y), text, fontname, final_size, color))
+        inserts.append((fitz.Point(x, y), text, fontname, final_size, color, 0))
         x += fitz.get_text_length(text, fontname=fontname, fontsize=final_size)
     return inserts
 
@@ -855,6 +863,11 @@ def edit_pdf(input_path: str, output_path: str, elements: list[dict], image_path
                 spans = run_cache[page_num]
                 if el["run_index"] < 0 or el["run_index"] >= len(spans):
                     raise PDFError(f"Text run {el['run_index']} not found on page {page_num}.")
+                has_x, has_y = el.get("x") is not None, el.get("y") is not None
+                if has_x != has_y:
+                    raise PDFError("Text position requires both x and y.")
+                if has_x and (not (0 <= el["x"] <= 1) or not (0 <= el["y"] <= 1)):
+                    raise PDFError("Text position must be within the page.")
             elif el_type == "stroke":
                 _validate_stroke(el)
             elif el_type == "shape":
@@ -887,10 +900,11 @@ def edit_pdf(input_path: str, output_path: str, elements: list[dict], image_path
             pending_inserts = []
             for el in page_edits:
                 span = spans[el["run_index"]]
-                pending_inserts.extend(_apply_text_edit(page, span, el["segments"]))
+                override_xy = (el["x"], el["y"]) if el.get("x") is not None else None
+                pending_inserts.extend(_apply_text_edit(page, span, el["segments"], override_xy))
             page.apply_redactions()
-            for origin, text, fontname, size, color in pending_inserts:
-                page.insert_text(origin, text, fontsize=size, fontname=fontname, color=color)
+            for origin, text, fontname, size, color, rotate in pending_inserts:
+                page.insert_text(origin, text, fontsize=size, fontname=fontname, color=color, rotate=rotate)
 
         # Then strokes/shapes/highlights/images, in the order the user created them.
         for el in other_elements:
