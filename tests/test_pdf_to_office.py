@@ -4,7 +4,7 @@ from pptx import Presentation
 from pptx.util import Pt
 
 from app.core.errors import PDFError
-from app.core.pdf_to_office import pdf_to_pptx
+from app.core.pdf_to_office import pdf_to_pptx, _closest_base14_family
 
 
 def _make_text_pdf(path):
@@ -79,6 +79,25 @@ def test_pdf_to_pptx_preserves_font_size_bold_and_family(tmp_path):
     assert body_run.font.bold is False
     assert body_run.font.italic is False
     assert body_run.font.name == "Times New Roman"
+
+
+def test_closest_base14_family_falls_back_to_flags_for_opaque_font_names():
+    """An embedded subset font's name is often an opaque tag like
+    "ABCDEF+CustomFont" that no substring heuristic can classify — PyMuPDF's
+    own per-span serif/monospace flag bits (TEXT_FONT_SERIFED=4,
+    TEXT_FONT_MONOSPACED=8) are the only signal left in that case."""
+    assert _closest_base14_family("ABCDEF+CustomFont1", flags=4) == "times"
+    assert _closest_base14_family("ABCDEF+CustomFont2", flags=8) == "courier"
+    assert _closest_base14_family("ABCDEF+CustomFont3", flags=0) == "helvetica"
+    # Bold+italic bits set but neither serif nor monospace — still helvetica.
+    assert _closest_base14_family("ABCDEF+CustomFont4", flags=16 | 2) == "helvetica"
+
+
+def test_closest_base14_family_prefers_name_match_over_flags():
+    """A recognizable font name is a stronger signal than the flag bits, so
+    it wins even in the (normally inconsistent) case where they disagree."""
+    assert _closest_base14_family("TimesNewRomanPSMT", flags=0) == "times"
+    assert _closest_base14_family("CourierNewPSMT", flags=4) == "courier"
 
 
 def test_pdf_to_pptx_matches_slide_size_to_page_size(tmp_path):

@@ -40,11 +40,20 @@ _PPTX_FONT_NAMES = {
 }
 
 
-def _closest_base14_family(font_name: str) -> str:
+def _closest_base14_family(font_name: str, flags: int) -> str:
     name = font_name.lower()
     if "courier" in name or "mono" in name:
         return "courier"
     if any(hint in name for hint in ("times", "serif", "georgia", "garamond", "cambria", "minion")):
+        return "times"
+    # The name gave no hint — common for an embedded subset font, whose name
+    # is often an opaque subset tag like "ABCDEF+CustomFont" rather than
+    # anything recognizable. Fall back to PyMuPDF's own per-span serif/
+    # monospace flag bits (TEXT_FONT_SERIFED=4, TEXT_FONT_MONOSPACED=8)
+    # before defaulting to helvetica.
+    if flags & 8:
+        return "courier"
+    if flags & 4:
         return "times"
     return "helvetica"
 
@@ -94,7 +103,7 @@ def pdf_to_pptx(input_path: str, output_path: str) -> None:
                         flags = span["flags"]
                         run.font.bold = bool(flags & 16)
                         run.font.italic = bool(flags & 2)
-                        run.font.name = _PPTX_FONT_NAMES[_closest_base14_family(span["font"])]
+                        run.font.name = _PPTX_FONT_NAMES[_closest_base14_family(span["font"], flags)]
         prs.save(output_path)
     finally:
         doc.close()
