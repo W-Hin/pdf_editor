@@ -550,16 +550,17 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
     // `elements` is a single global array spanning every page, and
     // renderPageOverlay only paints elements where el.page === pageNumber
-    // and el.type !== "text_edit". A plain one-slot array swap can land on
-    // an array neighbor that isn't actually adjacent in what's rendered on
-    // any page (a different page's element, or an excluded text_edit
-    // placeholder), producing no visible change. So instead, find the
-    // nearest neighbor in that direction that WOULD render adjacent to this
-    // element on its own page, and move past that one instead.
+    // (a text_edit element is excluded only while its own editor is
+    // actively open). A plain one-slot array swap can land on an array
+    // neighbor that isn't actually adjacent in what's rendered on any page
+    // (e.g. a different page's element), producing no visible change. So
+    // instead, find the nearest neighbor in that direction that WOULD
+    // render adjacent to this element on its own page, and move past that
+    // one instead.
     const step = direction === "forward" ? 1 : -1;
     let targetIndex = -1;
     for (let i = index + step; i >= 0 && i < elements.length; i += step) {
-      if (elements[i].page === el.page && elements[i].type !== "text_edit") {
+      if (elements[i].page === el.page) {
         targetIndex = i;
         break;
       }
@@ -1439,7 +1440,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
         onClick={(e) => e.stopPropagation()}
         onDoubleClick={(e) => {
           e.stopPropagation();
-          openRunEditor(el.page, run);
+          if (activeMode === "text") openRunEditor(el.page, run);
         }}
       >
         <div className="edit-pdf-canvas__run-style-text edit-pdf-canvas__run-style-text--static">

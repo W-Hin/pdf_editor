@@ -1079,6 +1079,48 @@ def test_edit_pdf_text_edit_moves_to_a_non_rotated_position(tmp_path):
     assert spans[0]["bbox"][1] == pytest.approx(399.19, abs=0.1)
 
 
+def test_edit_pdf_rejects_text_edit_with_only_x_set(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "Hello World", fontsize=14, fontname="helv")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    with pytest.raises(PDFError, match="both x and y"):
+        edit_pdf(
+            str(input_path),
+            str(tmp_path / "output.pdf"),
+            [{
+                "type": "text_edit", "page": 1, "run_index": 0,
+                "segments": [{"text": "Replaced", "family": "helvetica", "bold": False, "italic": False, "size": 14}],
+                "x": 0.5,
+            }],
+            {},
+        )
+
+
+def test_edit_pdf_rejects_text_edit_position_out_of_bounds(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "Hello World", fontsize=14, fontname="helv")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    with pytest.raises(PDFError, match="within the page"):
+        edit_pdf(
+            str(input_path),
+            str(tmp_path / "output.pdf"),
+            [{
+                "type": "text_edit", "page": 1, "run_index": 0,
+                "segments": [{"text": "Replaced", "family": "helvetica", "bold": False, "italic": False, "size": 14}],
+                "x": 1.5, "y": 0.5,
+            }],
+            {},
+        )
+
+
 def test_edit_pdf_text_edit_auto_shrinks_when_overflowing(tmp_path):
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)

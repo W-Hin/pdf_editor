@@ -954,6 +954,7 @@ h1 {
 
 .edit-pdf-canvas__text-edit-el {
   position: absolute;
+  z-index: 2;
   pointer-events: auto;
   cursor: move;
 }
