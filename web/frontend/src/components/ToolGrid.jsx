@@ -29,7 +29,7 @@ import {
   Scan,
   Archive,
 } from "@phosphor-icons/react";
-import { TOOL_CONFIGS } from "../toolConfigs";
+import { TOOL_CONFIGS, DEDICATED_ROUTES } from "../toolConfigs";
 import RecentFiles from "./RecentFiles.jsx";
 
 const CATEGORIES = ["Organize", "Edit", "Optimize", "Convert"];
@@ -61,14 +61,6 @@ const TOOL_ICONS = {
   "unlock-pdf": LockOpen,
   ocr: Scan,
   "pdf-to-pdfa": Archive,
-};
-
-// Tools whose interaction model differs enough from the standard "pick
-// file(s) → configure → Run → download" flow that they render their own
-// dedicated page instead of going through ToolView's generic flow.
-const DEDICATED_ROUTES = {
-  "compare-pdf": "/compare",
-  "unlock-pdf": "/unlock",
 };
 
 // Development-time early warning: a tool added to TOOL_CONFIGS without a

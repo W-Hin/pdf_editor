@@ -1,3 +1,13 @@
+// Tools whose interaction model differs enough from the standard "pick
+// file(s) → configure → Run → download" flow that they render their own
+// dedicated page instead of going through ToolView's generic flow. Shared
+// source of truth for both ToolGrid's navigation and ToolView's redirect
+// away from the generic route for these toolIds.
+export const DEDICATED_ROUTES = {
+  "compare-pdf": "/compare",
+  "unlock-pdf": "/unlock",
+};
+
 export const TOOL_CONFIGS = {
   merge: {
     title: "Merge PDF",

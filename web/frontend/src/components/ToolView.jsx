@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Navigate } from "react-router-dom";
 import {
   ArrowLeft,
   UploadSimple,
@@ -13,7 +13,7 @@ import {
   Info,
   Scissors,
 } from "@phosphor-icons/react";
-import { TOOL_CONFIGS } from "../toolConfigs";
+import { TOOL_CONFIGS, DEDICATED_ROUTES } from "../toolConfigs";
 import { uploadFile, runTool, downloadUrl } from "../api";
 import { isImageFilename } from "../fileTypes";
 import PageGrid from "./PageGrid";
@@ -44,6 +44,10 @@ export default function ToolView() {
   const { toolId } = useParams();
   const navigate = useNavigate();
   const config = TOOL_CONFIGS[toolId];
+
+  if (toolId in DEDICATED_ROUTES) {
+    return <Navigate to={DEDICATED_ROUTES[toolId]} replace />;
+  }
 
   const [files, setFiles] = useState([]);
   const [fieldValues, setFieldValues] = useState(() =>
