@@ -952,6 +952,21 @@ h1 {
   line-height: 1.2;
 }
 
+.edit-pdf-canvas__text-edit-el {
+  position: absolute;
+  pointer-events: auto;
+  cursor: move;
+}
+
+.edit-pdf-canvas__text-edit-el--selected {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.edit-pdf-canvas__run-style-text--static {
+  pointer-events: none;
+}
+
 .edit-pdf-canvas__new-text-editor {
   position: absolute;
   z-index: 3;

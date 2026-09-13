@@ -948,7 +948,17 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
       const clampedDy = Math.min(Math.max(dy, -Math.min(...ys)), 1 - Math.max(...ys));
       return { ...el, points: el.points.map((p) => ({ x: p.x + clampedDx, y: p.y + clampedDy })) };
     }
-    // x/y/width/height (image, new_text)
+    if (el.type === "text_edit") {
+      // Reconstructed explicitly (not `{ ...el, x, y }`) so the width/height
+      // this function needs for clamping — merged onto `el` only for the
+      // duration of the drag by renderTextEditElement below — never leaks
+      // into the stored element. A text_edit element's size always comes
+      // from its own run, never from anything persisted on the element.
+      const x = Math.min(Math.max(el.x + dx, 0), 1 - el.width);
+      const y = Math.min(Math.max(el.y + dy, 0), 1 - el.height);
+      return { id: el.id, type: el.type, page: el.page, run_index: el.run_index, segments: el.segments, x, y };
+    }
+    // x/y/width/height (image, new_text) — text_edit has its own branch above
     const x = Math.min(Math.max(el.x + dx, 0), 1 - el.width);
     const y = Math.min(Math.max(el.y + dy, 0), 1 - el.height);
     return { ...el, x, y };
@@ -987,6 +997,19 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     if (activeMode === "draw") return handleDrawMouseUp(e);
     if (activeMode === "shapes") return handleShapeMouseUp(e);
     if (activeMode === "highlight") return handleHighlightMouseUp(e);
+  }
+
+  // The box a text_edit element (or its live editor overlay) occupies: the
+  // original run's own detected size always (per this feature's "move only,
+  // never resize" scope decision), positioned at the element's moved x/y
+  // once it has one, falling back to the run's own top-left when it hasn't
+  // been moved yet (or no pending edit exists at all).
+  function textEditBoxRect(run, pending) {
+    const width = 1 - run.bbox.left - run.bbox.right;
+    const height = 1 - run.bbox.top - run.bbox.bottom;
+    const left = pending?.x ?? run.bbox.left;
+    const top = pending?.y ?? run.bbox.top;
+    return { left, top, width, height };
   }
 
   function pendingTextEditFor(run) {
@@ -1041,6 +1064,8 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
       page: editor.page,
       run_index: editor.runIndex,
       segments: [{ text: seg.text, family: seg.family, bold: seg.bold, italic: seg.italic, size: seg.size }],
+      x: pending?.x,
+      y: pending?.y,
     };
     const next = pending ? elements.map((el) => (el.id === newEl.id ? newEl : el)) : [...elements, newEl];
     commitElements(next);
@@ -1106,6 +1131,8 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
       page: runEditor.page,
       run_index: runEditor.runIndex,
       segments: newSegments,
+      x: pending?.x,
+      y: pending?.y,
     };
     const next = pending ? elements.map((el) => (el.id === newEl.id ? newEl : el)) : [...elements, newEl];
     commitElements(next);
@@ -1392,12 +1419,43 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     );
   }
 
+  function renderTextEditElement(el, pageRef) {
+    const run = runs.find((r) => r.page === el.page && r.index === el.run_index);
+    if (!run) return null; // runs haven't loaded yet for this page
+    const box = textEditBoxRect(run, el);
+    const positioned = { ...el, x: box.left, y: box.top, width: box.width, height: box.height };
+    return (
+      <div
+        className={
+          el.id === selectedId
+            ? "edit-pdf-canvas__text-edit-el edit-pdf-canvas__text-edit-el--selected"
+            : "edit-pdf-canvas__text-edit-el"
+        }
+        style={{ left: `${box.left * 100}%`, top: `${box.top * 100}%`, width: `${box.width * 100}%`, height: `${box.height * 100}%` }}
+        onMouseDown={(e) => {
+          setSelectedId(el.id);
+          startElementDrag(pageRef, positioned, "move", e);
+        }}
+        onClick={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          openRunEditor(el.page, run);
+        }}
+      >
+        <div className="edit-pdf-canvas__run-style-text edit-pdf-canvas__run-style-text--static">
+          {renderSegmentSpans(el.segments)}
+        </div>
+      </div>
+    );
+  }
+
   function renderElement(el, pageNumber, pageRef) {
     if (el.type === "stroke") return renderStroke(el, pageRef);
     if (el.type === "shape") return renderShape(el, pageRef);
     if (el.type === "highlight") return renderHighlight(el, pageRef);
     if (el.type === "image") return renderImageElement(el, pageRef);
     if (el.type === "new_text") return renderNewTextElement(el, pageRef);
+    if (el.type === "text_edit") return renderTextEditElement(el, pageRef);
     return null;
   }
 
@@ -1496,9 +1554,9 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     );
   }
 
-  function renderRunStyleOverlay(run) {
+  function renderSegmentSpans(segments) {
     let offset = 0;
-    const spanEls = runEditor.segments.map((seg, i) => {
+    return segments.map((seg, i) => {
       const start = offset;
       offset += seg.text.length;
       return (
@@ -1516,16 +1574,22 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
         </span>
       );
     });
+  }
+
+  function renderRunStyleOverlay(run) {
+    const pending = pendingTextEditFor(run);
+    const box = textEditBoxRect(run, pending);
+    const spanEls = renderSegmentSpans(runEditor.segments);
     return (
       <div
         key={run.index}
         ref={runStyleWrapperRef}
         className="edit-pdf-canvas__run-editor-inline"
         style={{
-          left: `${run.bbox.left * 100}%`,
-          top: `${run.bbox.top * 100}%`,
-          width: `${(1 - run.bbox.left - run.bbox.right) * 100}%`,
-          height: `${(1 - run.bbox.top - run.bbox.bottom) * 100}%`,
+          left: `${box.left * 100}%`,
+          top: `${box.top * 100}%`,
+          width: `${box.width * 100}%`,
+          height: `${box.height * 100}%`,
         }}
         onMouseDown={(e) => e.stopPropagation()}
       >
@@ -1545,7 +1609,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
           >
             Edit text
           </button>
-          {pendingTextEditFor(run) && (
+          {pending && (
             <button
               type="button"
               className="edit-pdf-canvas__width-button"
@@ -1609,6 +1673,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     if (runEditor.phase === "style") {
       return renderRunStyleOverlay(run); // Task 3
     }
+    const box = textEditBoxRect(run, pendingTextEditFor(run));
     const seg = runEditor.segments[0];
     function updateSeg(patch) {
       setRunEditor((r) => ({ ...r, segments: [{ ...r.segments[0], ...patch }] }));
@@ -1618,10 +1683,10 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
         key={run.index}
         className="edit-pdf-canvas__run-editor-inline"
         style={{
-          left: `${run.bbox.left * 100}%`,
-          top: `${run.bbox.top * 100}%`,
-          width: `${(1 - run.bbox.left - run.bbox.right) * 100}%`,
-          height: `${(1 - run.bbox.top - run.bbox.bottom) * 100}%`,
+          left: `${box.left * 100}%`,
+          top: `${box.top * 100}%`,
+          width: `${box.width * 100}%`,
+          height: `${box.height * 100}%`,
         }}
         onMouseDown={(e) => e.stopPropagation()}
         onBlur={handleRunEditorBlur}
@@ -1683,11 +1748,11 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     if (runEditor && runEditor.page === pageNumber && runEditor.runIndex === run.index) {
       return renderRunEditorOverlay(run);
     }
-    const pending = pendingTextEditFor(run);
+    if (pendingTextEditFor(run)) return null;
     return (
       <div
         key={run.index}
-        className={pending ? "edit-pdf-canvas__run edit-pdf-canvas__run--queued" : "edit-pdf-canvas__run"}
+        className="edit-pdf-canvas__run"
         style={{
           left: `${run.bbox.left * 100}%`,
           top: `${run.bbox.top * 100}%`,
@@ -1710,7 +1775,13 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
         onClick={handleStageClick}
       >
         {elements
-          .filter((el) => el.page === pageNumber && el.type !== "text_edit" && el.id !== textDraft?.id)
+          .filter((el) => {
+            if (el.page !== pageNumber || el.id === textDraft?.id) return false;
+            if (el.type === "text_edit" && runEditor && runEditor.page === el.page && runEditor.runIndex === el.run_index) {
+              return false;
+            }
+            return true;
+          })
           .map((el) => (
             <div key={el.id} style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
               <div style={{ pointerEvents: "auto" }}>{renderElement(el, pageNumber, pageRef)}</div>
