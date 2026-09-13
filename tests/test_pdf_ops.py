@@ -2316,3 +2316,66 @@ def test_pdf_to_markdown_zip_rewrites_image_paths_as_relative(tmp_path):
         image_name = image_names[0]
         assert f"]({image_name})" in md_text
         assert ":" not in md_text.split("![")[1].split(")")[0]  # no drive letter / absolute path leaked through
+
+
+def _build_rotated_ocr_pdf(tmp_path, ocr_pdf_fn):
+    """Build a page with real text, rotate its raster 90 degrees, OCR it via
+    this app's own ocr_pdf (which always passes rotate_pages=True) - this is
+    the exact scenario that silently drops text under PyMuPDF's default
+    clip, verified this session."""
+    import io
+
+    import fitz
+    from PIL import Image
+
+    sentence_block = (
+        "This is a longer paragraph of text used to verify automatic page "
+        "orientation detection. " * 6
+    )
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_textbox(fitz.Rect(72, 72, 540, 720), sentence_block, fontsize=12)
+    zoom = 300 / 72
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+    png_bytes = pix.tobytes("png")
+    doc.close()
+
+    img = Image.open(io.BytesIO(png_bytes))
+    rotated = img.rotate(90, expand=True)
+    buf = io.BytesIO()
+    rotated.save(buf, format="PNG")
+
+    out = fitz.open()
+    out_page = out.new_page(width=792, height=612)
+    out_page.insert_image(out_page.rect, stream=buf.getvalue())
+    input_path = tmp_path / "sideways_input.pdf"
+    out.save(str(input_path))
+    out.close()
+
+    ocr_output = tmp_path / "ocred.pdf"
+    ocr_pdf_fn(str(input_path), str(ocr_output), languages=["eng"], convert_to_pdfa=False)
+    return str(ocr_output)
+
+
+def test_pdf_to_markdown_zip_on_rotated_ocred_page_documents_known_limitation(tmp_path):
+    # This is NOT a test of desired behavior - it locks in a KNOWN, ALREADY
+    # INVESTIGATED limitation (see the comment in pdf_to_markdown_zip and
+    # this session's systematic-debugging investigation): pymupdf4llm has
+    # its own internal OCR-detection step that cannot see the existing
+    # invisible text on a page auto-rotated by this app's own OCR feature
+    # (a structural issue in the third-party library, confirmed unfixable
+    # via TEXT_MEDIABOX_CLIP, margins, or use_ocr=NEVER - individually or
+    # combined). If this test ever starts FAILING (i.e., the text IS found),
+    # that means a pymupdf4llm upgrade fixed this upstream - revisit the
+    # limitation note in pdf_to_markdown_zip and this tool's previewNote
+    # rather than treating this test failure as a regression to "fix" back.
+    from app.core.ocr import ocr_pdf
+
+    output_path_ocr = _build_rotated_ocr_pdf(tmp_path, ocr_pdf)
+
+    zip_path = tmp_path / "output.zip"
+    pdf_to_markdown_zip(output_path_ocr, str(zip_path))
+
+    with zipfile.ZipFile(zip_path) as zf:
+        md_text = zf.read("document.md").decode("utf-8")
+    assert "verify automatic page orientation detection" not in md_text

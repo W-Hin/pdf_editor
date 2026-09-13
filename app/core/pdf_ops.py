@@ -298,6 +298,26 @@ def render_page_thumbnail(input_path: str, page_number: int, max_size: int = 100
 
 def pdf_to_markdown_zip(input_path: str, output_path: str) -> None:
     with tempfile.TemporaryDirectory() as image_dir:
+        # KNOWN LIMITATION (investigated and confirmed unfixable this
+        # session): a page auto-rotated by this app's own OCR feature
+        # (app/core/ocr.py's ocr_pdf, which always passes rotate_pages=True)
+        # can come through with empty/missing text here. pymupdf4llm runs
+        # its own internal OCR-detection step before extraction (deciding,
+        # per page, whether to trust existing OCR text or re-OCR it itself),
+        # and that step counts "existing OCR spans" using a text-extraction
+        # call that misses the invisible OCR text on such a page - the same
+        # underlying MuPDF clipping issue fixed elsewhere in this codebase
+        # (see Compare PDF / PDF-to-PowerPoint's get_textpage(clip=
+        # fitz.INFINITE_RECT()) fix) - but here the detection lives in a
+        # private nested closure inside pymupdf4llm's own call chain, not an
+        # importable/patchable name. Confirmed NOT fixable via monkeypatching
+        # fitz.TEXT_MEDIABOX_CLIP=0, widening to_markdown()'s own margins=
+        # parameter, or passing use_ocr=OCRMode.NEVER - individually or all
+        # combined, each still produced 0 chars of text on a rotated-and-
+        # OCR'd fixture. Locked in by
+        # test_pdf_to_markdown_zip_on_rotated_ocred_page_documents_known_limitation
+        # in tests/test_pdf_ops.py; revisit if a future pymupdf4llm upgrade
+        # ever makes that test start failing.
         markdown_text = pymupdf4llm.to_markdown(input_path, write_images=True, image_path=image_dir)
         # pymupdf4llm embeds each image reference as an ABSOLUTE filesystem
         # path into image_dir (verified empirically: "![](C:/Users/.../

@@ -214,7 +214,7 @@ export const TOOL_CONFIGS = {
     multiFile: false,
     mode: "view",
     endpoint: "pdf-to-markdown",
-    previewNote: "PDF to Markdown extracts text and images — the result can't be previewed as a PDF page.",
+    previewNote: "PDF to Markdown extracts text and images — the result can't be previewed as a PDF page. Note: a page auto-rotated by this app's own OCR tool may come through with missing text, due to a known limitation in the underlying conversion library.",
     fields: [],
   },
   "pdf-to-pptx": {
