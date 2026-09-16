@@ -36,6 +36,16 @@ def get_page_count(path: str) -> int:
         doc.close()
 
 
+def get_page_rotation(path: str, page_number: int) -> int:
+    doc = open_pdf(path)
+    try:
+        if page_number < 1 or page_number > doc.page_count:
+            raise PDFError(f"Page {page_number} does not exist in this document ({doc.page_count} pages).")
+        return doc[page_number - 1].rotation
+    finally:
+        doc.close()
+
+
 def merge_pdfs(input_paths: list[str], output_path: str) -> None:
     if len(input_paths) < 2:
         raise PDFError("Select at least two PDF files to merge.")

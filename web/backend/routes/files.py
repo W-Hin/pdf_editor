@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from app.core.errors import PDFError
-from app.core.pdf_ops import extract_form_fields, extract_text_runs, get_page_count, render_page_thumbnail
+from app.core.pdf_ops import extract_form_fields, extract_text_runs, get_page_count, get_page_rotation, render_page_thumbnail
 from web.backend import storage
 
 router = APIRouter()
@@ -42,7 +42,8 @@ def get_text_runs(file_id: str, page_number: int):
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="File not found")
     runs = extract_text_runs(str(path), page_number)
-    return {"runs": runs}
+    rotation = get_page_rotation(str(path), page_number)
+    return {"runs": runs, "rotation": rotation}
 
 
 @router.get("/files/{file_id}/form-fields")

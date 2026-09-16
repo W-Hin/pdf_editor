@@ -4,7 +4,7 @@ import zipfile
 from pathlib import Path
 
 from app.core.errors import PDFError
-from app.core.pdf_ops import open_pdf, get_page_count, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf, add_page_numbers, images_to_pdf, redact_pdf, extract_text_runs, edit_pdf, extract_form_fields, fill_form, pdf_to_markdown_zip
+from app.core.pdf_ops import open_pdf, get_page_count, get_page_rotation, merge_pdfs, extract_pages, remove_pages, reorder_pages, split_pdf, rotate_pages, add_watermark, crop_pdf, add_page_numbers, images_to_pdf, redact_pdf, extract_text_runs, edit_pdf, extract_form_fields, fill_form, pdf_to_markdown_zip
 
 
 def test_open_pdf_missing_file_raises(tmp_path):
@@ -22,6 +22,27 @@ def test_open_pdf_not_a_pdf_raises(tmp_path):
 def test_get_page_count(make_pdf):
     path = make_pdf(num_pages=4)
     assert get_page_count(path) == 4
+
+
+def test_get_page_rotation_returns_zero_for_unrotated_page(make_pdf):
+    path = make_pdf(num_pages=1)
+    assert get_page_rotation(path, 1) == 0
+
+
+def test_get_page_rotation_returns_the_rotation_degree(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page()
+    page.set_rotation(90)
+    path = tmp_path / "rotated.pdf"
+    doc.save(str(path))
+    doc.close()
+    assert get_page_rotation(str(path), 1) == 90
+
+
+def test_get_page_rotation_rejects_out_of_range_page(make_pdf):
+    path = make_pdf(num_pages=1)
+    with pytest.raises(PDFError):
+        get_page_rotation(path, 2)
 
 
 def test_merge_pdfs_combines_page_counts(make_pdf, tmp_path):

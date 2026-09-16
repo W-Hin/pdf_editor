@@ -300,6 +300,7 @@ def test_get_text_runs_returns_runs():
     body = response.json()
     assert len(body["runs"]) == 1
     assert body["runs"][0]["text"] == "Page 1"
+    assert body["rotation"] == 0
 
 
 def test_get_text_runs_unknown_file_id_returns_404():
