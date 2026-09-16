@@ -267,6 +267,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   const [elements, setElements] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [runs, setRuns] = useState([]);
+  const [pageRotations, setPageRotations] = useState({}); // { [pageNumber]: rotationDegrees }
   // Null when no run is being edited. { page, runIndex, phase: "type" |
   // "style", segments: [{text, family, bold, italic, size}, ...], selection:
   // {start, end} | null } while the inline editor is open — mirrors
@@ -380,14 +381,21 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
       const perPage = await Promise.all(
         Array.from({ length: pageCount }, (_, i) => i + 1).map((pageNumber) =>
           fetchTextRuns(fileId, pageNumber)
-            .then((data) => data.runs.map((r) => ({ ...r, page: pageNumber })))
+            .then((data) => ({
+              page: pageNumber,
+              runs: data.runs.map((r) => ({ ...r, page: pageNumber })),
+              rotation: data.rotation,
+            }))
             .catch((err) => {
               console.error(`Failed to load text runs for page ${pageNumber}:`, err);
-              return [];
+              return { page: pageNumber, runs: [], rotation: 0 };
             })
         )
       );
-      if (!cancelled) setRuns(perPage.flat());
+      if (!cancelled) {
+        setRuns(perPage.flatMap((p) => p.runs));
+        setPageRotations(Object.fromEntries(perPage.map((p) => [p.page, p.rotation])));
+      }
     }
     loadRuns();
     setRunEditor(null);
@@ -464,7 +472,20 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
           removeElement(selectedId);
         } else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key) && selectedId) {
           const el = elements.find((item) => item.id === selectedId);
-          if (el && el.type !== "text_edit") {
+          if (el) {
+            let target = el;
+            if (el.type === "text_edit") {
+              // A stored text_edit element never has width/height (its size
+              // always comes from its own run) - moveElement's text_edit
+              // branch needs those to clamp correctly, so build the same
+              // dimension-carrying object renderTextEditElement's drag start
+              // already builds via textEditBoxRect, instead of handing it
+              // the raw stored element (which would read undefined -> NaN).
+              const run = runs.find((r) => r.page === el.page && r.index === el.run_index);
+              if (!run) return; // runs haven't loaded yet - nothing to nudge against safely
+              const box = textEditBoxRect(run, el, pageRotations);
+              target = { ...el, x: box.left, y: box.top, width: box.width, height: box.height };
+            }
             e.preventDefault();
             const step = e.shiftKey ? NUDGE_BIG_STEP : NUDGE_SMALL_STEP;
             let dx = 0;
@@ -473,7 +494,8 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
             else if (e.key === "ArrowRight") dx = step;
             else if (e.key === "ArrowUp") dy = -step;
             else dy = step;
-            commitElements(elements.map((item) => (item.id === selectedId ? moveElement(item, dx, dy) : item)));
+            const moved = moveElement(target, dx, dy);
+            commitElements(elements.map((item) => (item.id === selectedId ? moved : item)));
           }
         }
         return;
@@ -506,7 +528,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [elements, selectedId, textDraft, runEditor]);
+  }, [elements, selectedId, textDraft, runEditor, runs, pageRotations]);
 
   if (!fileId || !pageCount) return null;
 
@@ -1005,9 +1027,34 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   // never resize" scope decision), positioned at the element's moved x/y
   // once it has one, falling back to the run's own top-left when it hasn't
   // been moved yet (or no pending edit exists at all).
-  function textEditBoxRect(run, pending) {
-    const width = 1 - run.bbox.left - run.bbox.right;
-    const height = 1 - run.bbox.top - run.bbox.bottom;
+  //
+  // On a 90/270-rotated page, once actually moved, width/height are
+  // transposed: the backend draws the replacement with rotate=page.rotation
+  // once an override is active (_apply_text_edit's override_xy branch) so it
+  // reads upright to the viewer, which transposes its actual extent relative
+  // to the ORIGINAL run's own (possibly sideways) orientation. Swapping here
+  // keeps the box's on-screen shape matching what will actually export —
+  // but only once moved, since an un-moved element still draws (and must
+  // still be shown) in the original run's own unrotated orientation.
+  //
+  // Known, accepted limitation: this swap is keyed off the CURRENT pending
+  // element's x/y, so it only takes effect starting from the render right
+  // after a move commits. A drag gesture's own clamp bound (moveElement, via
+  // the `positioned` snapshot captured once at drag-start) is computed
+  // against PRE-swap dimensions for an element's very FIRST-ever move — so
+  // dropping it very close to a page edge on that first drag can show a
+  // small overflow past that edge. Dragging it again uses the now-current
+  // (already-swapped) dimensions and is correctly bounded. Deliberately not
+  // closed: doing so would mean reconciling two different clamp bases
+  // mid-gesture, real complexity for a cosmetic, self-fixing edge case.
+  function textEditBoxRect(run, pending, pageRotations) {
+    let width = 1 - run.bbox.left - run.bbox.right;
+    let height = 1 - run.bbox.top - run.bbox.bottom;
+    const moved = pending?.x !== undefined && pending?.y !== undefined;
+    const rotation = pageRotations[run.page] ?? 0;
+    if (moved && (rotation === 90 || rotation === 270)) {
+      [width, height] = [height, width];
+    }
     const left = pending?.x ?? run.bbox.left;
     const top = pending?.y ?? run.bbox.top;
     return { left, top, width, height };
@@ -1423,7 +1470,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   function renderTextEditElement(el, pageRef) {
     const run = runs.find((r) => r.page === el.page && r.index === el.run_index);
     if (!run) return null; // runs haven't loaded yet for this page
-    const box = textEditBoxRect(run, el);
+    const box = textEditBoxRect(run, el, pageRotations);
     const positioned = { ...el, x: box.left, y: box.top, width: box.width, height: box.height };
     return (
       <div
@@ -1579,7 +1626,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
   function renderRunStyleOverlay(run) {
     const pending = pendingTextEditFor(run);
-    const box = textEditBoxRect(run, pending);
+    const box = textEditBoxRect(run, pending, pageRotations);
     const spanEls = renderSegmentSpans(runEditor.segments);
     return (
       <div
@@ -1674,7 +1721,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     if (runEditor.phase === "style") {
       return renderRunStyleOverlay(run); // Task 3
     }
-    const box = textEditBoxRect(run, pendingTextEditFor(run));
+    const box = textEditBoxRect(run, pendingTextEditFor(run), pageRotations);
     const seg = runEditor.segments[0];
     function updateSeg(patch) {
       setRunEditor((r) => ({ ...r, segments: [{ ...r.segments[0], ...patch }] }));
