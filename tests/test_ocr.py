@@ -24,6 +24,19 @@ def _make_image_only_pdf(path, text="This is a scanned-looking test page for OCR
     doc.close()
 
 
+def _normalized(text: str) -> str:
+    """Collapses all whitespace into single spaces before a substring check.
+
+    Tesseract's own page-segmentation occasionally inserts a line break
+    mid-sentence in its recognized text (non-deterministic, depending on
+    subtle rendering variance between runs/machines) even though the actual
+    OCR was correct - observed intermittently on this exact fixture's longer
+    sentence. Comparing on the recognized WORDS rather than the incidental
+    line-wrap position keeps these assertions from flaking on a real,
+    already-correct result."""
+    return " ".join(text.split())
+
+
 def test_ocr_pdf_adds_searchable_text_to_image_only_page(tmp_path):
     input_path = tmp_path / "input.pdf"
     _make_image_only_pdf(input_path)
@@ -37,7 +50,7 @@ def test_ocr_pdf_adds_searchable_text_to_image_only_page(tmp_path):
 
     assert result == {"pages_ocred": 1, "pages_skipped": 0}
     after = fitz.open(str(output_path))
-    assert "This is a scanned-looking test page for OCR verification." in after[0].get_text()
+    assert "This is a scanned-looking test page for OCR verification." in _normalized(after[0].get_text())
     after.close()
 
 
@@ -60,8 +73,8 @@ def test_ocr_pdf_skips_pages_that_already_have_text(tmp_path):
 
     assert result == {"pages_ocred": 1, "pages_skipped": 1}
     after = fitz.open(str(output_path))
-    assert "Already has real text." in after[0].get_text()
-    assert "Image page content." in after[1].get_text()
+    assert "Already has real text." in _normalized(after[0].get_text())
+    assert "Image page content." in _normalized(after[1].get_text())
     after.close()
 
 
@@ -139,7 +152,7 @@ def test_ocr_pdf_uses_only_vendored_binaries(tmp_path, monkeypatch):
     ocr_pdf(str(input_path), str(output_path), languages=["eng"], convert_to_pdfa=False)
 
     after = fitz.open(str(output_path))
-    assert "This is a scanned-looking test page for OCR verification." in after[0].get_text()
+    assert "This is a scanned-looking test page for OCR verification." in _normalized(after[0].get_text())
     after.close()
 
     # Prove the actual resolution outcome, not just that the vendored path is
@@ -212,7 +225,7 @@ def test_pdf_to_pdfa_converts_text_only_document_without_ocr(tmp_path):
 
     assert output_path.exists()
     after = fitz.open(str(output_path))
-    assert "This document already has real text." in after[0].get_text()
+    assert "This document already has real text." in _normalized(after[0].get_text())
     after.close()
     assert _has_pdfa_identifier(str(output_path))
 
