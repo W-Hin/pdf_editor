@@ -93,7 +93,9 @@ class ToolDialog(QDialog):
     def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         """Override in subclasses: perform the operation, return output path(s).
         Runs on a background thread — read only from `params` (see `gather_params`),
-        never from `self.<widget>`."""
+        never from `self.<widget>`. May instead return `(output_paths, message)` to
+        override the default "Done — N file(s) created." status text with a custom
+        one (e.g. a result summary)."""
         raise NotImplementedError
 
     def selected_files(self) -> list[str]:
@@ -158,11 +160,17 @@ class ToolDialog(QDialog):
         self._worker.failed.connect(self._on_failure)
         self._worker.start()
 
-    def _on_success(self, output_paths) -> None:
+    def _on_success(self, result) -> None:
         self.progress.setVisible(False)
         self.run_button.setEnabled(True)
+        if isinstance(result, tuple):
+            output_paths, message = result
+        else:
+            output_paths, message = result, None
         self._output_paths = output_paths if isinstance(output_paths, list) else [output_paths]
-        self.status_label.setText(f"Done — {len(self._output_paths)} file(s) created.")
+        if message is None:
+            message = f"Done — {len(self._output_paths)} file(s) created."
+        self.status_label.setText(message)
         self.open_folder_button.setEnabled(True)
 
     def _on_failure(self, message: str) -> None:
