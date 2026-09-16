@@ -7,7 +7,7 @@ from app.ui.dialogs.organize_dialogs import MergeDialog, SplitDialog
 from app.ui.dialogs.pages_dialogs import RemovePagesDialog, ExtractPagesDialog, ReorderPagesDialog
 from app.ui.dialogs.edit_dialogs import RotateDialog, WatermarkDialog
 from app.ui.dialogs.optimize_dialogs import CompressDialog, RepairDialog, ProtectDialog, OcrDialog, PdfToPdfaDialog, UnlockDialog
-from app.ui.dialogs.convert_dialogs import ToImagesDialog, ToWordDialog
+from app.ui.dialogs.convert_dialogs import ToImagesDialog, ToWordDialog, PdfToMarkdownDialog, PdfToPptxDialog, PdfToXlsxDialog, ImagesToPdfDialog
 
 
 def main() -> int:
@@ -28,6 +28,10 @@ def main() -> int:
     window.add_tool("Optimize", "Unlock PDF", UnlockDialog)
     window.add_tool("Convert", "PDF to JPG", ToImagesDialog)
     window.add_tool("Convert", "PDF to Word", ToWordDialog)
+    window.add_tool("Convert", "PDF to Markdown", PdfToMarkdownDialog)
+    window.add_tool("Convert", "PDF to PowerPoint", PdfToPptxDialog)
+    window.add_tool("Convert", "PDF to Excel", PdfToXlsxDialog)
+    window.add_tool("Convert", "Images to PDF", ImagesToPdfDialog)
     window.show()
     return app.exec()
 
