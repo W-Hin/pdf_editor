@@ -1070,6 +1070,43 @@ def test_compare_dialog_eager_text_diff_and_lazy_visual_diff(tmp_path):
     assert dlg.visual_a.boxes == []
 
 
+def test_compare_dialog_hides_visual_diff_on_a_no_counterpart_page(tmp_path):
+    from app.ui.dialogs.edit_dialogs import CompareDialog
+
+    doc_a = fitz.open()
+    doc_a.new_page(width=595, height=842).insert_text((72, 72), "Hello World")
+    doc_a.new_page(width=595, height=842).insert_text((72, 72), "Second page A")
+    doc_a.new_page(width=595, height=842).insert_text((72, 72), "Third page only in A")
+    path_a = tmp_path / "compare_a.pdf"
+    doc_a.save(str(path_a))
+    doc_a.close()
+
+    doc_b = fitz.open()
+    doc_b.new_page(width=595, height=842).insert_text((72, 72), "Hello World CHANGED")
+    doc_b.new_page(width=595, height=842).insert_text((72, 72), "Second page A")
+    path_b = tmp_path / "compare_b.pdf"
+    doc_b.save(str(path_b))
+    doc_b.close()
+
+    dlg = CompareDialog()
+    dlg.on_files_changed([str(path_a), str(path_b)])
+    # Note: isVisible() reflects whether the widget is actually shown on
+    # screen, which also depends on the (never-shown-in-this-test) top-level
+    # dialog's own visibility, so it is False here even though no
+    # setVisible(False) call has happened yet. isHidden() reflects only the
+    # widget's own explicit hidden flag (set via setVisible/setHidden),
+    # independent of ancestor visibility, so it is the correct check here.
+    assert not dlg.visual_a.isHidden()  # page 1 has a counterpart
+
+    dlg.page_spin.setValue(3)  # page 3 only exists in document A
+    assert dlg.visual_a.isHidden()
+    assert dlg.visual_b.isHidden()
+
+    dlg.page_spin.setValue(1)  # back to a page with a counterpart
+    assert not dlg.visual_a.isHidden()
+    assert not dlg.visual_b.isHidden()
+
+
 def test_compare_dialog_run_operation_requires_exactly_two_files(tmp_path):
     from app.core.errors import PDFError
     from app.ui.dialogs.edit_dialogs import CompareDialog
@@ -1105,3 +1142,38 @@ def test_compare_dialog_run_operation_returns_no_output_files(tmp_path):
     output_paths, message = dlg.run_operation([str(path_a), str(path_b)], params)
     assert output_paths == []
     assert "1 page" in message
+
+
+def test_compare_dialog_run_operation_raises_if_a_file_became_unreadable(tmp_path):
+    from app.core.errors import PDFError
+    from app.ui.dialogs.edit_dialogs import CompareDialog
+
+    doc_a = fitz.open()
+    doc_a.new_page(width=595, height=842).insert_text((72, 72), "Same text")
+    path_a = tmp_path / "a.pdf"
+    doc_a.save(str(path_a))
+    doc_a.close()
+
+    doc_b = fitz.open()
+    doc_b.new_page(width=595, height=842).insert_text((72, 72), "Same text")
+    path_b = tmp_path / "b.pdf"
+    doc_b.save(str(path_b))
+    doc_b.close()
+
+    dlg = CompareDialog()
+    dlg.on_files_changed([str(path_a), str(path_b)])
+    assert dlg.gather_params() == {"file_count": 2}
+
+    # Now simulate the second file having become unreadable (corrupt) while
+    # exactly 2 files are still selected.
+    corrupt_path = tmp_path / "corrupt.pdf"
+    corrupt_path.write_bytes(b"not a real pdf")
+    dlg.on_files_changed([str(path_a), str(corrupt_path)])
+    params = dlg.gather_params()
+    assert params["file_count"] == 2
+
+    try:
+        dlg.run_operation([str(path_a), str(corrupt_path)], params)
+        assert False, "expected PDFError"
+    except PDFError as exc:
+        assert "valid PDF" in str(exc)

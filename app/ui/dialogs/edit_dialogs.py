@@ -511,7 +511,11 @@ class CompareDialog(ToolDialog):
                 self.text_diff_view.setHtml("<i>Page removed (only in the first document)</i>")
             else:
                 self.text_diff_view.setHtml("<i>Page added (only in the second document)</i>")
+            self.visual_a.setVisible(False)
+            self.visual_b.setVisible(False)
             return
+        self.visual_a.setVisible(True)
+        self.visual_b.setVisible(True)
         self.text_diff_view.setHtml(self._render_text_diff(page["text_diff"]))
         image_a = render_page_image(self._path_a, page_num, 1800)
         image_b = render_page_image(self._path_b, page_num, 1800)
@@ -530,4 +534,6 @@ class CompareDialog(ToolDialog):
     def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         if params["file_count"] != 2:
             raise PDFError("Select exactly 2 files to compare.")
+        if self._path_a is None or self._path_b is None:
+            raise PDFError("Could not read one of the selected files. Check that both are valid PDFs.")
         return ([], f"Compared {len(self._pages)} page(s).")
