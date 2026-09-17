@@ -2,6 +2,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import fitz
+import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QTest
@@ -141,3 +142,61 @@ def test_compress_dialog_still_builds_its_thumbnail_strip():
     assert hasattr(dlg, "thumbnail_strip")
     assert hasattr(dlg, "_thumbnail_layout")
     assert dlg.quality_slider.value() == 60
+
+
+def test_redact_dialog_page_switch_accumulates_and_restores_boxes(tmp_path):
+    from app.ui.dialogs.edit_dialogs import RedactDialog
+
+    doc = fitz.open()
+    p1 = doc.new_page(width=595, height=842)
+    p1.insert_text((72, 72), "PAGE ONE SECRET")
+    p2 = doc.new_page(width=595, height=842)
+    p2.insert_text((72, 72), "PAGE TWO SECRET")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    dlg = RedactDialog()
+    dlg.on_files_changed([str(input_path)])
+    assert dlg.page_spin.maximum() == 2
+
+    w, h = dlg.overlay.width(), dlg.overlay.height()
+
+    def draw_box():
+        QTest.mousePress(dlg.overlay, Qt.LeftButton, Qt.NoModifier, QPoint(int(w * 0.1), int(h * 0.05)))
+        QTest.mouseMove(dlg.overlay, QPoint(int(w * 0.6), int(h * 0.15)))
+        QTest.mouseRelease(dlg.overlay, Qt.LeftButton, Qt.NoModifier, QPoint(int(w * 0.6), int(h * 0.15)))
+
+    # Page 1: draw a box.
+    draw_box()
+    assert len(dlg.overlay.boxes) == 1
+
+    # Switch to page 2: starts empty, draw a box there too.
+    dlg.page_spin.setValue(2)
+    assert dlg.overlay.boxes == []
+    draw_box()
+    assert len(dlg.overlay.boxes) == 1
+
+    # Switch back to page 1: its earlier box must still be there.
+    dlg.page_spin.setValue(1)
+    assert len(dlg.overlay.boxes) == 1
+
+    # Remove page 1's box via its marker.
+    marker = dlg.overlay._marker_rect(dlg.overlay.boxes[0])
+    click = marker.center()
+    QTest.mousePress(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
+    assert dlg.overlay.boxes == []
+
+    # gather_params must flush whatever page is CURRENTLY displayed (page 1,
+    # now empty) and report only page 2's surviving box.
+    params = dlg.gather_params()
+    assert params["redactions"] == [{"page": 2, "top": 0.05, "left": pytest.approx(0.09905660377358491), "right": pytest.approx(0.40094339622641506), "bottom": 0.85}]
+
+    output_paths = dlg.run_operation([str(input_path)], params)
+    result = fitz.open(output_paths[0])
+    text_p1 = result[0].get_text()
+    text_p2 = result[1].get_text()
+    result.close()
+    assert "PAGE ONE SECRET" in text_p1  # page 1's box was removed
+    assert "PAGE TWO SECRET" not in text_p2  # page 2's box was kept
