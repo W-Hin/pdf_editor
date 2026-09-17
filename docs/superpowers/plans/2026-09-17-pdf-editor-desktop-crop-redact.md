@@ -121,10 +121,14 @@ def test_single_mode_second_drag_replaces_the_box():
     widget.set_pixmap(QPixmap(200, 100))
     QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(20, 10))
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(150, 80))
-    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(0, 0))
+    # Deliberately NOT QPoint(0, 0) here: Qt/QTest treats a literal (0,0)
+    # position as "unspecified" and substitutes the widget's center instead
+    # (a well-known QTest gotcha, confirmed empirically before this plan was
+    # corrected) - QPoint(2, 1) is close to the corner without tripping it.
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(2, 1))
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(40, 40))
     assert len(widget.boxes) == 1
-    assert widget.single_box() == {"x0": 0.0, "y0": 0.0, "x1": 0.2, "y1": 0.4}
+    assert widget.single_box() == {"x0": 0.01, "y0": 0.01, "x1": 0.2, "y1": 0.4}
 
 
 def test_drag_below_min_fraction_is_ignored():
@@ -158,9 +162,14 @@ def test_multi_mode_two_boxes_then_remove_one_via_its_marker():
 
 
 def test_box_to_insets_and_back_round_trip():
-    box = {"x0": 0.1, "y0": 0.2, "x1": 0.7, "y1": 0.8}
+    # 0.25/0.75 chosen deliberately: both are exact in IEEE-754 binary
+    # floating point, so `1 - 0.75 == 0.25` exactly - unlike e.g. `1 - 0.7`,
+    # which is 0.30000000000000004 and would make a strict `==` dict
+    # comparison fail for reasons having nothing to do with the code under
+    # test (confirmed empirically before this plan was corrected).
+    box = {"x0": 0.25, "y0": 0.25, "x1": 0.75, "y1": 0.75}
     insets = box_to_insets(box)
-    assert insets == {"top": 0.2, "left": 0.1, "right": 0.3, "bottom": 0.2}
+    assert insets == {"top": 0.25, "left": 0.25, "right": 0.25, "bottom": 0.25}
     assert insets_to_box(insets) == box
 
 
@@ -452,7 +461,7 @@ Add this line directly after `window.add_tool("Edit", "Add page numbers", AddPag
 - [ ] **Step 7: Run tests to verify they pass**
 
 Run: `pytest tests/test_ui_desktop.py -v`
-Expected: PASS (9 tests).
+Expected: PASS (8 tests).
 
 Run the full suite: `pytest -q`
 Expected: PASS, same total as before plus 9 (some pre-existing, unrelated
@@ -659,7 +668,7 @@ Add this line directly after `window.add_tool("Edit", "Crop PDF", CropDialog)`:
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/test_ui_desktop.py -v`
-Expected: PASS (10 tests — Task 1's 9 plus this task's 1).
+Expected: PASS (9 tests — Task 1's 8 plus this task's 1).
 
 Run the full suite: `pytest -q`
 Expected: PASS, same total as after Task 1 plus 1.
