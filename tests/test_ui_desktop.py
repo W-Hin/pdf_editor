@@ -565,7 +565,7 @@ def test_sign_dialog_raises_when_no_signature_placed(tmp_path):
         assert "at least one" in str(exc)
 
 
-def _build_form_fixture(tmp_path):
+def _build_form_fixture(tmp_path, pages: int = 1):
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
 
@@ -591,6 +591,17 @@ def _build_form_fixture(tmp_path):
     combo_widget.rect = fitz.Rect(72, 180, 250, 200)
     combo_widget.choice_values = ["USA", "Canada", "Mexico"]
     page.add_widget(combo_widget)
+
+    # Additional pages beyond the first each get their own extra text field,
+    # so multi-page tests can exercise fields on more than one page.
+    for extra_page_num in range(2, pages + 1):
+        extra_page = doc.new_page(width=595, height=842)
+        extra_widget = fitz.Widget()
+        extra_widget.field_name = "extra_field" if extra_page_num == 2 else f"extra_field_{extra_page_num}"
+        extra_widget.field_label = "Extra Field" if extra_page_num == 2 else f"Extra Field {extra_page_num}"
+        extra_widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+        extra_widget.rect = fitz.Rect(72, 100, 300, 120)
+        extra_page.add_widget(extra_widget)
 
     path = tmp_path / "form.pdf"
     doc.save(str(path))
@@ -667,6 +678,52 @@ def test_form_fields_widget_values_reflects_synthetic_user_interaction(tmp_path)
     assert len(widget.values()) == 3
 
 
+def test_form_fields_widget_preserves_an_off_list_combobox_value(tmp_path):
+    # A combobox's recorded value not being in its own choice list is a real,
+    # valid PDF state (e.g. typed directly, or the choice list changed after
+    # the value was set) - PDF_CH_FIELD_IS_EDIT is the flag that lets PyMuPDF
+    # accept and keep such a value rather than rejecting it (confirmed
+    # empirically while writing this test).
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    combo_widget = fitz.Widget()
+    combo_widget.field_name = "country"
+    combo_widget.field_label = "Country"
+    combo_widget.field_type = fitz.PDF_WIDGET_TYPE_COMBOBOX
+    combo_widget.field_flags = fitz.PDF_CH_FIELD_IS_EDIT
+    combo_widget.field_value = "Atlantis"
+    combo_widget.choice_values = ["USA", "Canada", "Mexico"]
+    combo_widget.rect = fitz.Rect(72, 180, 250, 200)
+    page.add_widget(combo_widget)
+
+    input_path = tmp_path / "offlist.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    fields = extract_form_fields(str(input_path))
+    thumb_bytes = render_page_thumbnail(str(input_path), 1, max_size=450)
+    pixmap = QPixmap()
+    pixmap.loadFromData(thumb_bytes)
+
+    combo_field = next(f for f in fields if f["type"] == "combobox")
+    assert combo_field["value"] == "Atlantis"
+    assert combo_field["choices"] == ["USA", "Canada", "Mexico"]
+
+    widget = FormFieldsWidget()
+    widget.set_fields(fields, [pixmap])
+    combo_qwidget = widget._field_widgets[(combo_field["page"], combo_field["index"])]
+
+    # The off-list value must be preserved as a synthesized extra choice and
+    # selected - not silently dropped to the blank placeholder, which would
+    # make fill_form's own "" == clear-field branch erase this untouched
+    # field's real value.
+    assert combo_qwidget.currentText() == "Atlantis"
+    assert combo_qwidget.findText("Atlantis") != -1
+
+    values_by_key = {(v["page"], v["index"]): v["value"] for v in widget.values()}
+    assert values_by_key[(combo_field["page"], combo_field["index"])] == "Atlantis"
+
+
 def test_form_fields_widget_has_fields_false_for_a_fields_free_document():
     widget = FormFieldsWidget()
     widget.set_fields([], [QPixmap(100, 100)])
@@ -733,3 +790,58 @@ def test_fill_form_dialog_raises_when_document_has_no_fields(tmp_path):
         assert False, "expected PDFError"
     except PDFError as exc:
         assert "at least one" in str(exc)
+
+
+def test_fill_form_dialog_clears_stale_state_on_a_failed_load(tmp_path):
+    from app.ui.dialogs.edit_dialogs import FillFormDialog
+
+    good_path = _build_form_fixture(tmp_path)
+
+    dlg = FillFormDialog()
+    dlg.on_files_changed([good_path])
+    assert dlg.fields_widget.has_fields() is True
+
+    corrupt_path = tmp_path / "corrupt.pdf"
+    corrupt_path.write_bytes(b"not a real pdf")
+
+    # A failed load must not leave the FIRST document's fields/values live -
+    # on_files_changed resets to empty state before attempting the new file,
+    # so a PDFError here leaves a clean empty state rather than a stale one.
+    dlg.on_files_changed([str(corrupt_path)])
+    assert dlg.fields_widget.has_fields() is False
+    assert dlg.fields_widget.values() == []
+
+
+def test_fill_form_dialog_handles_multiple_pages(tmp_path):
+    from app.ui.dialogs.edit_dialogs import FillFormDialog
+
+    input_path = _build_form_fixture(tmp_path, pages=2)
+
+    dlg = FillFormDialog()
+    dlg.on_files_changed([input_path])
+    assert dlg.fields_widget.has_fields() is True
+    assert dlg.fields_widget._container_layout.count() == 2
+
+    fields = dlg.fields_widget._fields
+    text_field = next(f for f in fields if f["page"] == 1 and f["type"] == "text")
+    extra_field = next(f for f in fields if f["page"] == 2)
+    text_qwidget = dlg.fields_widget._field_widgets[(text_field["page"], text_field["index"])]
+    extra_qwidget = dlg.fields_widget._field_widgets[(extra_field["page"], extra_field["index"])]
+
+    text_qwidget.clear()
+    QTest.keyClicks(text_qwidget, "Page One Value")
+    extra_qwidget.clear()
+    QTest.keyClicks(extra_qwidget, "Page Two Value")
+
+    params = dlg.gather_params()
+    pages_seen = {v["page"] for v in params["values"]}
+    assert pages_seen == {1, 2}
+
+    output_paths = dlg.run_operation([input_path], params)
+
+    result = fitz.open(output_paths[0])
+    page1_text = result[0].get_text()
+    page2_text = result[1].get_text()
+    result.close()
+    assert "Page One Value" in page1_text
+    assert "Page Two Value" in page2_text

@@ -380,9 +380,9 @@ class FillFormDialog(ToolDialog):
         layout.addWidget(self.fields_widget)
 
     def on_files_changed(self, paths: list[str]) -> None:
+        self.fields_widget.set_fields([], [])
+        self.empty_label.setVisible(False)
         if not paths:
-            self.fields_widget.set_fields([], [])
-            self.empty_label.setVisible(False)
             return
         input_path = paths[0]
         try:

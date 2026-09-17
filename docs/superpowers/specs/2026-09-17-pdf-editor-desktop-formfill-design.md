@@ -76,12 +76,23 @@ frame" per page, top to bottom:
   ```
 - Field type → widget: `"text"` → `QLineEdit` (`.setText(value)`),
   `"checkbox"` → `QCheckBox` (`.setChecked(bool(value))`), `"combobox"` →
-  `QComboBox` (`.addItems(choices)`, `.setCurrentText(value)` if `value`
-  is one of `choices` else leave at index 0 — mirrors the web version's
-  own `value={values[key] ?? ""}` fallback, which likewise doesn't force
-  a specific default when the current value isn't a valid choice).
+  `QComboBox` (blank placeholder at index 0, then `.addItems(choices)`,
+  then `.setCurrentText(value)` if `value` is truthy — leaving the blank
+  placeholder selected only when `value` is falsy).
   Every widget gets `.setToolTip(field["label"])`, matching
   `FormFillCanvas.jsx`'s `title={field.label}`.
+  - **Edge case: an off-list combobox value.** A document's combobox field
+    can legitimately hold a value that isn't in its own `choices` list (typed
+    directly, or the choice list changed after the value was set). Because
+    `values()` reports **all** held fields — not only ones the user
+    touched — silently falling back to the blank placeholder for this case
+    would make an untouched dialog run report `""` for that field, and
+    `fill_form`'s own `"" == clear this field` branch would then erase a
+    value the user never touched. So when `value` is truthy and not already
+    in `choices`, `set_fields` adds it as one extra synthesized choice
+    before selecting it, rather than dropping to blank. This is what keeps
+    "re-submitting a field's own unchanged value is a no-op" (below) true in
+    every case, including this one.
 - `set_fields(fields: list[dict], page_pixmaps: list[QPixmap]) -> None`:
   clears any existing page frames and rebuilds from scratch (same
   clear-then-rebuild shape `_refresh_thumbnails` already uses for the

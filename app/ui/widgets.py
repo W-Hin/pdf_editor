@@ -395,7 +395,17 @@ class FormFieldsWidget(QWidget):
                     # blank placeholder at index 0 to match.
                     field_widget.addItem("")
                     field_widget.addItems(field["choices"] or [])
-                    if field["value"] in (field["choices"] or []):
+                    if field["value"]:
+                        # The document's own recorded value may not be in its own
+                        # choice list (a real, valid PDF state - e.g. a value typed
+                        # directly, or a choice list edited after the value was set).
+                        # values() reports ALL held fields regardless of whether the
+                        # user touched them, so silently falling back to the blank
+                        # placeholder here would make fill_form's own "" == clear-field
+                        # branch erase this untouched field's real value. Synthesize an
+                        # extra choice instead, so it's preserved and still editable.
+                        if field["value"] not in (field["choices"] or []):
+                            field_widget.addItem(field["value"])
                         field_widget.setCurrentText(field["value"])
                 else:
                     continue
