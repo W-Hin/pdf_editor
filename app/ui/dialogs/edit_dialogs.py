@@ -172,64 +172,47 @@ class RedactDialog(ToolDialog):
 
     def build_preview(self, container: QWidget) -> None:
         layout = QVBoxLayout(container)
-        page_row = QHBoxLayout()
-        page_row.addWidget(QLabel("Page:"))
-        self.page_spin = QSpinBox()
-        self.page_spin.setMinimum(1)
-        self.page_spin.setValue(1)
-        self.page_spin.valueChanged.connect(self._load_current_page)
-        page_row.addWidget(self.page_spin)
-        layout.addLayout(page_row)
         instruction = QLabel("Drag to mark an area to redact; click the × on a box to remove it:")
         instruction.setWordWrap(True)
         layout.addWidget(instruction)
-        self.overlay = RectangleOverlayWidget(multi=True)
-        layout.addWidget(self.overlay)
-        self._all_redactions: list[dict] = []
-        self._current_page: int | None = None
-        self._input_path: str | None = None
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._container = QWidget()
+        self._container_layout = QVBoxLayout(self._container)
+        self._scroll.setWidget(self._container)
+        layout.addWidget(self._scroll)
+        self._page_widgets: list[RectangleOverlayWidget] = []
 
     def on_files_changed(self, paths: list[str]) -> None:
-        self._all_redactions = []
-        self._current_page = None
-        self._input_path = paths[0] if paths else None
-        if self._input_path is None:
+        while self._container_layout.count():
+            item = self._container_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._page_widgets = []
+        if not paths:
             return
         try:
-            count = get_page_count(self._input_path)
+            count = get_page_count(paths[0])
         except PDFError:
             return
-        self.page_spin.setMaximum(count)
-        self.page_spin.setValue(1)
-        self._load_current_page()
-
-    def _flush_current_page(self) -> None:
-        if self._current_page is None:
-            return
-        self._all_redactions = [r for r in self._all_redactions if r["page"] != self._current_page]
-        self._all_redactions.extend(
-            {"page": self._current_page, **box_to_insets(b)} for b in self.overlay.boxes
-        )
-
-    def _load_current_page(self) -> None:
-        if self._input_path is None:
-            return
-        self._flush_current_page()
-        page_num = self.page_spin.value()
-        self._current_page = page_num
-        try:
-            thumb_bytes = render_page_thumbnail(self._input_path, page_num, max_size=450)
-        except PDFError:
-            return
-        pixmap = QPixmap()
-        pixmap.loadFromData(thumb_bytes)
-        self.overlay.set_pixmap(pixmap)
-        page_boxes = [insets_to_box(r) for r in self._all_redactions if r["page"] == page_num]
-        self.overlay.set_boxes(page_boxes)
+        for page_num in range(1, count + 1):
+            try:
+                thumb_bytes = render_page_thumbnail(paths[0], page_num, max_size=450)
+            except PDFError:
+                continue
+            pixmap = QPixmap()
+            pixmap.loadFromData(thumb_bytes)
+            overlay = RectangleOverlayWidget(multi=True)
+            overlay.set_pixmap(pixmap)
+            self._container_layout.addWidget(overlay)
+            self._page_widgets.append(overlay)
 
     def gather_params(self) -> dict:
-        self._flush_current_page()
-        return {"redactions": list(self._all_redactions)}
+        redactions = []
+        for page_num, overlay in enumerate(self._page_widgets, start=1):
+            redactions.extend({"page": page_num, **box_to_insets(b)} for b in overlay.boxes)
+        return {"redactions": redactions}
 
     def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         input_path = input_paths[0]

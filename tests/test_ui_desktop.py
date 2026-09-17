@@ -198,7 +198,7 @@ def test_compress_dialog_still_builds_its_thumbnail_strip():
     assert dlg.quality_slider.value() == 60
 
 
-def test_redact_dialog_page_switch_accumulates_and_restores_boxes(tmp_path):
+def test_redact_dialog_each_page_holds_its_own_boxes_independently(tmp_path):
     from app.ui.dialogs.edit_dialogs import RedactDialog
 
     doc = fitz.open()
@@ -212,39 +212,19 @@ def test_redact_dialog_page_switch_accumulates_and_restores_boxes(tmp_path):
 
     dlg = RedactDialog()
     dlg.on_files_changed([str(input_path)])
-    assert dlg.page_spin.maximum() == 2
+    assert len(dlg._page_widgets) == 2
 
-    w, h = dlg.overlay.width(), dlg.overlay.height()
+    def draw_box(overlay):
+        w, h = overlay.width(), overlay.height()
+        QTest.mousePress(overlay, Qt.LeftButton, Qt.NoModifier, QPoint(int(w * 0.1), int(h * 0.05)))
+        QTest.mouseMove(overlay, QPoint(int(w * 0.6), int(h * 0.15)))
+        QTest.mouseRelease(overlay, Qt.LeftButton, Qt.NoModifier, QPoint(int(w * 0.6), int(h * 0.15)))
 
-    def draw_box():
-        QTest.mousePress(dlg.overlay, Qt.LeftButton, Qt.NoModifier, QPoint(int(w * 0.1), int(h * 0.05)))
-        QTest.mouseMove(dlg.overlay, QPoint(int(w * 0.6), int(h * 0.15)))
-        QTest.mouseRelease(dlg.overlay, Qt.LeftButton, Qt.NoModifier, QPoint(int(w * 0.6), int(h * 0.15)))
+    draw_box(dlg._page_widgets[1])  # page 2 only
 
-    # Page 1: draw a box.
-    draw_box()
-    assert len(dlg.overlay.boxes) == 1
-
-    # Switch to page 2: starts empty, draw a box there too.
-    dlg.page_spin.setValue(2)
-    assert dlg.overlay.boxes == []
-    draw_box()
-    assert len(dlg.overlay.boxes) == 1
-
-    # Switch back to page 1: its earlier box must still be there.
-    dlg.page_spin.setValue(1)
-    assert len(dlg.overlay.boxes) == 1
-
-    # Remove page 1's box via its marker.
-    marker = dlg.overlay._marker_rect(dlg.overlay.boxes[0])
-    click = marker.center()
-    QTest.mousePress(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
-    QTest.mouseRelease(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
-    assert dlg.overlay.boxes == []
-
-    # gather_params must flush whatever page is CURRENTLY displayed (page 1,
-    # now empty) and report only page 2's surviving box.
     params = dlg.gather_params()
+    # Same drag, same page dimensions as the deleted test - the exact expected
+    # fraction values were already empirically verified there and reused here.
     assert params["redactions"] == [{
         "page": 2,
         "top": pytest.approx(0.04888888888888889),
@@ -258,8 +238,18 @@ def test_redact_dialog_page_switch_accumulates_and_restores_boxes(tmp_path):
     text_p1 = result[0].get_text()
     text_p2 = result[1].get_text()
     result.close()
-    assert "PAGE ONE SECRET" in text_p1  # page 1's box was removed
-    assert "PAGE TWO SECRET" not in text_p2  # page 2's box was kept
+    assert "PAGE ONE SECRET" in text_p1  # untouched
+    assert "PAGE TWO SECRET" not in text_p2  # redacted
+
+    # Removing page 2's box via its own widget's marker works independently
+    # of every other page's widget.
+    page2_widget = dlg._page_widgets[1]
+    marker = page2_widget._marker_rect(page2_widget.boxes[0])
+    click = marker.center()
+    QTest.mousePress(page2_widget, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(page2_widget, Qt.LeftButton, Qt.NoModifier, click)
+    assert page2_widget.boxes == []
+    assert dlg.gather_params()["redactions"] == []
 
 
 def test_signature_pad_starts_blank():
