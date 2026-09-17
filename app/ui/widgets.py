@@ -1,5 +1,5 @@
-from PySide6.QtCore import QPoint, QRect
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 _MIN_DRAG_FRACTION = 0.02
@@ -129,3 +129,50 @@ class RectangleOverlayWidget(QWidget):
             x0, x1 = sorted((self._drag_start[0], self._drag_current[0]))
             y0, y1 = sorted((self._drag_start[1], self._drag_current[1]))
             self._paint_box(painter, {"x0": x0, "y0": y0, "x1": x1, "y1": y1}, draw_marker=False)
+
+
+class SignaturePadWidget(QWidget):
+    """A small freehand-drawing canvas for a hand-drawn signature - paints
+    directly onto an internal QImage buffer as the mouse drags, matching
+    SignCanvas.jsx's own drawing pad (PAD_WIDTH=400, PAD_HEIGHT=150)."""
+
+    def __init__(self, width: int = 400, height: int = 150, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(width, height)
+        self._image = QImage(width, height, QImage.Format_RGB32)
+        self._image.fill(Qt.white)
+        self._has_drawing = False
+        self._last_point: QPoint | None = None
+
+    def has_drawing(self) -> bool:
+        return self._has_drawing
+
+    def clear(self) -> None:
+        self._image.fill(Qt.white)
+        self._has_drawing = False
+        self.update()
+
+    def save_png(self, path: str) -> None:
+        self._image.save(path, "PNG")
+
+    def mousePressEvent(self, e) -> None:
+        self._last_point = e.position().toPoint()
+        self._has_drawing = True
+
+    def mouseMoveEvent(self, e) -> None:
+        if self._last_point is None:
+            return
+        pos = e.position().toPoint()
+        painter = QPainter(self._image)
+        painter.setPen(QPen(Qt.black, 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.drawLine(self._last_point, pos)
+        painter.end()
+        self._last_point = pos
+        self.update()
+
+    def mouseReleaseEvent(self, e) -> None:
+        self._last_point = None
+
+    def paintEvent(self, e) -> None:
+        painter = QPainter(self)
+        painter.drawImage(0, 0, self._image)

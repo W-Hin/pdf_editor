@@ -4,12 +4,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import fitz
 import pytest
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from app.core.pdf_ops import crop_pdf, render_page_thumbnail
-from app.ui.widgets import RectangleOverlayWidget, box_to_insets, insets_to_box
+from app.ui.widgets import RectangleOverlayWidget, SignaturePadWidget, box_to_insets, insets_to_box
 
 _app = QApplication.instance() or QApplication([])
 
@@ -207,3 +207,45 @@ def test_redact_dialog_page_switch_accumulates_and_restores_boxes(tmp_path):
     result.close()
     assert "PAGE ONE SECRET" in text_p1  # page 1's box was removed
     assert "PAGE TWO SECRET" not in text_p2  # page 2's box was kept
+
+
+def test_signature_pad_starts_blank():
+    pad = SignaturePadWidget()
+    assert pad.has_drawing() is False
+
+
+def test_signature_pad_drawing_sets_has_drawing_and_produces_real_pixels(tmp_path):
+    pad = SignaturePadWidget()
+    QTest.mousePress(pad, Qt.LeftButton, Qt.NoModifier, QPoint(20, 20))
+    QTest.mouseMove(pad, QPoint(100, 100))
+    QTest.mouseMove(pad, QPoint(200, 50))
+    QTest.mouseRelease(pad, Qt.LeftButton, Qt.NoModifier, QPoint(200, 50))
+    assert pad.has_drawing() is True
+
+    png_path = str(tmp_path / "sig.png")
+    pad.save_png(png_path)
+    saved = QImage(png_path)
+    assert (saved.width(), saved.height()) == (400, 150)
+
+    # A pixel on the drawn stroke's path is dark; a corner nowhere near any
+    # stroke is untouched white - confirmed empirically against this exact
+    # drag before this test was written (a real drawn pixel was found by
+    # scanning the whole image; corner (390, 5) was picked as clearly
+    # outside the (20,20)-(100,100)-(200,50) stroke path).
+    found_dark_pixel = any(
+        saved.pixelColor(x, y).red() < 100
+        for x in range(0, 400, 2)
+        for y in range(0, 150, 2)
+    )
+    assert found_dark_pixel
+    corner = saved.pixelColor(390, 5)
+    assert corner.red() > 240 and corner.green() > 240 and corner.blue() > 240
+
+
+def test_signature_pad_clear_resets_has_drawing():
+    pad = SignaturePadWidget()
+    QTest.mousePress(pad, Qt.LeftButton, Qt.NoModifier, QPoint(20, 20))
+    QTest.mouseRelease(pad, Qt.LeftButton, Qt.NoModifier, QPoint(100, 100))
+    assert pad.has_drawing() is True
+    pad.clear()
+    assert pad.has_drawing() is False
