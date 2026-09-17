@@ -176,3 +176,133 @@ class SignaturePadWidget(QWidget):
     def paintEvent(self, e) -> None:
         painter = QPainter(self)
         painter.drawImage(0, 0, self._image)
+
+
+_HANDLE_SIZE = 14
+_DEFAULT_WIDTH_FRACTION = 0.25
+_MAX_HEIGHT_FRACTION = 0.9
+_MIN_PLACEMENT_WIDTH_FRACTION = 0.05
+
+
+class ImagePlacementWidget(QWidget):
+    """Displays a page-preview QPixmap with a signature image placed at
+    zero or more independent positions - mirrors SignCanvas.jsx's own
+    click-to-place / drag-to-move / drag-handle-to-resize / click-to-remove
+    model. A click is tested against, in this order: an existing
+    placement's removable marker (top-right corner), its resize handle
+    (bottom-right corner), its body (starts a move), and - only if none of
+    those hit - empty space, which creates a new placement centered on the
+    click point."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.page_pixmap = None
+        self.signature_pixmap = None
+        self.placements: list[dict] = []
+        self._drag: dict | None = None
+
+    def set_page_pixmap(self, pixmap) -> None:
+        self.page_pixmap = pixmap
+        self.setFixedSize(pixmap.size())
+        self.update()
+
+    def set_signature_pixmap(self, pixmap) -> None:
+        self.signature_pixmap = pixmap
+        self.update()
+
+    def set_placements(self, placements: list[dict]) -> None:
+        self.placements = list(placements)
+        self.update()
+
+    def _point_from_pos(self, pos) -> tuple[float, float] | None:
+        if self.width() == 0 or self.height() == 0:
+            return None
+        x = min(max(pos.x() / self.width(), 0), 1)
+        y = min(max(pos.y() / self.height(), 0), 1)
+        return (x, y)
+
+    def _placement_rect_px(self, p: dict) -> QRect:
+        x0 = p["x"] * self.width()
+        y0 = p["y"] * self.height()
+        x1 = (p["x"] + p["width"]) * self.width()
+        y1 = (p["y"] + p["height"]) * self.height()
+        return QRect(int(x0), int(y0), int(x1 - x0), int(y1 - y0))
+
+    def _marker_rect(self, p: dict) -> QRect:
+        rect = self._placement_rect_px(p)
+        return QRect(rect.right() - _MARKER_SIZE, rect.top(), _MARKER_SIZE, _MARKER_SIZE)
+
+    def _handle_rect(self, p: dict) -> QRect:
+        rect = self._placement_rect_px(p)
+        return QRect(rect.right() - _HANDLE_SIZE, rect.bottom() - _HANDLE_SIZE, _HANDLE_SIZE, _HANDLE_SIZE)
+
+    def mousePressEvent(self, e) -> None:
+        pos = e.position().toPoint()
+        for i, p in enumerate(self.placements):
+            if self._marker_rect(p).contains(pos):
+                del self.placements[i]
+                self.update()
+                return
+        for i, p in enumerate(self.placements):
+            if self._handle_rect(p).contains(pos):
+                point = self._point_from_pos(pos)
+                self._drag = {"mode": "resize", "index": i, "start": point, "start_placement": dict(p)}
+                return
+        for i, p in enumerate(self.placements):
+            if self._placement_rect_px(p).contains(pos):
+                point = self._point_from_pos(pos)
+                self._drag = {"mode": "move", "index": i, "start": point, "start_placement": dict(p)}
+                return
+        point = self._point_from_pos(pos)
+        if point is None or self.signature_pixmap is None:
+            return
+        sig_w, sig_h = self.signature_pixmap.width(), self.signature_pixmap.height()
+        width = _DEFAULT_WIDTH_FRACTION
+        height = min(_MAX_HEIGHT_FRACTION, width * (sig_h / sig_w))
+        x = min(max(point[0] - width / 2, 0), 1 - width)
+        y = min(max(point[1] - height / 2, 0), 1 - height)
+        self.placements.append({"x": x, "y": y, "width": width, "height": height})
+        self.update()
+
+    def mouseMoveEvent(self, e) -> None:
+        if self._drag is None:
+            return
+        point = self._point_from_pos(e.position().toPoint())
+        if point is None:
+            return
+        dx = point[0] - self._drag["start"][0]
+        dy = point[1] - self._drag["start"][1]
+        sp = self._drag["start_placement"]
+        i = self._drag["index"]
+        if self._drag["mode"] == "move":
+            x = min(max(sp["x"] + dx, 0), 1 - sp["width"])
+            y = min(max(sp["y"] + dy, 0), 1 - sp["height"])
+            self.placements[i] = {**sp, "x": x, "y": y}
+        else:
+            aspect = sp["height"] / sp["width"]
+            width_cap = min(1 - sp["x"], (1 - sp["y"]) / aspect)
+            desired_width = max(_MIN_PLACEMENT_WIDTH_FRACTION, sp["width"] + dx)
+            width = min(desired_width, width_cap)
+            height = width * aspect
+            self.placements[i] = {**sp, "width": width, "height": height}
+        self.update()
+
+    def mouseReleaseEvent(self, e) -> None:
+        self._drag = None
+
+    def paintEvent(self, e) -> None:
+        painter = QPainter(self)
+        if self.page_pixmap is not None:
+            painter.drawPixmap(0, 0, self.page_pixmap)
+        for p in self.placements:
+            rect = self._placement_rect_px(p)
+            if self.signature_pixmap is not None:
+                painter.drawPixmap(rect, self.signature_pixmap)
+            marker = self._marker_rect(p)
+            painter.setPen(QPen(QColor(255, 255, 255), 1))
+            painter.setBrush(QColor(220, 40, 40))
+            painter.drawEllipse(marker)
+            handle = self._handle_rect(p)
+            painter.setPen(QPen(QColor(255, 255, 255), 1))
+            painter.setBrush(QColor(40, 100, 220))
+            painter.drawRect(handle)

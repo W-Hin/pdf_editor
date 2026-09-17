@@ -249,3 +249,105 @@ def test_signature_pad_clear_resets_has_drawing():
     assert pad.has_drawing() is True
     pad.clear()
     assert pad.has_drawing() is False
+
+
+from app.ui.widgets import ImagePlacementWidget
+
+
+def _make_placement_widget():
+    widget = ImagePlacementWidget()
+    page_pixmap = QPixmap(424, 600)
+    page_pixmap.fill(Qt.white)
+    sig_pixmap = QPixmap(200, 80)
+    sig_pixmap.fill(Qt.blue)
+    widget.set_page_pixmap(page_pixmap)
+    widget.set_signature_pixmap(sig_pixmap)
+    return widget
+
+
+def test_empty_space_click_creates_a_placement_with_default_sizing():
+    widget = _make_placement_widget()
+    w, h = widget.width(), widget.height()
+    click = QPoint(int(w * 0.5), int(h * 0.3))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, click)
+    assert len(widget.placements) == 1
+    p = widget.placements[0]
+    # Verified empirically before this test was written: a 200x80 signature
+    # (aspect 0.4) at the default width fraction 0.25 gives height 0.1
+    # (0.25 * 0.4), centered on the click point (0.5, 0.3) and unclamped
+    # since it's well away from every edge.
+    assert p == {"x": 0.375, "y": 0.25, "width": 0.25, "height": 0.1}
+
+
+def test_marker_and_handle_rects_do_not_overlap_for_a_default_sized_placement():
+    widget = _make_placement_widget()
+    p = {"x": 0.375, "y": 0.25, "width": 0.25, "height": 0.1}
+    marker = widget._marker_rect(p)
+    handle = widget._handle_rect(p)
+    assert not marker.intersects(handle)
+
+
+def test_clicking_a_placements_body_moves_it():
+    widget = _make_placement_widget()
+    widget.set_placements([{"x": 0.375, "y": 0.25, "width": 0.25, "height": 0.1}])
+    w, h = widget.width(), widget.height()
+    rect = widget._placement_rect_px(widget.placements[0])
+    body = QPoint(rect.left() + rect.width() // 2, rect.top() + rect.height() // 2)
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, body)
+    QTest.mouseMove(widget, QPoint(body.x() + 20, body.y() + 10))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(body.x() + 20, body.y() + 10))
+    p = widget.placements[0]
+    # Verified empirically: moving by (20, 10) pixels on this exact 424x600
+    # widget shifts the fraction position by (20/424, 10/600), unclamped.
+    assert p["x"] == pytest.approx(0.4221698113207547)
+    assert p["y"] == pytest.approx(0.26666666666666666)
+    assert p["width"] == pytest.approx(0.25)  # unchanged by a move
+    assert p["height"] == pytest.approx(0.1)
+
+
+def test_clicking_a_placements_handle_resizes_it_aspect_locked():
+    widget = _make_placement_widget()
+    widget.set_placements([{"x": 0.4221698113207547, "y": 0.26666666666666666, "width": 0.25, "height": 0.1}])
+    p = widget.placements[0]
+    handle = widget._handle_rect(p)
+    hx, hy = handle.center().x(), handle.center().y()
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(hx, hy))
+    QTest.mouseMove(widget, QPoint(hx + 30, hy + 30))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(hx + 30, hy + 30))
+    resized = widget.placements[0]
+    # Verified empirically: dragging the handle +30px horizontally widens
+    # the box by 30/424 of the page width, and height follows the locked
+    # aspect ratio (0.1/0.25 = 0.4) - not the vertical drag distance at all.
+    assert resized["width"] == pytest.approx(0.32075471698113206)
+    assert resized["height"] == pytest.approx(0.12830188679245283)
+
+
+def test_clicking_a_placements_marker_removes_it():
+    widget = _make_placement_widget()
+    widget.set_placements([{"x": 0.4221698113207547, "y": 0.26666666666666666, "width": 0.3207547169811321, "height": 0.12830188679245286}])
+    marker = widget._marker_rect(widget.placements[0])
+    click = marker.center()
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, click)
+    assert widget.placements == []
+
+
+def test_resize_past_the_page_edge_clamps_to_the_available_space():
+    widget = _make_placement_widget()
+    widget.set_placements([{"x": 0.6, "y": 0.6, "width": 0.25, "height": 0.1}])
+    p = widget.placements[0]
+    handle = widget._handle_rect(p)
+    hx, hy = handle.center().x(), handle.center().y()
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(hx, hy))
+    QTest.mouseMove(widget, QPoint(hx + 500, hy + 500))  # a drag far past any edge
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(hx + 500, hy + 500))
+    resized = widget.placements[0]
+    # Verified empirically: at x=0.6, the widthCap (1 - x = 0.4) binds before
+    # the raw dragged-width would, so width clamps to exactly 0.4 and height
+    # follows the same 0.1/0.25=0.4 aspect ratio (0.4 * 0.4 = 0.16) - not
+    # some other value influenced by the vertical drag distance.
+    assert resized["width"] == pytest.approx(0.4)
+    assert resized["height"] == pytest.approx(0.16)
+    assert resized["x"] + resized["width"] <= 1.0 + 1e-9
+    assert resized["y"] + resized["height"] <= 1.0 + 1e-9
