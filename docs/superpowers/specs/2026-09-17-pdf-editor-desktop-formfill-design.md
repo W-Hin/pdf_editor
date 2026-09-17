@@ -141,9 +141,16 @@ rect), typing into a `QLineEdit`/toggling a `QCheckBox`/picking a
 correctly reports `False` for a fields-free document. `FillFormDialog`'s
 test is a full end-to-end flow: build a real fixture PDF with form fields,
 load it, change field values via the same synthetic widget interactions,
-`gather_params`/`run_operation`, then re-open the output with `fitz` and
-confirm (via a fresh `extract_form_fields` call on the *output* file) that
-the new values actually landed.
+`gather_params`/`run_operation`, then re-open the output with `fitz`. **Not**
+via a fresh `extract_form_fields` call on the output — `fill_form` always
+calls `doc.bake(annots=False, widgets=True)`, which flattens every widget
+into static page content, so the output file has zero fields left to
+extract (confirmed empirically while writing this plan; `extract_form_fields`
+on a `fill_form` output always returns `[]`, matching
+`tests/test_pdf_ops.py`'s own `test_fill_form_flattens_the_output`). Instead,
+verify the way that file's other `fill_form` tests already do: `get_text()`
+on the output page for the text/combobox values (they render as literal
+text), matching `test_fill_form_sets_text_field_value`'s convention.
 
 ## Out of scope
 
