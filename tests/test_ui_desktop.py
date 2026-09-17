@@ -1177,3 +1177,72 @@ def test_compare_dialog_run_operation_raises_if_a_file_became_unreadable(tmp_pat
         assert False, "expected PDFError"
     except PDFError as exc:
         assert "valid PDF" in str(exc)
+
+
+def test_compare_dialog_does_not_force_an_oversized_window(tmp_path):
+    from app.ui.dialogs.edit_dialogs import CompareDialog
+
+    doc_a = fitz.open()
+    doc_a.new_page(width=595, height=842).insert_text((72, 72), "Hello World")
+    path_a = tmp_path / "a.pdf"
+    doc_a.save(str(path_a))
+    doc_a.close()
+
+    doc_b = fitz.open()
+    doc_b.new_page(width=595, height=842).insert_text((72, 72), "Hello World CHANGED")
+    path_b = tmp_path / "b.pdf"
+    doc_b.save(str(path_b))
+    doc_b.close()
+
+    dlg = CompareDialog()
+    dlg.on_files_changed([str(path_a), str(path_b)])
+    assert dlg.minimumSizeHint().width() <= 1280
+    assert dlg.minimumSizeHint().height() <= 1280
+
+
+def test_compare_dialog_text_diff_escapes_html_special_characters(tmp_path):
+    from app.ui.dialogs.edit_dialogs import CompareDialog
+
+    doc_a = fitz.open()
+    doc_a.new_page(width=595, height=842).insert_text((72, 72), "if a < b and x > y & z")
+    path_a = tmp_path / "a.pdf"
+    doc_a.save(str(path_a))
+    doc_a.close()
+
+    doc_b = fitz.open()
+    doc_b.new_page(width=595, height=842).insert_text((72, 72), "if a < b and x > y & z CHANGED")
+    path_b = tmp_path / "b.pdf"
+    doc_b.save(str(path_b))
+    doc_b.close()
+
+    dlg = CompareDialog()
+    dlg.on_files_changed([str(path_a), str(path_b)])
+    plain_text = dlg.text_diff_view.toPlainText()
+    assert "a < b and x > y & z" in plain_text
+
+
+def test_compare_dialog_clear_files_button_resets_state(tmp_path):
+    from app.ui.dialogs.edit_dialogs import CompareDialog
+
+    doc_a = fitz.open()
+    doc_a.new_page(width=595, height=842).insert_text((72, 72), "Hello World")
+    path_a = tmp_path / "a.pdf"
+    doc_a.save(str(path_a))
+    doc_a.close()
+
+    doc_b = fitz.open()
+    doc_b.new_page(width=595, height=842).insert_text((72, 72), "Hello World CHANGED")
+    path_b = tmp_path / "b.pdf"
+    doc_b.save(str(path_b))
+    doc_b.close()
+
+    dlg = CompareDialog()
+    dlg.file_list.addItem(str(path_a))
+    dlg.file_list.addItem(str(path_b))
+    dlg.on_files_changed([str(path_a), str(path_b)])
+    assert dlg._path_a is not None
+
+    dlg._clear_files()
+    assert dlg.file_list.count() == 0
+    assert dlg._path_a is None
+    assert dlg.gather_params()["file_count"] == 0

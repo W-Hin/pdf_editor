@@ -1,3 +1,4 @@
+import html
 import os
 from pathlib import Path
 
@@ -108,12 +109,12 @@ class CropDialog(ToolDialog):
         layout.addWidget(instruction)
         self.overlay = RectangleOverlayWidget(multi=False)
         self.overlay.box_changed.connect(self._propagate_box_to_mirrors)
-        layout.addWidget(self.overlay)
 
         self._mirror_scroll = QScrollArea()
         self._mirror_scroll.setWidgetResizable(True)
         self._mirror_container = QWidget()
         self._mirror_layout = QVBoxLayout(self._mirror_container)
+        self._mirror_layout.addWidget(self.overlay)
         self._mirror_scroll.setWidget(self._mirror_container)
         layout.addWidget(self._mirror_scroll)
         self._mirrors: list[RectangleOverlayWidget] = []
@@ -125,8 +126,11 @@ class CropDialog(ToolDialog):
 
     def on_files_changed(self, paths: list[str]) -> None:
         self.overlay.set_boxes([])
-        while self._mirror_layout.count():
-            item = self._mirror_layout.takeAt(0)
+        # self.overlay is always the first widget in `_mirror_layout` (see
+        # build_preview) - only remove entries AFTER it, so the interactive
+        # overlay itself is never torn down and re-created.
+        while self._mirror_layout.count() > 1:
+            item = self._mirror_layout.takeAt(1)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
@@ -427,6 +431,10 @@ class CompareDialog(ToolDialog):
     def build_preview(self, container: QWidget) -> None:
         layout = QVBoxLayout(container)
 
+        clear_btn = QPushButton("Clear files")
+        clear_btn.clicked.connect(self._clear_files)
+        layout.addWidget(clear_btn)
+
         page_row = QHBoxLayout()
         page_row.addWidget(QLabel("Page:"))
         self.page_spin = QSpinBox()
@@ -447,12 +455,16 @@ class CompareDialog(ToolDialog):
         self.text_diff_view.setFixedHeight(150)
         layout.addWidget(self.text_diff_view)
 
-        visual_row = QHBoxLayout()
+        visual_container = QWidget()
+        visual_row = QHBoxLayout(visual_container)
         self.visual_a = DiffPreviewWidget()
         self.visual_b = DiffPreviewWidget()
         visual_row.addWidget(self.visual_a)
         visual_row.addWidget(self.visual_b)
-        layout.addLayout(visual_row)
+        visual_scroll = QScrollArea()
+        visual_scroll.setWidgetResizable(True)
+        visual_scroll.setWidget(visual_container)
+        layout.addWidget(visual_scroll)
 
         self._path_a: str | None = None
         self._path_b: str | None = None
@@ -460,6 +472,16 @@ class CompareDialog(ToolDialog):
         self._page_count_a = 0
         self._page_count_b = 0
         self._file_count = 0
+
+    def _clear_files(self) -> None:
+        self.file_list.clear()
+        self.on_files_changed([])
+
+    def _clear_visual_diff(self) -> None:
+        self.visual_a.set_pixmap(QPixmap())
+        self.visual_a.set_boxes([])
+        self.visual_b.set_pixmap(QPixmap())
+        self.visual_b.set_boxes([])
 
     def on_files_changed(self, paths: list[str]) -> None:
         self._pages = []
@@ -471,11 +493,14 @@ class CompareDialog(ToolDialog):
             self.status_label_compare.setText(
                 "Add exactly 2 files to compare (the first is treated as the original, the second as the changed version)."
             )
+            self._clear_visual_diff()
             return
         try:
             texts_a = extract_page_texts(paths[0])
             texts_b = extract_page_texts(paths[1])
         except PDFError:
+            self.status_label_compare.setText("Could not read one of the selected files. Check that both are valid PDFs.")
+            self._clear_visual_diff()
             return
         self._path_a, self._path_b = paths[0], paths[1]
         self._page_count_a, self._page_count_b = len(texts_a), len(texts_b)
@@ -488,8 +513,10 @@ class CompareDialog(ToolDialog):
             else:
                 self._pages.append({"text_diff": [], "has_counterpart": False})
         self.status_label_compare.setText(f"Comparing {total_pages} page(s).")
+        self.page_spin.blockSignals(True)
         self.page_spin.setMaximum(total_pages)
         self.page_spin.setValue(1)
+        self.page_spin.blockSignals(False)
         self._load_current_page()
 
     def _render_text_diff(self, entries: list[dict]) -> str:
@@ -497,7 +524,7 @@ class CompareDialog(ToolDialog):
         lines = []
         for entry in entries:
             color = color_by_op.get(entry["op"], "transparent")
-            text = entry["text"] or " "
+            text = html.escape(entry["text"] or " ")
             lines.append(f'<div style="background-color: {color};">{text}</div>')
         return "".join(lines)
 
@@ -517,21 +544,28 @@ class CompareDialog(ToolDialog):
         self.visual_a.setVisible(True)
         self.visual_b.setVisible(True)
         self.text_diff_view.setHtml(self._render_text_diff(page["text_diff"]))
-        image_a = render_page_image(self._path_a, page_num, 1800)
-        image_b = render_page_image(self._path_b, page_num, 1800)
+        try:
+            image_a = render_page_image(self._path_a, page_num, 1800)
+            image_b = render_page_image(self._path_b, page_num, 1800)
+            boxes = diff_page_visual(self._path_a, self._path_b, page_num, 1800)
+        except PDFError:
+            self.status_label_compare.setText("Could not render this page for comparison.")
+            self._clear_visual_diff()
+            return
         pixmap_a, pixmap_b = QPixmap(), QPixmap()
         pixmap_a.loadFromData(image_a)
         pixmap_b.loadFromData(image_b)
-        boxes = diff_page_visual(self._path_a, self._path_b, page_num, 1800)
-        self.visual_a.set_pixmap(pixmap_a)
+        display_a = pixmap_a.scaled(400, 560, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        display_b = pixmap_b.scaled(400, 560, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.visual_a.set_pixmap(display_a)
         self.visual_a.set_boxes(boxes)
-        self.visual_b.set_pixmap(pixmap_b)
+        self.visual_b.set_pixmap(display_b)
         self.visual_b.set_boxes(boxes)
 
     def gather_params(self) -> dict:
         return {"file_count": self._file_count}
 
-    def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
+    def run_operation(self, input_paths: list[str], params: dict) -> tuple[list[str], str]:
         if params["file_count"] != 2:
             raise PDFError("Select exactly 2 files to compare.")
         if self._path_a is None or self._path_b is None:
