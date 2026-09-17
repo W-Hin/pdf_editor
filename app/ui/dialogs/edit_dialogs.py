@@ -181,7 +181,7 @@ class RedactDialog(ToolDialog):
         self._container_layout = QVBoxLayout(self._container)
         self._scroll.setWidget(self._container)
         layout.addWidget(self._scroll)
-        self._page_widgets: list[RectangleOverlayWidget] = []
+        self._page_widgets: list[RectangleOverlayWidget | None] = []
 
     def on_files_changed(self, paths: list[str]) -> None:
         while self._container_layout.count():
@@ -200,6 +200,7 @@ class RedactDialog(ToolDialog):
             try:
                 thumb_bytes = render_page_thumbnail(paths[0], page_num, max_size=450)
             except PDFError:
+                self._page_widgets.append(None)
                 continue
             pixmap = QPixmap()
             pixmap.loadFromData(thumb_bytes)
@@ -211,6 +212,8 @@ class RedactDialog(ToolDialog):
     def gather_params(self) -> dict:
         redactions = []
         for page_num, overlay in enumerate(self._page_widgets, start=1):
+            if overlay is None:
+                continue
             redactions.extend({"page": page_num, **box_to_insets(b)} for b in overlay.boxes)
         return {"redactions": redactions}
 

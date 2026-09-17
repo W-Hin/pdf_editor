@@ -252,6 +252,52 @@ def test_redact_dialog_each_page_holds_its_own_boxes_independently(tmp_path):
     assert dlg.gather_params()["redactions"] == []
 
 
+def test_redact_dialog_page_numbering_survives_a_mid_document_render_failure(tmp_path, monkeypatch):
+    from app.core.errors import PDFError
+    from app.core.pdf_ops import render_page_thumbnail as real_render_page_thumbnail
+    from app.ui.dialogs import edit_dialogs
+    from app.ui.dialogs.edit_dialogs import RedactDialog
+
+    doc = fitz.open()
+    for i in range(4):
+        doc.new_page(width=595, height=842).insert_text((72, 72), f"PAGE {i + 1} SECRET")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    def flaky_render(path, page_num, max_size=100):
+        if page_num == 3:
+            raise PDFError("simulated render failure for page 3")
+        return real_render_page_thumbnail(path, page_num, max_size=max_size)
+
+    # This codebase's tests patch collaborators with pytest's `monkeypatch`
+    # fixture (see tests/test_vendor_ocr_binaries.py, tests/web/conftest.py)
+    # rather than unittest.mock; we follow that convention here. Wrapping the
+    # real render_page_thumbnail is the cleanest way to make it fail for
+    # exactly one interior page while succeeding for its neighbors on a real
+    # fixture.
+    monkeypatch.setattr(edit_dialogs, "render_page_thumbnail", flaky_render)
+
+    dlg = RedactDialog()
+    dlg.on_files_changed([str(input_path)])
+
+    assert len(dlg._page_widgets) == 4
+    assert dlg._page_widgets[2] is None  # page 3 (0-indexed slot 2) failed to render
+
+    # Draw a box on page 4's widget (0-indexed slot 3) - it must be reported
+    # as page 4, not silently relabeled as page 3 because page 3's slot is
+    # None instead of missing entirely.
+    page4_widget = dlg._page_widgets[3]
+    w, h = page4_widget.width(), page4_widget.height()
+    QTest.mousePress(page4_widget, Qt.LeftButton, Qt.NoModifier, QPoint(int(w * 0.1), int(h * 0.05)))
+    QTest.mouseMove(page4_widget, QPoint(int(w * 0.6), int(h * 0.15)))
+    QTest.mouseRelease(page4_widget, Qt.LeftButton, Qt.NoModifier, QPoint(int(w * 0.6), int(h * 0.15)))
+
+    params = dlg.gather_params()
+    assert len(params["redactions"]) == 1
+    assert params["redactions"][0]["page"] == 4
+
+
 def test_signature_pad_starts_blank():
     pad = SignaturePadWidget()
     assert pad.has_drawing() is False
