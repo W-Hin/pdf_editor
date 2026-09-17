@@ -3,12 +3,13 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea, QTextEdit, QSpinBox
 
 from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, edit_pdf, extract_form_fields, fill_form
+from app.core.compare_pdf import extract_page_texts, diff_page_text, render_page_image, diff_page_visual
 from app.core.errors import PDFError
 from app.ui.dialogs.base import ToolDialog
-from app.ui.widgets import RectangleOverlayWidget, box_to_insets, insets_to_box, SignaturePadWidget, ImagePlacementWidget, FormFieldsWidget
+from app.ui.widgets import RectangleOverlayWidget, box_to_insets, insets_to_box, SignaturePadWidget, ImagePlacementWidget, FormFieldsWidget, DiffPreviewWidget
 
 
 class RotateDialog(ToolDialog):
@@ -416,3 +417,117 @@ class FillFormDialog(ToolDialog):
         out_path = str(Path(input_path).with_name(Path(input_path).stem + "_filled.pdf"))
         fill_form(input_path, out_path, params["values"])
         return [out_path]
+
+
+class CompareDialog(ToolDialog):
+    title = "Compare PDF"
+    dialog_size = (900, 780)
+    allow_multiple_files = True
+
+    def build_preview(self, container: QWidget) -> None:
+        layout = QVBoxLayout(container)
+
+        page_row = QHBoxLayout()
+        page_row.addWidget(QLabel("Page:"))
+        self.page_spin = QSpinBox()
+        self.page_spin.setMinimum(1)
+        self.page_spin.setValue(1)
+        self.page_spin.valueChanged.connect(self._load_current_page)
+        page_row.addWidget(self.page_spin)
+        layout.addLayout(page_row)
+
+        self.status_label_compare = QLabel(
+            "Add exactly 2 files to compare (the first is treated as the original, the second as the changed version)."
+        )
+        self.status_label_compare.setWordWrap(True)
+        layout.addWidget(self.status_label_compare)
+
+        self.text_diff_view = QTextEdit()
+        self.text_diff_view.setReadOnly(True)
+        self.text_diff_view.setFixedHeight(150)
+        layout.addWidget(self.text_diff_view)
+
+        visual_row = QHBoxLayout()
+        self.visual_a = DiffPreviewWidget()
+        self.visual_b = DiffPreviewWidget()
+        visual_row.addWidget(self.visual_a)
+        visual_row.addWidget(self.visual_b)
+        layout.addLayout(visual_row)
+
+        self._path_a: str | None = None
+        self._path_b: str | None = None
+        self._pages: list[dict] = []
+        self._page_count_a = 0
+        self._page_count_b = 0
+        self._file_count = 0
+
+    def on_files_changed(self, paths: list[str]) -> None:
+        self._pages = []
+        self._path_a = None
+        self._path_b = None
+        self._file_count = len(paths)
+        self.text_diff_view.clear()
+        if len(paths) != 2:
+            self.status_label_compare.setText(
+                "Add exactly 2 files to compare (the first is treated as the original, the second as the changed version)."
+            )
+            return
+        try:
+            texts_a = extract_page_texts(paths[0])
+            texts_b = extract_page_texts(paths[1])
+        except PDFError:
+            return
+        self._path_a, self._path_b = paths[0], paths[1]
+        self._page_count_a, self._page_count_b = len(texts_a), len(texts_b)
+        total_pages = max(self._page_count_a, self._page_count_b)
+        for i in range(total_pages):
+            has_a = i < self._page_count_a
+            has_b = i < self._page_count_b
+            if has_a and has_b:
+                self._pages.append({"text_diff": diff_page_text(texts_a[i], texts_b[i]), "has_counterpart": True})
+            else:
+                self._pages.append({"text_diff": [], "has_counterpart": False})
+        self.status_label_compare.setText(f"Comparing {total_pages} page(s).")
+        self.page_spin.setMaximum(total_pages)
+        self.page_spin.setValue(1)
+        self._load_current_page()
+
+    def _render_text_diff(self, entries: list[dict]) -> str:
+        color_by_op = {"insert": "#c8f7c5", "delete": "#f7c5c5", "equal": "transparent"}
+        lines = []
+        for entry in entries:
+            color = color_by_op.get(entry["op"], "transparent")
+            text = entry["text"] or " "
+            lines.append(f'<div style="background-color: {color};">{text}</div>')
+        return "".join(lines)
+
+    def _load_current_page(self) -> None:
+        if self._path_a is None or self._path_b is None or not self._pages:
+            return
+        page_num = self.page_spin.value()
+        page = self._pages[page_num - 1]
+        if not page["has_counterpart"]:
+            if page_num <= self._page_count_a and page_num > self._page_count_b:
+                self.text_diff_view.setHtml("<i>Page removed (only in the first document)</i>")
+            else:
+                self.text_diff_view.setHtml("<i>Page added (only in the second document)</i>")
+            return
+        self.text_diff_view.setHtml(self._render_text_diff(page["text_diff"]))
+        image_a = render_page_image(self._path_a, page_num, 1800)
+        image_b = render_page_image(self._path_b, page_num, 1800)
+        pixmap_a, pixmap_b = QPixmap(), QPixmap()
+        pixmap_a.loadFromData(image_a)
+        pixmap_b.loadFromData(image_b)
+        boxes = diff_page_visual(self._path_a, self._path_b, page_num, 1800)
+        self.visual_a.set_pixmap(pixmap_a)
+        self.visual_a.set_boxes(boxes)
+        self.visual_b.set_pixmap(pixmap_b)
+        self.visual_b.set_boxes(boxes)
+
+    def gather_params(self) -> dict:
+        return {"file_count": self._file_count}
+
+    def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
+        if params["file_count"] != 2:
+            raise PDFError("Select exactly 2 files to compare.")
+        return ([], f"Compared {len(self._pages)} page(s).")

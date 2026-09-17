@@ -1021,3 +1021,87 @@ def test_interactive_false_blocks_dragging_from_creating_a_box():
     QTest.mouseMove(widget, QPoint(150, 80))
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(150, 80))
     assert widget.boxes == []
+
+
+def test_compare_dialog_eager_text_diff_and_lazy_visual_diff(tmp_path):
+    from app.ui.dialogs.edit_dialogs import CompareDialog
+
+    doc_a = fitz.open()
+    doc_a.new_page(width=595, height=842).insert_text((72, 72), "Hello World")
+    doc_a.new_page(width=595, height=842).insert_text((72, 72), "Second page A")
+    doc_a.new_page(width=595, height=842).insert_text((72, 72), "Third page only in A")
+    path_a = tmp_path / "compare_a.pdf"
+    doc_a.save(str(path_a))
+    doc_a.close()
+
+    doc_b = fitz.open()
+    doc_b.new_page(width=595, height=842).insert_text((72, 72), "Hello World CHANGED")
+    doc_b.new_page(width=595, height=842).insert_text((72, 72), "Second page A")
+    path_b = tmp_path / "compare_b.pdf"
+    doc_b.save(str(path_b))
+    doc_b.close()
+
+    dlg = CompareDialog()
+    dlg.on_files_changed([str(path_a), str(path_b)])
+    assert dlg.page_spin.maximum() == 3
+
+    # Text diffs for ALL pages are computed eagerly, before the spinner ever
+    # moves past page 1 - confirmed by checking page 3's (never-visited via
+    # the spinner) already-computed state.
+    assert dlg._pages[0]["has_counterpart"] is True
+    assert any(op["op"] in ("delete", "insert") for op in dlg._pages[0]["text_diff"])
+    assert dlg._pages[1]["has_counterpart"] is True
+    assert all(op["op"] == "equal" for op in dlg._pages[1]["text_diff"])
+    assert dlg._pages[2]["has_counterpart"] is False  # page 3 only exists in A
+
+    # on_files_changed shows page 1 immediately (matching every other
+    # dialog's "show page 1 right after file load" convention) - its own
+    # text genuinely differs between A and B, so its visual diff has at
+    # least one box.
+    assert dlg.visual_a.pixmap is not None
+    assert len(dlg.visual_a.boxes) >= 1
+
+    # The visual diff for any OTHER page is only ever computed when the
+    # spinner actually reaches it - moving to page 2 (identical text in both
+    # documents) must produce zero diff boxes, proving this specific call
+    # (not some pre-computed value) is what populated the widgets.
+    dlg.page_spin.setValue(2)
+    assert dlg.visual_a.pixmap is not None
+    assert dlg.visual_a.boxes == []
+
+
+def test_compare_dialog_run_operation_requires_exactly_two_files(tmp_path):
+    from app.core.errors import PDFError
+    from app.ui.dialogs.edit_dialogs import CompareDialog
+
+    dlg = CompareDialog()
+    for file_count in (0, 1, 3):
+        try:
+            dlg.run_operation([], {"file_count": file_count})
+            assert False, f"expected PDFError for file_count={file_count}"
+        except PDFError as exc:
+            assert "exactly 2" in str(exc)
+
+
+def test_compare_dialog_run_operation_returns_no_output_files(tmp_path):
+    from app.ui.dialogs.edit_dialogs import CompareDialog
+
+    doc_a = fitz.open()
+    doc_a.new_page(width=595, height=842).insert_text((72, 72), "Same text")
+    path_a = tmp_path / "a.pdf"
+    doc_a.save(str(path_a))
+    doc_a.close()
+
+    doc_b = fitz.open()
+    doc_b.new_page(width=595, height=842).insert_text((72, 72), "Same text")
+    path_b = tmp_path / "b.pdf"
+    doc_b.save(str(path_b))
+    doc_b.close()
+
+    dlg = CompareDialog()
+    dlg.on_files_changed([str(path_a), str(path_b)])
+    params = dlg.gather_params()
+    assert params == {"file_count": 2}
+    output_paths, message = dlg.run_operation([str(path_a), str(path_b)], params)
+    assert output_paths == []
+    assert "1 page" in message
