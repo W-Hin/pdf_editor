@@ -864,3 +864,34 @@ def test_diff_preview_widget_ignores_all_mouse_input():
     QTest.mouseMove(widget, QPoint(150, 80))
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(150, 80))
     assert widget.boxes == before_boxes
+
+
+def test_box_changed_fires_exactly_once_on_a_successful_drag():
+    widget = RectangleOverlayWidget(multi=False)
+    widget.set_pixmap(QPixmap(200, 100))
+    calls = []
+    widget.box_changed.connect(lambda: calls.append(1))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(20, 10))
+    QTest.mouseMove(widget, QPoint(150, 80))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(150, 80))
+    assert len(calls) == 1
+
+
+def test_box_changed_does_not_fire_on_a_too_small_drag():
+    widget = RectangleOverlayWidget(multi=False)
+    widget.set_pixmap(QPixmap(200, 100))
+    calls = []
+    widget.box_changed.connect(lambda: calls.append(1))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(20, 10))
+    QTest.mouseMove(widget, QPoint(21, 11))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(21, 11))
+    assert calls == []
+
+
+def test_interactive_false_blocks_dragging_from_creating_a_box():
+    widget = RectangleOverlayWidget(multi=False, interactive=False)
+    widget.set_pixmap(QPixmap(200, 100))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(20, 10))
+    QTest.mouseMove(widget, QPoint(150, 80))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(150, 80))
+    assert widget.boxes == []

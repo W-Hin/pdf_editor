@@ -1,4 +1,4 @@
-from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtCore import QPoint, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap, QPen
 from PySide6.QtWidgets import QCheckBox, QComboBox, QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget
 
@@ -27,11 +27,17 @@ class RectangleOverlayWidget(QWidget):
     multi=False: at most one box, replaced outright by each new drag.
     multi=True: any number of boxes; each gets a small removable marker at its
     top-right corner - clicking one removes that box instead of starting a drag.
+    interactive=False: mouse events are entirely ignored (used for CropDialog's
+    read-only per-page mirrors, which only ever display a box set externally
+    via set_boxes - never the user's own drag).
     """
 
-    def __init__(self, multi: bool = False, parent=None):
+    box_changed = Signal()
+
+    def __init__(self, multi: bool = False, interactive: bool = True, parent=None):
         super().__init__(parent)
         self.multi = multi
+        self.interactive = interactive
         self.pixmap = None
         self.boxes: list[dict] = []
         self._drag_start: tuple[float, float] | None = None
@@ -62,6 +68,8 @@ class RectangleOverlayWidget(QWidget):
         return QRect(int(x1_px - _MARKER_SIZE), int(y0_px), _MARKER_SIZE, _MARKER_SIZE)
 
     def mousePressEvent(self, e) -> None:
+        if not self.interactive:
+            return
         pos = e.position().toPoint()
         if self.multi:
             for i, box in enumerate(self.boxes):
@@ -77,6 +85,8 @@ class RectangleOverlayWidget(QWidget):
         self.update()
 
     def mouseMoveEvent(self, e) -> None:
+        if not self.interactive:
+            return
         if self._drag_start is None:
             return
         point = self._point_from_pos(e.position().toPoint())
@@ -86,6 +96,8 @@ class RectangleOverlayWidget(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, e) -> None:
+        if not self.interactive:
+            return
         if self._drag_start is None:
             return
         point = self._point_from_pos(e.position().toPoint()) or self._drag_current
@@ -102,6 +114,7 @@ class RectangleOverlayWidget(QWidget):
         else:
             self.boxes = [box]
         self.update()
+        self.box_changed.emit()
 
     def _paint_box(self, painter: QPainter, box: dict, draw_marker: bool) -> None:
         x0_px, y0_px = box["x0"] * self.width(), box["y0"] * self.height()
