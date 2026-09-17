@@ -6,7 +6,7 @@ import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit, QTextEdit
 
 from app.core.pdf_ops import crop_pdf, extract_form_fields, render_page_thumbnail
 from app.ui.widgets import DiffPreviewWidget, FormFieldsWidget, RectangleOverlayWidget, SignaturePadWidget, box_to_insets, insets_to_box
@@ -1248,7 +1248,7 @@ def test_compare_dialog_clear_files_button_resets_state(tmp_path):
     assert dlg.gather_params()["file_count"] == 0
 
 
-from app.ui.edit_canvas import EditElementsModel
+from app.ui.edit_canvas import EditElementsModel, EditPageWidget
 
 
 def _new_text_element(page, x=0.1, y=0.1, width=0.2, height=0.1, text="Hello"):
@@ -1350,3 +1350,106 @@ def test_edit_model_cut_removes_the_source_element():
     pasted_id = model.paste()
     assert pasted_id is not None
     assert len(model.elements) == 1
+
+
+def test_edit_page_widget_empty_click_in_new_text_mode_opens_a_text_editor():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "new_text"
+    w, h = widget.width(), widget.height()
+    click = QPoint(int(w * 0.3), int(h * 0.3))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, click)
+    assert widget._text_editor is not None
+    assert widget._text_editor.isVisible()
+
+
+def test_edit_page_widget_typing_and_committing_a_new_text_creates_an_element():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "new_text"
+    w, h = widget.width(), widget.height()
+    click = QPoint(int(w * 0.3), int(h * 0.3))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.keyClicks(widget._text_editor, "Hello World")
+    widget._commit_text_editor()
+    assert len(model.elements) == 1
+    el = model.elements[0]
+    assert el["type"] == "new_text"
+    assert el["text"] == "Hello World"
+    assert el["page"] == 1
+
+
+def test_edit_page_widget_blank_text_draft_is_discarded_not_committed():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "new_text"
+    w, h = widget.width(), widget.height()
+    click = QPoint(int(w * 0.3), int(h * 0.3))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.keyClicks(widget._text_editor, "   ")  # whitespace only
+    widget._commit_text_editor()
+    assert model.elements == []
+
+
+def test_edit_page_widget_moving_a_new_text_element():
+    model = EditElementsModel()
+    el_id = model.add({
+        "page": 1, "type": "new_text", "x": 0.3, "y": 0.3, "width": 0.2, "height": 0.1,
+        "text": "Hi", "family": "helvetica", "bold": False, "italic": False,
+        "underline": False, "size": 14, "color": "#000000", "align": "left",
+    })
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    w, h = widget.width(), widget.height()
+    body = QPoint(int(w * 0.35), int(h * 0.32))  # inside the element's body
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, body)
+    QTest.mouseMove(widget, QPoint(body.x() + 20, body.y() + 10))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(body.x() + 20, body.y() + 10))
+    el = next(e for e in model.elements if e["id"] == el_id)
+    assert el["x"] == pytest.approx(0.3 + 20 / w)
+    assert el["y"] == pytest.approx(0.3 + 10 / h)
+    assert model.selected_id == el_id
+
+
+def test_edit_page_widget_resizing_a_new_text_element():
+    model = EditElementsModel()
+    el_id = model.add({
+        "page": 1, "type": "new_text", "x": 0.3, "y": 0.3, "width": 0.2, "height": 0.1,
+        "text": "Hi", "family": "helvetica", "bold": False, "italic": False,
+        "underline": False, "size": 14, "color": "#000000", "align": "left",
+    })
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    w, h = widget.width(), widget.height()
+    el = model.elements[0]
+    rect = widget._element_rect_px(el)
+    handle_center = widget._resize_handles(el)["corner"].center()
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, handle_center)
+    QTest.mouseMove(widget, QPoint(handle_center.x() + 40, handle_center.y() + 40))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(handle_center.x() + 40, handle_center.y() + 40))
+    resized = model.elements[0]
+    assert resized["width"] == pytest.approx(0.2 + 40 / w)
+    assert resized["height"] == pytest.approx(0.1 + 40 / h)
+
+
+def test_edit_page_widget_marker_click_deletes_a_new_text_element():
+    model = EditElementsModel()
+    el_id = model.add({
+        "page": 1, "type": "new_text", "x": 0.3, "y": 0.3, "width": 0.2, "height": 0.1,
+        "text": "Hi", "family": "helvetica", "bold": False, "italic": False,
+        "underline": False, "size": 14, "color": "#000000", "align": "left",
+    })
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    el = model.elements[0]
+    marker = widget._marker_rect(el)
+    click = marker.center()
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, click)
+    assert model.elements == []

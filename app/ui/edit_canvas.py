@@ -1,6 +1,14 @@
 import uuid
 
+from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
+from PySide6.QtWidgets import QTextEdit, QWidget
+
 _PASTE_OFFSET = 0.03
+_MARKER_SIZE = 14
+_HANDLE_SIZE = 14
+_MIN_TEXT_WIDTH_FRACTION = 0.05
+_MIN_TEXT_HEIGHT_FRACTION = 0.03
 
 
 class EditElementsModel:
@@ -162,3 +170,213 @@ class EditElementsModel:
                     el["y"] = min(max(el["y"] + dy, 0), 1 - el["height"])
                 break
         self._notify()
+
+
+class EditPageWidget(QWidget):
+    """One page's view onto a shared EditElementsModel - renders that
+    page's own filtered elements via QPainter, dispatching by
+    element["type"], and translates mouse events into calls on the shared
+    model. Hit-test order (topmost-first, matching ImagePlacementWidget's
+    proven convention): marker (delete) -> handle(s) (resize) -> body
+    (move) -> empty space, which creates a new element of whichever type
+    `self.create_mode` currently names. Existing elements of ANY type
+    remain selectable/movable/resizable/deletable regardless of which
+    creation mode is active - the mode only gates what an empty-space
+    click does."""
+
+    def __init__(self, model, page_number: int, parent=None):
+        super().__init__(parent)
+        self.model = model
+        self.page_number = page_number
+        self.page_pixmap = None
+        self.create_mode = "new_text"
+        self._drag: dict | None = None
+        self._text_editor: QTextEdit | None = None
+        self._editing_element_id: str | None = None
+        self.model.on_change.append(self.update)
+
+    def set_page_pixmap(self, pixmap) -> None:
+        self.page_pixmap = pixmap
+        self.setFixedSize(pixmap.size())
+        self.show()
+        self.update()
+
+    def _elements(self) -> list[dict]:
+        return self.model.elements_for_page(self.page_number)
+
+    def _point_from_pos(self, pos) -> tuple[float, float] | None:
+        if self.width() == 0 or self.height() == 0:
+            return None
+        x = min(max(pos.x() / self.width(), 0), 1)
+        y = min(max(pos.y() / self.height(), 0), 1)
+        return (x, y)
+
+    def _element_rect_px(self, el: dict) -> QRect:
+        x0 = el["x"] * self.width()
+        y0 = el["y"] * self.height()
+        x1 = (el["x"] + el["width"]) * self.width()
+        y1 = (el["y"] + el["height"]) * self.height()
+        return QRect(int(x0), int(y0), int(x1 - x0), int(y1 - y0))
+
+    def _marker_rect(self, el: dict) -> QRect:
+        rect = self._element_rect_px(el)
+        return QRect(rect.right() - _MARKER_SIZE, rect.top(), _MARKER_SIZE, _MARKER_SIZE)
+
+    def _resize_handles(self, el: dict) -> dict:
+        """One handle for new_text (free resize, bottom-right). Task 3
+        adds a 3-handle set for "image" here."""
+        rect = self._element_rect_px(el)
+        if el["type"] == "new_text":
+            return {"corner": QRect(rect.right() - _HANDLE_SIZE, rect.bottom() - _HANDLE_SIZE, _HANDLE_SIZE, _HANDLE_SIZE)}
+        return {}
+
+    def _qfont_for(self, el: dict) -> QFont:
+        font = QFont(el["family"], el["size"])
+        font.setBold(el["bold"])
+        font.setItalic(el["italic"])
+        font.setUnderline(el["underline"])
+        return font
+
+    def mousePressEvent(self, e) -> None:
+        pos = e.position().toPoint()
+        elements = self._elements()
+        for i in reversed(range(len(elements))):
+            el = elements[i]
+            if self._marker_rect(el).contains(pos):
+                self.model.remove(el["id"])
+                return
+        for i in reversed(range(len(elements))):
+            el = elements[i]
+            for handle_name, rect in self._resize_handles(el).items():
+                if rect.contains(pos):
+                    point = self._point_from_pos(pos)
+                    self.model.select(el["id"])
+                    self._drag = {"mode": f"resize-{handle_name}", "id": el["id"], "start": point, "start_element": dict(el)}
+                    return
+        for i in reversed(range(len(elements))):
+            el = elements[i]
+            if self._element_rect_px(el).contains(pos):
+                point = self._point_from_pos(pos)
+                self.model.select(el["id"])
+                self._drag = {"mode": "move", "id": el["id"], "start": point, "start_element": dict(el)}
+                return
+        point = self._point_from_pos(pos)
+        if point is None:
+            return
+        if self.create_mode == "new_text":
+            self._open_text_editor_for_new(point)
+
+    def mouseDoubleClickEvent(self, e) -> None:
+        pos = e.position().toPoint()
+        for el in reversed(self._elements()):
+            if el["type"] == "new_text" and self._element_rect_px(el).contains(pos):
+                self._drag = None
+                self._open_text_editor_for_existing(el)
+                return
+
+    def mouseMoveEvent(self, e) -> None:
+        if self._drag is None:
+            return
+        point = self._point_from_pos(e.position().toPoint())
+        if point is None:
+            return
+        dx = point[0] - self._drag["start"][0]
+        dy = point[1] - self._drag["start"][1]
+        sp = self._drag["start_element"]
+        if self._drag["mode"] == "move":
+            x = min(max(sp["x"] + dx, 0), 1 - sp["width"])
+            y = min(max(sp["y"] + dy, 0), 1 - sp["height"])
+            self.model.update(self._drag["id"], x=x, y=y)
+        elif self._drag["mode"] == "resize-corner":
+            width = max(_MIN_TEXT_WIDTH_FRACTION, min(sp["width"] + dx, 1 - sp["x"]))
+            height = max(_MIN_TEXT_HEIGHT_FRACTION, min(sp["height"] + dy, 1 - sp["y"]))
+            self.model.update(self._drag["id"], width=width, height=height)
+
+    def mouseReleaseEvent(self, e) -> None:
+        if self._drag is not None:
+            self.model.commit()
+            self._drag = None
+
+    def _open_text_editor_for_new(self, point: tuple[float, float]) -> None:
+        width, height = 0.25, 0.08
+        x = min(max(point[0] - width / 2, 0), 1 - width)
+        y = min(max(point[1] - height / 2, 0), 1 - height)
+        self._editing_element_id = None
+        self._show_text_editor(x, y, width, height, "", {
+            "family": "helvetica", "bold": False, "italic": False,
+            "underline": False, "size": 14, "color": "#1f2937", "align": "left",
+        })
+
+    def _open_text_editor_for_existing(self, el: dict) -> None:
+        self._editing_element_id = el["id"]
+        self._show_text_editor(el["x"], el["y"], el["width"], el["height"], el["text"], el)
+
+    def _show_text_editor(self, x: float, y: float, width: float, height: float, text: str, style: dict) -> None:
+        if self._text_editor is not None:
+            self._text_editor.deleteLater()
+        editor = QTextEdit(self)
+        editor.setPlainText(text)
+        editor.setFont(self._qfont_for({**style, "text": text}))
+        rect = self._element_rect_px({"x": x, "y": y, "width": width, "height": height})
+        editor.setGeometry(rect)
+        editor.show()
+        editor.setFocus()
+        self._text_editor = editor
+        self._pending_style = dict(style)
+        self._pending_box = {"x": x, "y": y, "width": width, "height": height}
+
+    def _commit_text_editor(self) -> None:
+        if self._text_editor is None:
+            return
+        text = self._text_editor.toPlainText()
+        editor = self._text_editor
+        self._text_editor = None
+        editor.deleteLater()
+        if not text.strip():
+            self._editing_element_id = None
+            return
+        element = {
+            "page": self.page_number, "type": "new_text",
+            "x": self._pending_box["x"], "y": self._pending_box["y"],
+            "width": self._pending_box["width"], "height": self._pending_box["height"],
+            "text": text, **{k: self._pending_style[k] for k in ("family", "bold", "italic", "underline", "size", "color", "align")},
+        }
+        if self._editing_element_id is not None:
+            self.model.update(self._editing_element_id, **{k: v for k, v in element.items() if k != "page"})
+            self.model.commit()
+        else:
+            self.model.add(element)
+        self._editing_element_id = None
+
+    def focusOutEvent(self, e) -> None:
+        super().focusOutEvent(e)
+
+    def paintEvent(self, e) -> None:
+        painter = QPainter(self)
+        if self.page_pixmap is not None:
+            painter.drawPixmap(0, 0, self.page_pixmap)
+        for el in self._elements():
+            if el["type"] == "new_text":
+                self._paint_new_text(painter, el)
+            self._paint_chrome(painter, el)
+
+    def _paint_new_text(self, painter: QPainter, el: dict) -> None:
+        if self._editing_element_id == el["id"] and self._text_editor is not None:
+            return  # the live QTextEdit overlay is showing instead
+        rect = self._element_rect_px(el)
+        painter.setFont(self._qfont_for(el))
+        painter.setPen(QColor(el["color"]))
+        align_flag = {"left": Qt.AlignLeft, "center": Qt.AlignHCenter, "right": Qt.AlignRight}[el["align"]]
+        painter.drawText(rect, align_flag | Qt.AlignTop | Qt.TextWordWrap, el["text"])
+
+    def _paint_chrome(self, painter: QPainter, el: dict) -> None:
+        if self.model.selected_id != el["id"]:
+            return
+        marker = self._marker_rect(el)
+        painter.setPen(QPen(QColor(255, 255, 255), 1))
+        painter.setBrush(QColor(220, 40, 40))
+        painter.drawEllipse(marker)
+        for rect in self._resize_handles(el).values():
+            painter.setPen(QPen(QColor(255, 255, 255), 1))
+            painter.setBrush(QColor(40, 100, 220))
+            painter.drawRect(rect)
