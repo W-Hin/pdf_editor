@@ -1290,8 +1290,14 @@ class EditPdfDialog(ToolDialog):
             pixmap = QPixmap()
             pixmap.loadFromData(thumb_bytes)
             widget = EditPageWidget(self.model, page_num, on_image_click=lambda point, pn=page_num: self._prompt_for_image(pn, point))
-            widget.set_page_pixmap(pixmap)
+            # addWidget (reparenting) BEFORE set_page_pixmap deliberately -
+            # set_page_pixmap calls self.show(), confirmed empirically
+            # (Task 2) to be necessary for a child QTextEdit overlay's own
+            # .isVisible() to read True later, but calling .show() on a
+            # still-parentless widget briefly makes it a real top-level
+            # window. Reparenting first avoids that flash entirely.
             self._container_layout.addWidget(widget)
+            widget.set_page_pixmap(pixmap)
             self._page_widgets.append(widget)
 
     def gather_params(self) -> dict:
