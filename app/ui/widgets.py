@@ -1,6 +1,6 @@
 from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget
 
 _MIN_DRAG_FRACTION = 0.02
 _MARKER_SIZE = 14
@@ -325,3 +325,105 @@ class ImagePlacementWidget(QWidget):
             painter.setPen(QPen(QColor(255, 255, 255), 1))
             painter.setBrush(QColor(40, 100, 220))
             painter.drawRect(handle)
+
+
+class FormFieldsWidget(QWidget):
+    """Displays every page of a document, stacked in a continuous scroll,
+    with the document's existing AcroForm fields rendered as real Qt input
+    widgets (QLineEdit/QCheckBox/QComboBox) positioned on top of each page's
+    image - mirrors FormFillCanvas.jsx's own real <input>/<select> overlay,
+    but as genuine Qt children rather than custom-painted shapes, since
+    unlike every other widget in this file nothing here is drawn or
+    dragged: plain widget z-order (each field widget added as a LATER
+    child of its page frame than the background QLabel) is enough to paint
+    it on top, with no paintEvent override needed at all."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._container = QWidget()
+        self._container_layout = QVBoxLayout(self._container)
+        self._scroll.setWidget(self._container)
+        layout.addWidget(self._scroll)
+        self._field_widgets: dict[tuple[int, int], QWidget] = {}
+        self._fields: list[dict] = []
+
+    def set_fields(self, fields: list[dict], page_pixmaps: list) -> None:
+        while self._container_layout.count():
+            item = self._container_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._field_widgets = {}
+        self._fields = fields
+
+        for page_num, pixmap in enumerate(page_pixmaps, start=1):
+            frame = QWidget(self._container)
+            frame.setFixedSize(pixmap.size())
+            background = QLabel(frame)
+            background.setPixmap(pixmap)
+            background.setGeometry(0, 0, pixmap.width(), pixmap.height())
+
+            for field in fields:
+                if field["page"] != page_num:
+                    continue
+                rect = field["rect"]
+                x = rect["left"] * pixmap.width()
+                y = rect["top"] * pixmap.height()
+                w = (1 - rect["left"] - rect["right"]) * pixmap.width()
+                h = (1 - rect["top"] - rect["bottom"]) * pixmap.height()
+
+                if field["type"] == "text":
+                    field_widget = QLineEdit(frame)
+                    field_widget.setText(field["value"] or "")
+                elif field["type"] == "checkbox":
+                    field_widget = QCheckBox(frame)
+                    field_widget.setChecked(bool(field["value"]))
+                elif field["type"] == "combobox":
+                    field_widget = QComboBox(frame)
+                    # A bare QComboBox.addItems() defaults currentText() to
+                    # the FIRST real choice (confirmed empirically while
+                    # writing this plan - e.g. addItems(["USA","Canada"])
+                    # silently starts on "USA", not blank). FormFillCanvas.jsx's
+                    # own <select> instead shows a real blank
+                    # <option value="" disabled>-- Select --</option> until
+                    # something is chosen, so an untouched field submits ""
+                    # rather than an accidental first choice. Add the same
+                    # blank placeholder at index 0 to match.
+                    field_widget.addItem("")
+                    field_widget.addItems(field["choices"] or [])
+                    if field["value"] in (field["choices"] or []):
+                        field_widget.setCurrentText(field["value"])
+                else:
+                    continue
+
+                field_widget.setGeometry(int(x), int(y), int(w), int(h))
+                field_widget.setToolTip(field["label"])
+                field_widget.show()
+                self._field_widgets[(field["page"], field["index"])] = field_widget
+
+            self._container_layout.addWidget(frame)
+
+    def values(self) -> list[dict]:
+        result = []
+        for field in self._fields:
+            key = (field["page"], field["index"])
+            widget = self._field_widgets.get(key)
+            if widget is None:
+                continue
+            if isinstance(widget, QLineEdit):
+                value = widget.text()
+            elif isinstance(widget, QCheckBox):
+                value = widget.isChecked()
+            elif isinstance(widget, QComboBox):
+                value = widget.currentText()
+            else:
+                continue
+            result.append({"page": field["page"], "index": field["index"], "value": value})
+        return result
+
+    def has_fields(self) -> bool:
+        return len(self._field_widgets) > 0

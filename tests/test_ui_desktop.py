@@ -6,10 +6,10 @@ import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit
 
-from app.core.pdf_ops import crop_pdf, render_page_thumbnail
-from app.ui.widgets import RectangleOverlayWidget, SignaturePadWidget, box_to_insets, insets_to_box
+from app.core.pdf_ops import crop_pdf, extract_form_fields, render_page_thumbnail
+from app.ui.widgets import FormFieldsWidget, RectangleOverlayWidget, SignaturePadWidget, box_to_insets, insets_to_box
 
 _app = QApplication.instance() or QApplication([])
 
@@ -563,3 +563,112 @@ def test_sign_dialog_raises_when_no_signature_placed(tmp_path):
         assert False, "expected PDFError"
     except PDFError as exc:
         assert "at least one" in str(exc)
+
+
+def _build_form_fixture(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+
+    text_widget = fitz.Widget()
+    text_widget.field_name = "full_name"
+    text_widget.field_label = "Full Name"
+    text_widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    text_widget.field_value = "PREFILLED"
+    text_widget.rect = fitz.Rect(72, 100, 300, 120)
+    page.add_widget(text_widget)
+
+    checkbox_widget = fitz.Widget()
+    checkbox_widget.field_name = "agree"
+    checkbox_widget.field_label = "Agree"
+    checkbox_widget.field_type = fitz.PDF_WIDGET_TYPE_CHECKBOX
+    checkbox_widget.rect = fitz.Rect(72, 140, 90, 158)
+    page.add_widget(checkbox_widget)
+
+    combo_widget = fitz.Widget()
+    combo_widget.field_name = "country"
+    combo_widget.field_label = "Country"
+    combo_widget.field_type = fitz.PDF_WIDGET_TYPE_COMBOBOX
+    combo_widget.rect = fitz.Rect(72, 180, 250, 200)
+    combo_widget.choice_values = ["USA", "Canada", "Mexico"]
+    page.add_widget(combo_widget)
+
+    path = tmp_path / "form.pdf"
+    doc.save(str(path))
+    doc.close()
+    return str(path)
+
+
+def test_form_fields_widget_creates_the_right_qt_widget_per_field_type(tmp_path):
+    input_path = _build_form_fixture(tmp_path)
+    fields = extract_form_fields(input_path)
+    thumb_bytes = render_page_thumbnail(input_path, 1, max_size=450)
+    pixmap = QPixmap()
+    pixmap.loadFromData(thumb_bytes)
+
+    widget = FormFieldsWidget()
+    widget.set_fields(fields, [pixmap])
+    assert widget.has_fields() is True
+
+    text_field = next(f for f in fields if f["type"] == "text")
+    checkbox_field = next(f for f in fields if f["type"] == "checkbox")
+    combo_field = next(f for f in fields if f["type"] == "combobox")
+
+    text_qwidget = widget._field_widgets[(text_field["page"], text_field["index"])]
+    checkbox_qwidget = widget._field_widgets[(checkbox_field["page"], checkbox_field["index"])]
+    combo_qwidget = widget._field_widgets[(combo_field["page"], combo_field["index"])]
+
+    assert isinstance(text_qwidget, QLineEdit)
+    assert isinstance(checkbox_qwidget, QCheckBox)
+    assert isinstance(combo_qwidget, QComboBox)
+
+    # Verified empirically before this test was written: on a 595x842 page
+    # rendered at max_size=450, the pixmap is exactly 318x450, and the text
+    # field's rect ({"top": 0.1187648456057007, "left": 0.12100840336134454,
+    # "right": 0.4957983193277311, "bottom": 0.8574821852731591}) converts
+    # to exactly this pixel geometry.
+    geom = text_qwidget.geometry()
+    assert (geom.x(), geom.y(), geom.width(), geom.height()) == (38, 53, 121, 10)
+
+    # Initial values reflect the fixture's own field_value/default.
+    assert text_qwidget.text() == "PREFILLED"
+    assert checkbox_qwidget.isChecked() is False
+    assert combo_qwidget.currentText() == ""  # fixture's own value ("") isn't in choices, so index 0 (blank) stands
+    assert list(combo_field["choices"]) == ["USA", "Canada", "Mexico"]
+
+
+def test_form_fields_widget_values_reflects_synthetic_user_interaction(tmp_path):
+    input_path = _build_form_fixture(tmp_path)
+    fields = extract_form_fields(input_path)
+    thumb_bytes = render_page_thumbnail(input_path, 1, max_size=450)
+    pixmap = QPixmap()
+    pixmap.loadFromData(thumb_bytes)
+
+    widget = FormFieldsWidget()
+    widget.set_fields(fields, [pixmap])
+
+    text_field = next(f for f in fields if f["type"] == "text")
+    checkbox_field = next(f for f in fields if f["type"] == "checkbox")
+    combo_field = next(f for f in fields if f["type"] == "combobox")
+
+    text_qwidget = widget._field_widgets[(text_field["page"], text_field["index"])]
+    checkbox_qwidget = widget._field_widgets[(checkbox_field["page"], checkbox_field["index"])]
+    combo_qwidget = widget._field_widgets[(combo_field["page"], combo_field["index"])]
+
+    text_qwidget.clear()
+    QTest.keyClicks(text_qwidget, "Jane Doe")
+    QTest.mouseClick(checkbox_qwidget, Qt.LeftButton)
+    combo_qwidget.setCurrentText("Canada")
+
+    values_by_key = {(v["page"], v["index"]): v["value"] for v in widget.values()}
+    assert values_by_key[(text_field["page"], text_field["index"])] == "Jane Doe"
+    assert values_by_key[(checkbox_field["page"], checkbox_field["index"])] is True
+    assert values_by_key[(combo_field["page"], combo_field["index"])] == "Canada"
+    # values() reports ALL held fields, not only ones the user touched.
+    assert len(widget.values()) == 3
+
+
+def test_form_fields_widget_has_fields_false_for_a_fields_free_document():
+    widget = FormFieldsWidget()
+    widget.set_fields([], [QPixmap(100, 100)])
+    assert widget.has_fields() is False
+    assert widget.values() == []
