@@ -351,3 +351,67 @@ def test_resize_past_the_page_edge_clamps_to_the_available_space():
     assert resized["height"] == pytest.approx(0.16)
     assert resized["x"] + resized["width"] <= 1.0 + 1e-9
     assert resized["y"] + resized["height"] <= 1.0 + 1e-9
+
+
+def test_sign_dialog_places_a_signature_and_exports_it(tmp_path):
+    from app.ui.dialogs.edit_dialogs import SignDialog
+
+    doc = fitz.open()
+    doc.new_page(width=595, height=842).insert_text((72, 72), "Original page text")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    sig_pixmap = QPixmap(200, 80)
+    sig_pixmap.fill(Qt.blue)
+    sig_path = str(tmp_path / "signature.png")
+    sig_pixmap.save(sig_path, "PNG")
+
+    dlg = SignDialog()
+    dlg.use_signature_file(sig_path)  # bypasses the draw/upload UI, sets signature_path + natural size directly
+    dlg.on_files_changed([str(input_path)])
+
+    w, h = dlg.overlay.width(), dlg.overlay.height()
+    click = QPoint(int(w * 0.6), int(h * 0.7))
+    QTest.mousePress(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
+    assert len(dlg.overlay.placements) == 1
+
+    params = dlg.gather_params()
+    assert params["signature_path"] == sig_path
+    assert len(params["placements"]) == 1
+    assert params["placements"][0]["page"] == 1
+
+    output_paths = dlg.run_operation([str(input_path)], params)
+    result = fitz.open(output_paths[0])
+    page = result[0]
+    images = page.get_images()
+    assert len(images) == 1
+    result.close()
+
+
+def test_sign_dialog_raises_when_no_signature_placed(tmp_path):
+    from app.core.errors import PDFError
+    from app.ui.dialogs.edit_dialogs import SignDialog
+
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), "Some text")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    sig_pixmap = QPixmap(200, 80)
+    sig_pixmap.fill(Qt.blue)
+    sig_path = str(tmp_path / "signature.png")
+    sig_pixmap.save(sig_path, "PNG")
+
+    dlg = SignDialog()
+    dlg.use_signature_file(sig_path)
+    dlg.on_files_changed([str(input_path)])
+    params = dlg.gather_params()
+    assert params["placements"] == []
+    try:
+        dlg.run_operation([str(input_path)], params)
+        assert False, "expected PDFError"
+    except PDFError as exc:
+        assert "at least one" in str(exc)
