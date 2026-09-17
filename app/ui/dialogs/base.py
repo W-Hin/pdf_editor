@@ -28,11 +28,12 @@ class ToolDialog(QDialog):
     title = "Tool"
     file_filter = "PDF files (*.pdf)"
     allow_multiple_files = False
+    dialog_size = (480, 360)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(self.title)
-        self.resize(480, 360)
+        self.resize(*self.dialog_size)
         self._worker: Worker | None = None
         self._output_paths: list[str] = []
 
@@ -46,14 +47,9 @@ class ToolDialog(QDialog):
         file_row.addWidget(pick_btn)
         layout.addLayout(file_row)
 
-        self.thumbnail_strip = QScrollArea()
-        self.thumbnail_strip.setWidgetResizable(True)
-        self.thumbnail_strip.setFixedHeight(130)
-        self.thumbnail_strip.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._thumbnail_container = QWidget()
-        self._thumbnail_layout = QHBoxLayout(self._thumbnail_container)
-        self.thumbnail_strip.setWidget(self._thumbnail_container)
-        layout.addWidget(self.thumbnail_strip)
+        self.preview_widget = QWidget()
+        self.build_preview(self.preview_widget)
+        layout.addWidget(self.preview_widget)
 
         self.options_widget = QWidget()
         self.build_options(self.options_widget)
@@ -76,6 +72,21 @@ class ToolDialog(QDialog):
         self.open_folder_button.clicked.connect(self._open_output_folder)
         button_row.addWidget(self.open_folder_button)
         layout.addLayout(button_row)
+
+    def build_preview(self, container: QWidget) -> None:
+        """Override in subclasses to replace the default thumbnail-strip preview
+        with something else (e.g. an interactive rectangle-selection widget for
+        Crop/Redact). Default: the existing horizontal scrolling thumbnail strip."""
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.thumbnail_strip = QScrollArea()
+        self.thumbnail_strip.setWidgetResizable(True)
+        self.thumbnail_strip.setFixedHeight(130)
+        self.thumbnail_strip.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._thumbnail_container = QWidget()
+        self._thumbnail_layout = QHBoxLayout(self._thumbnail_container)
+        self.thumbnail_strip.setWidget(self._thumbnail_container)
+        layout.addWidget(self.thumbnail_strip)
 
     def build_options(self, container: QWidget) -> None:
         """Override in subclasses to add tool-specific option widgets into `container`."""
@@ -121,6 +132,8 @@ class ToolDialog(QDialog):
         self._refresh_thumbnails()
 
     def _refresh_thumbnails(self) -> None:
+        if not hasattr(self, "_thumbnail_layout"):
+            return
         while self._thumbnail_layout.count():
             item = self._thumbnail_layout.takeAt(0)
             widget = item.widget()

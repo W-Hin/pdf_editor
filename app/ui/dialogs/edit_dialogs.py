@@ -3,8 +3,10 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QComboBox, QLabel, QLineEdit, QSlider
 
-from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers
+from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf
+from app.core.errors import PDFError
 from app.ui.dialogs.base import ToolDialog
+from app.ui.widgets import RectangleOverlayWidget, box_to_insets
 
 
 class RotateDialog(ToolDialog):
@@ -86,4 +88,41 @@ class AddPageNumbersDialog(ToolDialog):
         input_path = input_paths[0]
         out_path = str(Path(input_path).with_name(Path(input_path).stem + "_numbered.pdf"))
         add_page_numbers(input_path, out_path, params["position"], params["format"])
+        return [out_path]
+
+
+class CropDialog(ToolDialog):
+    title = "Crop PDF"
+    dialog_size = (650, 750)
+
+    def build_preview(self, container: QWidget) -> None:
+        layout = QVBoxLayout(container)
+        layout.addWidget(QLabel("Drag to select the area to KEEP (page 1's layout applies to every page):"))
+        self.overlay = RectangleOverlayWidget(multi=False)
+        layout.addWidget(self.overlay)
+
+    def on_files_changed(self, paths: list[str]) -> None:
+        if not paths:
+            return
+        from app.core.pdf_ops import render_page_thumbnail
+        from PySide6.QtGui import QPixmap
+        try:
+            thumb_bytes = render_page_thumbnail(paths[0], 1, max_size=600)
+        except PDFError:
+            return
+        pixmap = QPixmap()
+        pixmap.loadFromData(thumb_bytes)
+        self.overlay.set_pixmap(pixmap)
+
+    def gather_params(self) -> dict:
+        return {"box": self.overlay.single_box()}
+
+    def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
+        box = params["box"]
+        if box is None:
+            raise PDFError("Drag to select a crop area first.")
+        insets = box_to_insets(box)
+        input_path = input_paths[0]
+        out_path = str(Path(input_path).with_name(Path(input_path).stem + "_cropped.pdf"))
+        crop_pdf(input_path, out_path, **insets)
         return [out_path]
