@@ -3,7 +3,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QSpinBox, QPushButton, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QSpinBox, QPushButton, QFileDialog, QMessageBox, QScrollArea
 
 from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, edit_pdf, extract_form_fields, fill_form
 from app.core.errors import PDFError
@@ -99,23 +99,58 @@ class CropDialog(ToolDialog):
 
     def build_preview(self, container: QWidget) -> None:
         layout = QVBoxLayout(container)
-        instruction = QLabel("Drag to select the area to KEEP (page 1's layout applies to every page):")
+        instruction = QLabel(
+            "Drag to select the area to KEEP on page 1 (applies to every page - "
+            "other pages below show a live preview of the same selection):"
+        )
         instruction.setWordWrap(True)
         layout.addWidget(instruction)
         self.overlay = RectangleOverlayWidget(multi=False)
+        self.overlay.box_changed.connect(self._propagate_box_to_mirrors)
         layout.addWidget(self.overlay)
+
+        self._mirror_scroll = QScrollArea()
+        self._mirror_scroll.setWidgetResizable(True)
+        self._mirror_container = QWidget()
+        self._mirror_layout = QVBoxLayout(self._mirror_container)
+        self._mirror_scroll.setWidget(self._mirror_container)
+        layout.addWidget(self._mirror_scroll)
+        self._mirrors: list[RectangleOverlayWidget] = []
+
+    def _propagate_box_to_mirrors(self) -> None:
+        box = self.overlay.single_box()
+        for mirror in self._mirrors:
+            mirror.set_boxes([box] if box else [])
 
     def on_files_changed(self, paths: list[str]) -> None:
         self.overlay.set_boxes([])
+        while self._mirror_layout.count():
+            item = self._mirror_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._mirrors = []
         if not paths:
             return
         try:
+            count = get_page_count(paths[0])
             thumb_bytes = render_page_thumbnail(paths[0], 1, max_size=450)
         except PDFError:
             return
         pixmap = QPixmap()
         pixmap.loadFromData(thumb_bytes)
         self.overlay.set_pixmap(pixmap)
+        for page_num in range(2, count + 1):
+            try:
+                mirror_thumb = render_page_thumbnail(paths[0], page_num, max_size=450)
+            except PDFError:
+                continue
+            mirror_pixmap = QPixmap()
+            mirror_pixmap.loadFromData(mirror_thumb)
+            mirror = RectangleOverlayWidget(multi=False, interactive=False)
+            mirror.set_pixmap(mirror_pixmap)
+            self._mirror_layout.addWidget(mirror)
+            self._mirrors.append(mirror)
 
     def gather_params(self) -> dict:
         return {"box": self.overlay.single_box()}

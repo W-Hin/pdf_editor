@@ -136,6 +136,59 @@ def test_crop_dialog_raises_when_no_box_drawn(tmp_path):
         assert "crop area" in str(exc)
 
 
+def test_crop_dialog_drag_propagates_the_box_to_every_read_only_mirror(tmp_path):
+    from app.ui.dialogs.edit_dialogs import CropDialog
+
+    doc = fitz.open()
+    for i in range(3):
+        doc.new_page(width=595, height=842).insert_text((72, 72), f"PAGE {i + 1}")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    dlg = CropDialog()
+    dlg.on_files_changed([str(input_path)])
+    assert len(dlg._mirrors) == 2  # pages 2 and 3
+
+    w, h = dlg.overlay.width(), dlg.overlay.height()
+    QTest.mousePress(dlg.overlay, Qt.LeftButton, Qt.NoModifier, QPoint(int(w * 0.1), int(h * 0.05)))
+    QTest.mouseMove(dlg.overlay, QPoint(int(w * 0.6), int(h * 0.15)))
+    QTest.mouseRelease(dlg.overlay, Qt.LeftButton, Qt.NoModifier, QPoint(int(w * 0.6), int(h * 0.15)))
+
+    box = dlg.overlay.single_box()
+    assert box is not None
+    for mirror in dlg._mirrors:
+        assert mirror.single_box() == box
+        # Mirrors must ignore direct interaction too.
+        QTest.mousePress(mirror, Qt.LeftButton, Qt.NoModifier, QPoint(5, 5))
+        QTest.mouseRelease(mirror, Qt.LeftButton, Qt.NoModifier, QPoint(5, 5))
+        assert mirror.single_box() == box  # unchanged by the click
+
+
+def test_crop_dialog_rebuilds_mirrors_on_file_change(tmp_path):
+    from app.ui.dialogs.edit_dialogs import CropDialog
+
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    single_page_path = tmp_path / "single.pdf"
+    doc.save(str(single_page_path))
+    doc.close()
+
+    doc2 = fitz.open()
+    for _ in range(3):
+        doc2.new_page(width=595, height=842)
+    multi_page_path = tmp_path / "multi.pdf"
+    doc2.save(str(multi_page_path))
+    doc2.close()
+
+    dlg = CropDialog()
+    dlg.on_files_changed([str(multi_page_path)])
+    assert len(dlg._mirrors) == 2
+
+    dlg.on_files_changed([str(single_page_path)])
+    assert dlg._mirrors == []
+
+
 def test_compress_dialog_still_builds_its_thumbnail_strip():
     from app.ui.dialogs.optimize_dialogs import CompressDialog
 
