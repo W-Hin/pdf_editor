@@ -228,27 +228,43 @@ class ImagePlacementWidget(QWidget):
         y1 = (p["y"] + p["height"]) * self.height()
         return QRect(int(x0), int(y0), int(x1 - x0), int(y1 - y0))
 
+    def _corner_size(self, rect: QRect) -> int:
+        # QRect's bottom()/right() are inclusive (bottom() == top() +
+        # height() - 1), so a marker anchored at the top and a handle
+        # anchored at the bottom, each sized height()//2, would share one
+        # row right where they meet - confirmed empirically. Halving
+        # (height() - 1) instead keeps them strictly apart.
+        return max(6, min(_MARKER_SIZE, (rect.height() - 1) // 2, (rect.width() - 1) // 2))
+
     def _marker_rect(self, p: dict) -> QRect:
         rect = self._placement_rect_px(p)
-        return QRect(rect.right() - _MARKER_SIZE, rect.top(), _MARKER_SIZE, _MARKER_SIZE)
+        size = self._corner_size(rect)
+        return QRect(rect.right() - size, rect.top(), size, size)
 
     def _handle_rect(self, p: dict) -> QRect:
         rect = self._placement_rect_px(p)
-        return QRect(rect.right() - _HANDLE_SIZE, rect.bottom() - _HANDLE_SIZE, _HANDLE_SIZE, _HANDLE_SIZE)
+        size = self._corner_size(rect)
+        return QRect(rect.right() - size, rect.bottom() - size, size, size)
 
     def mousePressEvent(self, e) -> None:
         pos = e.position().toPoint()
-        for i, p in enumerate(self.placements):
+        # Hit-test topmost-first (reverse of self.placements order) so this
+        # matches paint order in paintEvent, where later entries paint on
+        # top - a click on an overlap should hit what's visually on top.
+        for i in reversed(range(len(self.placements))):
+            p = self.placements[i]
             if self._marker_rect(p).contains(pos):
                 del self.placements[i]
                 self.update()
                 return
-        for i, p in enumerate(self.placements):
+        for i in reversed(range(len(self.placements))):
+            p = self.placements[i]
             if self._handle_rect(p).contains(pos):
                 point = self._point_from_pos(pos)
                 self._drag = {"mode": "resize", "index": i, "start": point, "start_placement": dict(p)}
                 return
-        for i, p in enumerate(self.placements):
+        for i in reversed(range(len(self.placements))):
+            p = self.placements[i]
             if self._placement_rect_px(p).contains(pos):
                 point = self._point_from_pos(pos)
                 self._drag = {"mode": "move", "index": i, "start": point, "start_placement": dict(p)}
@@ -302,6 +318,9 @@ class ImagePlacementWidget(QWidget):
             painter.setPen(QPen(QColor(255, 255, 255), 1))
             painter.setBrush(QColor(220, 40, 40))
             painter.drawEllipse(marker)
+            inset = QPoint(3, 3)
+            painter.drawLine(marker.topLeft() + inset, marker.bottomRight() - inset)
+            painter.drawLine(marker.topRight() + QPoint(-3, 3), marker.bottomLeft() + QPoint(3, -3))
             handle = self._handle_rect(p)
             painter.setPen(QPen(QColor(255, 255, 255), 1))
             painter.setBrush(QColor(40, 100, 220))

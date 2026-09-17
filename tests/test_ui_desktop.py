@@ -288,6 +288,45 @@ def test_marker_and_handle_rects_do_not_overlap_for_a_default_sized_placement():
     assert not marker.intersects(handle)
 
 
+def test_marker_and_handle_rects_do_not_overlap_for_a_short_wide_signature():
+    # A 5:1-aspect signature (a common cropped scan) at the default width
+    # fraction on this ~450px-tall page preview renders under 28px tall -
+    # confirmed empirically to be the case that made the OLD fixed-14px
+    # marker/handle rects overlap (marker always won the hit-test, so a
+    # click meant for the handle deleted the placement instead of resizing
+    # it). This is the exact scenario Finding 1 describes.
+    widget = ImagePlacementWidget()
+    page_pixmap = QPixmap(318, 450)
+    page_pixmap.fill(Qt.white)
+    sig_pixmap = QPixmap(500, 100)  # 5:1 aspect
+    sig_pixmap.fill(Qt.blue)
+    widget.set_page_pixmap(page_pixmap)
+    widget.set_signature_pixmap(sig_pixmap)
+
+    w, h = widget.width(), widget.height()
+    click = QPoint(int(w * 0.5), int(h * 0.5))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, click)
+    assert len(widget.placements) == 1
+    p = widget.placements[0]
+    rect = widget._placement_rect_px(p)
+    assert rect.height() < 28  # confirms this actually hits the extreme case
+
+    marker = widget._marker_rect(p)
+    handle = widget._handle_rect(p)
+    assert not marker.intersects(handle)
+
+    # Clicking dead-center on the resize handle must actually start a
+    # resize, not fall through to the marker's delete - this is the part
+    # that regresses silently if only the static-rect overlap is checked.
+    hx, hy = handle.center().x(), handle.center().y()
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(hx, hy))
+    assert widget._drag is not None
+    assert widget._drag["mode"] == "resize"
+    assert len(widget.placements) == 1  # not deleted
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(hx, hy))
+
+
 def test_clicking_a_placements_body_moves_it():
     widget = _make_placement_widget()
     widget.set_placements([{"x": 0.375, "y": 0.25, "width": 0.25, "height": 0.1}])
@@ -353,6 +392,24 @@ def test_resize_past_the_page_edge_clamps_to_the_available_space():
     assert resized["y"] + resized["height"] <= 1.0 + 1e-9
 
 
+def test_overlapping_placements_hit_test_the_topmost_last_drawn_one():
+    # paintEvent draws self.placements in forward order, so the LAST entry
+    # paints on top. Hit-testing must therefore also prefer the last entry
+    # on an overlap - clicking should hit what's visually on top, not
+    # whichever placement happens to be first in the list.
+    widget = _make_placement_widget()
+    bottom = {"x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5}
+    top = {"x": 0.15, "y": 0.15, "width": 0.5, "height": 0.5}
+    widget.set_placements([bottom, top])
+
+    overlap_rect = widget._placement_rect_px(top)
+    body = QPoint(overlap_rect.left() + 5, overlap_rect.top() + 5)  # inside both bodies
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, body)
+    assert widget._drag is not None
+    assert widget._drag["index"] == 1  # the topmost (last-drawn) placement, not index 0
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, body)
+
+
 def test_sign_dialog_places_a_signature_and_exports_it(tmp_path):
     from app.ui.dialogs.edit_dialogs import SignDialog
 
@@ -388,6 +445,97 @@ def test_sign_dialog_places_a_signature_and_exports_it(tmp_path):
     images = page.get_images()
     assert len(images) == 1
     result.close()
+
+
+def test_sign_dialog_use_different_signature_clears_the_overlays_placements(tmp_path):
+    from app.ui.dialogs.edit_dialogs import SignDialog
+
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    sig_pixmap = QPixmap(200, 80)
+    sig_pixmap.fill(Qt.blue)
+    sig_path = str(tmp_path / "signature.png")
+    sig_pixmap.save(sig_path, "PNG")
+
+    dlg = SignDialog()
+    dlg.use_signature_file(sig_path)
+    dlg.on_files_changed([str(input_path)])
+
+    w, h = dlg.overlay.width(), dlg.overlay.height()
+    click = QPoint(int(w * 0.6), int(h * 0.7))
+    QTest.mousePress(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
+    assert len(dlg.overlay.placements) == 1
+
+    # Switching to a different signature must also clear the overlay's
+    # displayed placements, not just the dialog's own bookkeeping - the
+    # widget would otherwise keep rendering stale boxes from the old
+    # signature.
+    dlg._use_different_signature()
+    assert dlg.overlay.placements == []
+
+
+def test_sign_dialog_page_switch_accumulates_and_restores_placements(tmp_path):
+    from app.ui.dialogs.edit_dialogs import SignDialog
+
+    doc = fitz.open()
+    for _ in range(3):
+        doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    sig_pixmap = QPixmap(200, 80)
+    sig_pixmap.fill(Qt.blue)
+    sig_path = str(tmp_path / "signature.png")
+    sig_pixmap.save(sig_path, "PNG")
+
+    dlg = SignDialog()
+    dlg.use_signature_file(sig_path)  # bypasses the draw/upload UI, sets signature_path + natural size directly
+    dlg.on_files_changed([str(input_path)])
+    assert dlg.page_spin.maximum() == 3
+
+    w, h = dlg.overlay.width(), dlg.overlay.height()
+
+    def place():
+        click = QPoint(int(w * 0.6), int(h * 0.7))
+        QTest.mousePress(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
+        QTest.mouseRelease(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
+
+    # Page 1: place a signature.
+    place()
+    assert len(dlg.overlay.placements) == 1
+
+    # Switch to page 3: starts empty, place a signature there too.
+    dlg.page_spin.setValue(3)
+    assert dlg.overlay.placements == []
+    place()
+    assert len(dlg.overlay.placements) == 1
+
+    # Switch back to page 1: its earlier placement must still be there
+    # (restored from the accumulator, exercising the same flush-and-restore
+    # machinery as RedactDialog's page-switch test).
+    dlg.page_spin.setValue(1)
+    assert len(dlg.overlay.placements) == 1
+
+    # gather_params must flush the currently-displayed page (page 1) and
+    # report placements on both page 1 and page 3, none on page 2.
+    params = dlg.gather_params()
+    assert sorted(p["page"] for p in params["placements"]) == [1, 3]
+
+    output_paths = dlg.run_operation([str(input_path)], params)
+    result = fitz.open(output_paths[0])
+    images_p1 = result[0].get_images()
+    images_p2 = result[1].get_images()
+    images_p3 = result[2].get_images()
+    result.close()
+    assert len(images_p1) == 1
+    assert len(images_p2) == 0
+    assert len(images_p3) == 1
 
 
 def test_sign_dialog_raises_when_no_signature_placed(tmp_path):

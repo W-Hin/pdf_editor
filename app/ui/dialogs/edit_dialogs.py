@@ -296,6 +296,7 @@ class SignDialog(ToolDialog):
         self.signature_path = None
         self._all_placements = []
         self._current_page = None
+        self.overlay.set_placements([])
         self.pad.clear()
         self.pad_panel.setVisible(False)
         self.placement_panel.setVisible(False)
