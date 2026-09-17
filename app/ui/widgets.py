@@ -1,5 +1,5 @@
 from PySide6.QtCore import QPoint, QRect, Qt
-from PySide6.QtGui import QColor, QImage, QPainter, QPen
+from PySide6.QtGui import QColor, QImage, QPainter, QPixmap, QPen
 from PySide6.QtWidgets import QCheckBox, QComboBox, QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget
 
 _MIN_DRAG_FRACTION = 0.02
@@ -437,3 +437,40 @@ class FormFieldsWidget(QWidget):
 
     def has_fields(self) -> bool:
         return len(self._field_widgets) > 0
+
+
+class DiffPreviewWidget(QWidget):
+    """A read-only page-preview QPixmap with highlight boxes drawn on top -
+    used by CompareDialog to show computed visual-diff regions. Unlike
+    RectangleOverlayWidget, these boxes are Compare's own computed output,
+    never the user's own draggable/removable annotations, so this widget
+    has NO mouse event handling at all - reusing RectangleOverlayWidget's
+    box-drawing code here would be actively wrong, since a click could
+    accidentally "remove" a diff finding that was never a real annotation
+    to remove."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.pixmap = None
+        self.boxes: list[dict] = []
+
+    def set_pixmap(self, pixmap) -> None:
+        self.pixmap = pixmap
+        self.setFixedSize(pixmap.size())
+        self.update()
+
+    def set_boxes(self, boxes: list[dict]) -> None:
+        self.boxes = list(boxes)
+        self.update()
+
+    def paintEvent(self, e) -> None:
+        painter = QPainter(self)
+        if self.pixmap is not None:
+            painter.drawPixmap(0, 0, self.pixmap)
+        for box in self.boxes:
+            x0_px, y0_px = box["x0"] * self.width(), box["y0"] * self.height()
+            x1_px, y1_px = box["x1"] * self.width(), box["y1"] * self.height()
+            rect = QRect(int(x0_px), int(y0_px), int(x1_px - x0_px), int(y1_px - y0_px))
+            painter.setPen(QPen(QColor(220, 40, 40), 2))
+            painter.setBrush(QColor(220, 40, 40, 60))
+            painter.drawRect(rect)

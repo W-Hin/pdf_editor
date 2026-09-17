@@ -9,7 +9,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit
 
 from app.core.pdf_ops import crop_pdf, extract_form_fields, render_page_thumbnail
-from app.ui.widgets import FormFieldsWidget, RectangleOverlayWidget, SignaturePadWidget, box_to_insets, insets_to_box
+from app.ui.widgets import DiffPreviewWidget, FormFieldsWidget, RectangleOverlayWidget, SignaturePadWidget, box_to_insets, insets_to_box
 
 _app = QApplication.instance() or QApplication([])
 
@@ -845,3 +845,22 @@ def test_fill_form_dialog_handles_multiple_pages(tmp_path):
     result.close()
     assert "Page One Value" in page1_text
     assert "Page Two Value" in page2_text
+
+
+def test_diff_preview_widget_paints_pixmap_and_boxes():
+    widget = DiffPreviewWidget()
+    widget.set_pixmap(QPixmap(200, 100))
+    widget.set_boxes([{"x0": 0.1, "y0": 0.1, "x1": 0.5, "y1": 0.5}])
+    assert widget.pixmap.size() == QPixmap(200, 100).size()
+    assert widget.boxes == [{"x0": 0.1, "y0": 0.1, "x1": 0.5, "y1": 0.5}]
+
+
+def test_diff_preview_widget_ignores_all_mouse_input():
+    widget = DiffPreviewWidget()
+    widget.set_pixmap(QPixmap(200, 100))
+    widget.set_boxes([{"x0": 0.1, "y0": 0.1, "x1": 0.5, "y1": 0.5}])
+    before_boxes = list(widget.boxes)
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(20, 10))
+    QTest.mouseMove(widget, QPoint(150, 80))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(150, 80))
+    assert widget.boxes == before_boxes
