@@ -5,10 +5,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QSpinBox, QPushButton, QFileDialog, QMessageBox
 
-from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, edit_pdf
+from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, edit_pdf, extract_form_fields, fill_form
 from app.core.errors import PDFError
 from app.ui.dialogs.base import ToolDialog
-from app.ui.widgets import RectangleOverlayWidget, box_to_insets, insets_to_box, SignaturePadWidget, ImagePlacementWidget
+from app.ui.widgets import RectangleOverlayWidget, box_to_insets, insets_to_box, SignaturePadWidget, ImagePlacementWidget, FormFieldsWidget
 
 
 class RotateDialog(ToolDialog):
@@ -361,4 +361,49 @@ class SignDialog(ToolDialog):
         image_paths = {signature_path: signature_path}
         out_path = str(Path(input_path).with_name(Path(input_path).stem + "_signed.pdf"))
         edit_pdf(input_path, out_path, elements, image_paths)
+        return [out_path]
+
+
+class FillFormDialog(ToolDialog):
+    title = "PDF Forms"
+    dialog_size = (650, 780)
+
+    def build_preview(self, container: QWidget) -> None:
+        layout = QVBoxLayout(container)
+        instruction = QLabel("Fill in the fields below; values are read from the document as-is.")
+        instruction.setWordWrap(True)
+        layout.addWidget(instruction)
+        self.empty_label = QLabel("No fillable fields found in this document.")
+        self.empty_label.setVisible(False)
+        layout.addWidget(self.empty_label)
+        self.fields_widget = FormFieldsWidget()
+        layout.addWidget(self.fields_widget)
+
+    def on_files_changed(self, paths: list[str]) -> None:
+        if not paths:
+            self.fields_widget.set_fields([], [])
+            self.empty_label.setVisible(False)
+            return
+        input_path = paths[0]
+        try:
+            fields = extract_form_fields(input_path)
+            count = get_page_count(input_path)
+        except PDFError:
+            return
+        pixmaps = []
+        for page_num in range(1, count + 1):
+            thumb_bytes = render_page_thumbnail(input_path, page_num, max_size=450)
+            pixmap = QPixmap()
+            pixmap.loadFromData(thumb_bytes)
+            pixmaps.append(pixmap)
+        self.fields_widget.set_fields(fields, pixmaps)
+        self.empty_label.setVisible(not self.fields_widget.has_fields())
+
+    def gather_params(self) -> dict:
+        return {"values": self.fields_widget.values()}
+
+    def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
+        input_path = input_paths[0]
+        out_path = str(Path(input_path).with_name(Path(input_path).stem + "_filled.pdf"))
+        fill_form(input_path, out_path, params["values"])
         return [out_path]

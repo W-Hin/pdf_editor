@@ -672,3 +672,64 @@ def test_form_fields_widget_has_fields_false_for_a_fields_free_document():
     widget.set_fields([], [QPixmap(100, 100)])
     assert widget.has_fields() is False
     assert widget.values() == []
+
+
+def test_fill_form_dialog_fills_and_exports_real_values(tmp_path):
+    from app.ui.dialogs.edit_dialogs import FillFormDialog
+
+    input_path = _build_form_fixture(tmp_path)
+
+    dlg = FillFormDialog()
+    dlg.on_files_changed([input_path])
+    assert dlg.fields_widget.has_fields() is True
+
+    fields = dlg.fields_widget._fields
+    text_field = next(f for f in fields if f["type"] == "text")
+    combo_field = next(f for f in fields if f["type"] == "combobox")
+    text_qwidget = dlg.fields_widget._field_widgets[(text_field["page"], text_field["index"])]
+    combo_qwidget = dlg.fields_widget._field_widgets[(combo_field["page"], combo_field["index"])]
+
+    text_qwidget.clear()
+    QTest.keyClicks(text_qwidget, "Jane Doe")
+    combo_qwidget.setCurrentText("Canada")
+
+    params = dlg.gather_params()
+    assert len(params["values"]) == 3
+
+    output_paths = dlg.run_operation([input_path], params)
+
+    # fill_form always bakes (flattens) its output, so extract_form_fields
+    # on the OUTPUT returns [] - there are no widgets left to extract
+    # (verified empirically while writing this plan; see this plan's Global
+    # Constraints). Verify the filled values the same way
+    # tests/test_pdf_ops.py's own fill_form tests do: via get_text() on the
+    # output page, since text/combobox values render as literal text after
+    # baking.
+    result = fitz.open(output_paths[0])
+    text = result[0].get_text()
+    result.close()
+    assert "Jane Doe" in text
+    assert "Canada" in text
+
+
+def test_fill_form_dialog_raises_when_document_has_no_fields(tmp_path):
+    from app.core.errors import PDFError
+    from app.ui.dialogs.edit_dialogs import FillFormDialog
+
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), "No form fields here")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    dlg = FillFormDialog()
+    dlg.on_files_changed([str(input_path)])
+    assert dlg.fields_widget.has_fields() is False
+
+    params = dlg.gather_params()
+    assert params["values"] == []
+    try:
+        dlg.run_operation([str(input_path)], params)
+        assert False, "expected PDFError"
+    except PDFError as exc:
+        assert "at least one" in str(exc)

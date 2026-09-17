@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QApplication
 from app.ui.main_window import MainWindow
 from app.ui.dialogs.organize_dialogs import MergeDialog, SplitDialog
 from app.ui.dialogs.pages_dialogs import RemovePagesDialog, ExtractPagesDialog, ReorderPagesDialog
-from app.ui.dialogs.edit_dialogs import RotateDialog, WatermarkDialog, AddPageNumbersDialog, CropDialog, RedactDialog, SignDialog
+from app.ui.dialogs.edit_dialogs import RotateDialog, WatermarkDialog, AddPageNumbersDialog, CropDialog, RedactDialog, SignDialog, FillFormDialog
 from app.ui.dialogs.optimize_dialogs import CompressDialog, RepairDialog, ProtectDialog, OcrDialog, PdfToPdfaDialog, UnlockDialog
 from app.ui.dialogs.convert_dialogs import ToImagesDialog, ToWordDialog, PdfToMarkdownDialog, PdfToPptxDialog, PdfToXlsxDialog, ImagesToPdfDialog
 
@@ -24,6 +24,7 @@ def main() -> int:
     window.add_tool("Edit", "Crop PDF", CropDialog)
     window.add_tool("Edit", "Redact PDF", RedactDialog)
     window.add_tool("Edit", "Sign PDF", SignDialog)
+    window.add_tool("Edit", "PDF Forms", FillFormDialog)
     window.add_tool("Optimize", "Compress PDF", CompressDialog)
     window.add_tool("Optimize", "Repair PDF", RepairDialog)
     window.add_tool("Optimize", "Protect PDF", ProtectDialog)
