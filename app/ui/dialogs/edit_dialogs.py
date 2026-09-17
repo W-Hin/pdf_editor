@@ -3,7 +3,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QSpinBox, QPushButton, QFileDialog, QMessageBox, QScrollArea
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea
 
 from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, edit_pdf, extract_form_fields, fill_form
 from app.core.errors import PDFError
@@ -260,19 +260,15 @@ class SignDialog(ToolDialog):
 
         self.placement_panel = QWidget()
         placement_layout = QVBoxLayout(self.placement_panel)
-        page_row = QHBoxLayout()
-        page_row.addWidget(QLabel("Page:"))
-        self.page_spin = QSpinBox()
-        self.page_spin.setMinimum(1)
-        self.page_spin.setValue(1)
-        self.page_spin.valueChanged.connect(self._load_current_page)
-        page_row.addWidget(self.page_spin)
-        placement_layout.addLayout(page_row)
         instruction = QLabel("Click to place your signature; drag to move it, its corner handle to resize, or click the × to remove it:")
         instruction.setWordWrap(True)
         placement_layout.addWidget(instruction)
-        self.overlay = ImagePlacementWidget()
-        placement_layout.addWidget(self.overlay)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._container = QWidget()
+        self._container_layout = QVBoxLayout(self._container)
+        self._scroll.setWidget(self._container)
+        placement_layout.addWidget(self._scroll)
         different_btn = QPushButton("Use a different signature")
         different_btn.clicked.connect(self._use_different_signature)
         placement_layout.addWidget(different_btn)
@@ -280,9 +276,8 @@ class SignDialog(ToolDialog):
         layout.addWidget(self.placement_panel)
 
         self.signature_path: str | None = None
-        self._all_placements: list[dict] = []
-        self._current_page: int | None = None
         self._input_path: str | None = None
+        self._page_widgets: list[ImagePlacementWidget | None] = []
 
     def _toggle_draw_pad(self) -> None:
         self.pad_panel.setVisible(not self.pad_panel.isVisible())
@@ -307,67 +302,60 @@ class SignDialog(ToolDialog):
         placement phase - the single entry point both 'Draw new'/'Upload
         new' and tests use."""
         self.signature_path = path
-        pixmap = QPixmap(path)
-        self.overlay.set_signature_pixmap(pixmap)
         self.source_panel.setVisible(False)
         self.placement_panel.setVisible(True)
-        self._load_current_page()
+        self._rebuild_page_widgets()
 
     def _use_different_signature(self) -> None:
         self.signature_path = None
-        self._all_placements = []
-        self._current_page = None
-        self.overlay.set_placements([])
         self.pad.clear()
         self.pad_panel.setVisible(False)
         self.placement_panel.setVisible(False)
         self.source_panel.setVisible(True)
+        self._clear_page_widgets()
 
     def on_files_changed(self, paths: list[str]) -> None:
-        self._all_placements = []
-        self._current_page = None
         self._input_path = paths[0] if paths else None
-        if self._input_path is None:
+        self._rebuild_page_widgets()
+
+    def _clear_page_widgets(self) -> None:
+        while self._container_layout.count():
+            item = self._container_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._page_widgets = []
+
+    def _rebuild_page_widgets(self) -> None:
+        self._clear_page_widgets()
+        if self._input_path is None or self.signature_path is None:
             return
         try:
             count = get_page_count(self._input_path)
         except PDFError:
             return
-        self.page_spin.setMaximum(count)
-        self.page_spin.setValue(1)
-        if self.signature_path is not None:
-            self._load_current_page()
-
-    def _flush_current_page(self) -> None:
-        if self._current_page is None:
-            return
-        self._all_placements = [p for p in self._all_placements if p["page"] != self._current_page]
-        self._all_placements.extend(
-            {"page": self._current_page, **p} for p in self.overlay.placements
-        )
-
-    def _load_current_page(self) -> None:
-        if self._input_path is None or self.signature_path is None:
-            return
-        self._flush_current_page()
-        page_num = self.page_spin.value()
-        self._current_page = page_num
-        try:
-            thumb_bytes = render_page_thumbnail(self._input_path, page_num, max_size=450)
-        except PDFError:
-            return
-        pixmap = QPixmap()
-        pixmap.loadFromData(thumb_bytes)
-        self.overlay.set_page_pixmap(pixmap)
-        page_placements = [
-            {"x": p["x"], "y": p["y"], "width": p["width"], "height": p["height"]}
-            for p in self._all_placements if p["page"] == page_num
-        ]
-        self.overlay.set_placements(page_placements)
+        sig_pixmap = QPixmap(self.signature_path)
+        for page_num in range(1, count + 1):
+            try:
+                thumb_bytes = render_page_thumbnail(self._input_path, page_num, max_size=450)
+            except PDFError:
+                self._page_widgets.append(None)
+                continue
+            pixmap = QPixmap()
+            pixmap.loadFromData(thumb_bytes)
+            widget = ImagePlacementWidget()
+            widget.set_page_pixmap(pixmap)
+            widget.set_signature_pixmap(sig_pixmap)
+            self._container_layout.addWidget(widget)
+            self._page_widgets.append(widget)
 
     def gather_params(self) -> dict:
-        self._flush_current_page()
-        return {"signature_path": self.signature_path, "placements": list(self._all_placements)}
+        placements = []
+        for page_num, widget in enumerate(self._page_widgets, start=1):
+            if widget is None:
+                continue
+            placements.extend({"page": page_num, **p} for p in widget.placements)
+        return {"signature_path": self.signature_path, "placements": placements}
 
     def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         input_path = input_paths[0]

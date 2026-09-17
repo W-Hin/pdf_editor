@@ -517,11 +517,12 @@ def test_sign_dialog_places_a_signature_and_exports_it(tmp_path):
     dlg.use_signature_file(sig_path)  # bypasses the draw/upload UI, sets signature_path + natural size directly
     dlg.on_files_changed([str(input_path)])
 
-    w, h = dlg.overlay.width(), dlg.overlay.height()
+    page1 = dlg._page_widgets[0]
+    w, h = page1.width(), page1.height()
     click = QPoint(int(w * 0.6), int(h * 0.7))
-    QTest.mousePress(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
-    QTest.mouseRelease(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
-    assert len(dlg.overlay.placements) == 1
+    QTest.mousePress(page1, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(page1, Qt.LeftButton, Qt.NoModifier, click)
+    assert len(page1.placements) == 1
 
     params = dlg.gather_params()
     assert params["signature_path"] == sig_path
@@ -554,21 +555,21 @@ def test_sign_dialog_use_different_signature_clears_the_overlays_placements(tmp_
     dlg.use_signature_file(sig_path)
     dlg.on_files_changed([str(input_path)])
 
-    w, h = dlg.overlay.width(), dlg.overlay.height()
+    page1 = dlg._page_widgets[0]
+    w, h = page1.width(), page1.height()
     click = QPoint(int(w * 0.6), int(h * 0.7))
-    QTest.mousePress(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
-    QTest.mouseRelease(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
-    assert len(dlg.overlay.placements) == 1
+    QTest.mousePress(page1, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(page1, Qt.LeftButton, Qt.NoModifier, click)
+    assert len(page1.placements) == 1
 
-    # Switching to a different signature must also clear the overlay's
-    # displayed placements, not just the dialog's own bookkeeping - the
-    # widget would otherwise keep rendering stale boxes from the old
-    # signature.
+    # Switching to a different signature must discard every per-page widget
+    # entirely, not just clear their placements - there's no valid page
+    # widget to show until a new signature + file combination exists again.
     dlg._use_different_signature()
-    assert dlg.overlay.placements == []
+    assert dlg._page_widgets == []
 
 
-def test_sign_dialog_page_switch_accumulates_and_restores_placements(tmp_path):
+def test_sign_dialog_each_page_holds_its_own_placements_independently(tmp_path):
     from app.ui.dialogs.edit_dialogs import SignDialog
 
     doc = fitz.open()
@@ -584,35 +585,22 @@ def test_sign_dialog_page_switch_accumulates_and_restores_placements(tmp_path):
     sig_pixmap.save(sig_path, "PNG")
 
     dlg = SignDialog()
-    dlg.use_signature_file(sig_path)  # bypasses the draw/upload UI, sets signature_path + natural size directly
+    dlg.use_signature_file(sig_path)
     dlg.on_files_changed([str(input_path)])
-    assert dlg.page_spin.maximum() == 3
+    assert len(dlg._page_widgets) == 3
 
-    w, h = dlg.overlay.width(), dlg.overlay.height()
-
-    def place():
+    def place(widget):
+        w, h = widget.width(), widget.height()
         click = QPoint(int(w * 0.6), int(h * 0.7))
-        QTest.mousePress(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
-        QTest.mouseRelease(dlg.overlay, Qt.LeftButton, Qt.NoModifier, click)
+        QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, click)
+        QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, click)
 
-    # Page 1: place a signature.
-    place()
-    assert len(dlg.overlay.placements) == 1
+    place(dlg._page_widgets[0])  # page 1
+    place(dlg._page_widgets[2])  # page 3
+    assert len(dlg._page_widgets[0].placements) == 1
+    assert len(dlg._page_widgets[1].placements) == 0
+    assert len(dlg._page_widgets[2].placements) == 1
 
-    # Switch to page 3: starts empty, place a signature there too.
-    dlg.page_spin.setValue(3)
-    assert dlg.overlay.placements == []
-    place()
-    assert len(dlg.overlay.placements) == 1
-
-    # Switch back to page 1: its earlier placement must still be there
-    # (restored from the accumulator, exercising the same flush-and-restore
-    # machinery as RedactDialog's page-switch test).
-    dlg.page_spin.setValue(1)
-    assert len(dlg.overlay.placements) == 1
-
-    # gather_params must flush the currently-displayed page (page 1) and
-    # report placements on both page 1 and page 3, none on page 2.
     params = dlg.gather_params()
     assert sorted(p["page"] for p in params["placements"]) == [1, 3]
 
@@ -625,6 +613,55 @@ def test_sign_dialog_page_switch_accumulates_and_restores_placements(tmp_path):
     assert len(images_p1) == 1
     assert len(images_p2) == 0
     assert len(images_p3) == 1
+
+
+def test_sign_dialog_page_numbering_survives_a_mid_document_render_failure(tmp_path, monkeypatch):
+    from app.core.errors import PDFError
+    from app.core.pdf_ops import render_page_thumbnail as real_render_page_thumbnail
+    from app.ui.dialogs import edit_dialogs
+    from app.ui.dialogs.edit_dialogs import SignDialog
+
+    doc = fitz.open()
+    for i in range(4):
+        doc.new_page(width=595, height=842).insert_text((72, 72), f"PAGE {i + 1}")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    sig_pixmap = QPixmap(200, 80)
+    sig_pixmap.fill(Qt.blue)
+    sig_path = str(tmp_path / "signature.png")
+    sig_pixmap.save(sig_path, "PNG")
+
+    def flaky_render(path, page_num, max_size=100):
+        if page_num == 3:
+            raise PDFError("simulated render failure for page 3")
+        return real_render_page_thumbnail(path, page_num, max_size=max_size)
+
+    # Same convention as the RedactDialog equivalent
+    # (test_redact_dialog_page_numbering_survives_a_mid_document_render_failure):
+    # patch with pytest's monkeypatch fixture, not unittest.mock.
+    monkeypatch.setattr(edit_dialogs, "render_page_thumbnail", flaky_render)
+
+    dlg = SignDialog()
+    dlg.use_signature_file(sig_path)
+    dlg.on_files_changed([str(input_path)])
+
+    assert len(dlg._page_widgets) == 4
+    assert dlg._page_widgets[2] is None  # page 3 (0-indexed slot 2) failed to render
+
+    # Place a signature on page 4's widget (0-indexed slot 3) - it must be
+    # reported as page 4, not silently relabeled as page 3 because page 3's
+    # slot is None instead of missing entirely.
+    page4_widget = dlg._page_widgets[3]
+    w, h = page4_widget.width(), page4_widget.height()
+    click = QPoint(int(w * 0.6), int(h * 0.7))
+    QTest.mousePress(page4_widget, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(page4_widget, Qt.LeftButton, Qt.NoModifier, click)
+
+    params = dlg.gather_params()
+    assert len(params["placements"]) == 1
+    assert params["placements"][0]["page"] == 4
 
 
 def test_sign_dialog_raises_when_no_signature_placed(tmp_path):
