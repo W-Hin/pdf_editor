@@ -30,8 +30,8 @@ def test_single_mode_second_drag_replaces_the_box():
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(150, 80))
     # Deliberately NOT QPoint(0, 0) here: Qt/QTest treats a literal (0,0)
     # position as "unspecified" and substitutes the widget's center instead
-    # (the exact gotcha you found) - QPoint(2, 1) is close to the corner
-    # without tripping it.
+    # (a well-known QTest gotcha, confirmed empirically before this test was
+    # written) - QPoint(2, 1) is close to the corner without tripping it.
     QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(2, 1))
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(40, 40))
     assert len(widget.boxes) == 1
@@ -71,7 +71,8 @@ def test_multi_mode_two_boxes_then_remove_one_via_its_marker():
 def test_box_to_insets_and_back_round_trip():
     # 0.25/0.75 chosen deliberately: both are exact in IEEE-754 binary
     # floating point, so `1 - 0.75 == 0.25` exactly - unlike `1 - 0.7`
-    # (0.30000000000000004), which is the float-precision issue you found.
+    # (0.30000000000000004), a known IEEE-754 float-precision issue
+    # confirmed empirically before this test was written.
     box = {"x0": 0.25, "y0": 0.25, "x1": 0.75, "y1": 0.75}
     insets = box_to_insets(box)
     assert insets == {"top": 0.25, "left": 0.25, "right": 0.25, "bottom": 0.25}
@@ -191,7 +192,13 @@ def test_redact_dialog_page_switch_accumulates_and_restores_boxes(tmp_path):
     # gather_params must flush whatever page is CURRENTLY displayed (page 1,
     # now empty) and report only page 2's surviving box.
     params = dlg.gather_params()
-    assert params["redactions"] == [{"page": 2, "top": 0.05, "left": pytest.approx(0.09905660377358491), "right": pytest.approx(0.40094339622641506), "bottom": 0.85}]
+    assert params["redactions"] == [{
+        "page": 2,
+        "top": pytest.approx(0.04888888888888889),
+        "left": pytest.approx(0.09748427672955975),
+        "right": pytest.approx(0.4025157232704403),
+        "bottom": pytest.approx(0.8511111111111112),
+    }]
 
     output_paths = dlg.run_operation([str(input_path)], params)
     result = fitz.open(output_paths[0])

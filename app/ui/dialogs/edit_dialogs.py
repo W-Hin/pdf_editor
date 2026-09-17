@@ -98,17 +98,18 @@ class CropDialog(ToolDialog):
 
     def build_preview(self, container: QWidget) -> None:
         layout = QVBoxLayout(container)
-        layout.addWidget(QLabel("Drag to select the area to KEEP (page 1's layout applies to every page):"))
+        instruction = QLabel("Drag to select the area to KEEP (page 1's layout applies to every page):")
+        instruction.setWordWrap(True)
+        layout.addWidget(instruction)
         self.overlay = RectangleOverlayWidget(multi=False)
         layout.addWidget(self.overlay)
 
     def on_files_changed(self, paths: list[str]) -> None:
+        self.overlay.set_boxes([])
         if not paths:
             return
-        from app.core.pdf_ops import render_page_thumbnail
-        from PySide6.QtGui import QPixmap
         try:
-            thumb_bytes = render_page_thumbnail(paths[0], 1, max_size=600)
+            thumb_bytes = render_page_thumbnail(paths[0], 1, max_size=450)
         except PDFError:
             return
         pixmap = QPixmap()
@@ -143,7 +144,9 @@ class RedactDialog(ToolDialog):
         self.page_spin.valueChanged.connect(self._load_current_page)
         page_row.addWidget(self.page_spin)
         layout.addLayout(page_row)
-        layout.addWidget(QLabel("Drag to mark an area to redact; click the × on a box to remove it:"))
+        instruction = QLabel("Drag to mark an area to redact; click the × on a box to remove it:")
+        instruction.setWordWrap(True)
+        layout.addWidget(instruction)
         self.overlay = RectangleOverlayWidget(multi=True)
         layout.addWidget(self.overlay)
         self._all_redactions: list[dict] = []
@@ -179,7 +182,7 @@ class RedactDialog(ToolDialog):
         page_num = self.page_spin.value()
         self._current_page = page_num
         try:
-            thumb_bytes = render_page_thumbnail(self._input_path, page_num, max_size=600)
+            thumb_bytes = render_page_thumbnail(self._input_path, page_num, max_size=450)
         except PDFError:
             return
         pixmap = QPixmap()

@@ -133,9 +133,9 @@ Desktop shortcut pointing at it.
 venv/Scripts/python -m pytest -v
 ```
 
-This runs the full suite — both `app/core/`'s tests (used by the desktop app) and
-`web/backend/`'s tests (used by the web app), since both sit on the same core PDF
-logic.
+This runs the full suite — `app/core/`'s tests (used by both apps), `app/ui/`'s
+tests (desktop-only interactive-widget behavior), and `web/backend/`'s tests (the
+web app's own routes).
 
 ## Project layout
 
