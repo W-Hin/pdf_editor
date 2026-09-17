@@ -1246,3 +1246,107 @@ def test_compare_dialog_clear_files_button_resets_state(tmp_path):
     assert dlg.file_list.count() == 0
     assert dlg._path_a is None
     assert dlg.gather_params()["file_count"] == 0
+
+
+from app.ui.edit_canvas import EditElementsModel
+
+
+def _new_text_element(page, x=0.1, y=0.1, width=0.2, height=0.1, text="Hello"):
+    return {
+        "page": page, "type": "new_text", "x": x, "y": y, "width": width, "height": height,
+        "text": text, "family": "helvetica", "bold": False, "italic": False,
+        "underline": False, "size": 14, "color": "#1f2937", "align": "left",
+    }
+
+
+def test_edit_model_add_and_elements_for_page():
+    model = EditElementsModel()
+    id1 = model.add(_new_text_element(page=1))
+    id2 = model.add({"page": 2, "type": "image", "x": 0.2, "y": 0.2, "width": 0.25, "height": 0.1, "file_id": "sig.png"})
+    assert len(model.elements) == 2
+    assert [e["id"] for e in model.elements_for_page(1)] == [id1]
+    assert [e["id"] for e in model.elements_for_page(2)] == [id2]
+
+
+def test_edit_model_undo_redo_are_whole_array_snapshots():
+    model = EditElementsModel()
+    id1 = model.add(_new_text_element(page=1))
+    model.add(_new_text_element(page=1, text="Second"))
+    assert len(model.elements) == 2
+    model.remove(id1)
+    assert len(model.elements) == 1
+    model.undo()
+    assert len(model.elements) == 2
+    model.redo()
+    assert len(model.elements) == 1
+
+
+def test_edit_model_nudge_shifts_position_clamps_and_commits_an_undo_step():
+    model = EditElementsModel()
+    el_id = model.add(_new_text_element(page=1, x=0.95, y=0.1, width=0.1, height=0.1))
+    model.nudge(el_id, 0.5, 0.0)  # far past the right edge
+    el = next(e for e in model.elements if e["id"] == el_id)
+    assert el["x"] == pytest.approx(1 - el["width"])  # clamped, not overshot
+    model.undo()
+    reverted = next(e for e in model.elements if e["id"] == el_id)
+    assert reverted["x"] == pytest.approx(0.95)  # nudge is its own undo step
+
+
+def test_edit_model_reorder_forward_skips_a_different_page_neighbor():
+    model = EditElementsModel()
+    a = model.add(_new_text_element(page=1, text="a"))
+    b_other_page = model.add(_new_text_element(page=2, text="b"))
+    c = model.add(_new_text_element(page=1, text="c"))
+    # array order is [a(page1), b(page2), c(page1)] - forward on 'a' must swap
+    # with 'c' (the nearest SAME-page neighbor), skipping over 'b' (page 2).
+    assert [e["id"] for e in model.elements] == [a, b_other_page, c]
+    model.reorder(a, "forward")
+    assert [e["id"] for e in model.elements] == [c, b_other_page, a]
+
+
+def test_edit_model_reorder_front_and_back():
+    model = EditElementsModel()
+    a = model.add(_new_text_element(page=1, text="a"))
+    b_other_page = model.add(_new_text_element(page=2, text="b"))
+    c = model.add(_new_text_element(page=1, text="c"))
+    d = model.add(_new_text_element(page=1, text="d"))
+    # order: [a(1), b(2), c(1), d(1)]
+    model.reorder(a, "front")  # 'a' becomes last among page-1 elements
+    assert [e["id"] for e in model.elements] == [b_other_page, c, d, a]
+    model.reorder(d, "back")  # 'd' becomes first among page-1 elements
+    assert [e["id"] for e in model.elements] == [b_other_page, d, c, a]
+
+
+def test_edit_model_copy_paste_shifts_by_the_paste_offset():
+    model = EditElementsModel()
+    el_id = model.add(_new_text_element(page=1, x=0.3, y=0.3, width=0.1, height=0.05))
+    model.select(el_id)
+    model.copy()
+    pasted_id = model.paste()
+    pasted = next(e for e in model.elements if e["id"] == pasted_id)
+    assert pasted["x"] == pytest.approx(0.33)
+    assert pasted["y"] == pytest.approx(0.33)
+    assert pasted_id != el_id
+
+
+def test_edit_model_paste_offset_clamps_near_the_page_edge():
+    model = EditElementsModel()
+    el_id = model.add(_new_text_element(page=1, x=0.98, y=0.1, width=0.02, height=0.05))
+    model.select(el_id)
+    model.copy()
+    pasted_id = model.paste()
+    pasted = next(e for e in model.elements if e["id"] == pasted_id)
+    # room_x = 1 - (0.98 + 0.02) = 0, so the x-shift clamps to 0.
+    assert pasted["x"] == pytest.approx(0.98)
+
+
+def test_edit_model_cut_removes_the_source_element():
+    model = EditElementsModel()
+    el_id = model.add(_new_text_element(page=1))
+    model.select(el_id)
+    model.cut()
+    assert model.elements == []
+    assert model.selected_id is None
+    pasted_id = model.paste()
+    assert pasted_id is not None
+    assert len(model.elements) == 1
