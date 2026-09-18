@@ -299,14 +299,14 @@ class EditPageWidget(QWidget):
                 if rect.contains(pos):
                     point = self._point_from_pos(pos)
                     self.model.select(el["id"])
-                    self._drag = {"mode": f"resize-{handle_name}", "id": el["id"], "start": point, "start_element": dict(el)}
+                    self._drag = {"mode": f"resize-{handle_name}", "id": el["id"], "start": point, "start_element": dict(el), "committed": False}
                     return
         for i in reversed(range(len(elements))):
             el = elements[i]
             if self._element_rect_px(el).contains(pos):
                 point = self._point_from_pos(pos)
                 self.model.select(el["id"])
-                self._drag = {"mode": "move", "id": el["id"], "start": point, "start_element": dict(el)}
+                self._drag = {"mode": "move", "id": el["id"], "start": point, "start_element": dict(el), "committed": False}
                 return
         point = self._point_from_pos(pos)
         if point is None:
@@ -340,6 +340,28 @@ class EditPageWidget(QWidget):
                 self._open_text_editor_for_existing(el)
                 return
 
+    def _apply_drag(self, **changes) -> None:
+        """Applies one intermediate position of the in-progress gesture,
+        committing an undo step LAZILY: on the first move that genuinely
+        changes the element, and never afterwards. That single commit runs
+        before that first mutation, so - exactly like add/remove/nudge/
+        reorder - the snapshot it pushes is the PRE-gesture state and an
+        undo after the drag really does put the element back. Committing at
+        gesture-END instead would snapshot the already-mutated element,
+        making undo pop the state it already has (a silent no-op), and
+        committing unconditionally at gesture-START would let a plain
+        zero-movement click-to-select push a junk undo step and wipe the
+        redo stack."""
+        current = next((el for el in self.model.elements if el["id"] == self._drag["id"]), None)
+        if current is None:
+            return
+        if all(current.get(k) == v for k, v in changes.items()):
+            return  # nothing actually moved yet
+        if not self._drag["committed"]:
+            self.model.commit()
+            self._drag["committed"] = True
+        self.model.update(self._drag["id"], **changes)
+
     def mouseMoveEvent(self, e) -> None:
         if self._drag is None:
             return
@@ -352,35 +374,31 @@ class EditPageWidget(QWidget):
         if self._drag["mode"] == "move":
             x = min(max(sp["x"] + dx, 0), 1 - sp["width"])
             y = min(max(sp["y"] + dy, 0), 1 - sp["height"])
-            self.model.update(self._drag["id"], x=x, y=y)
+            self._apply_drag(x=x, y=y)
         elif self._drag["mode"] == "resize-corner":
             if sp["type"] == "image":
                 aspect = sp["height"] / sp["width"]
                 width_cap = min(1 - sp["x"], (1 - sp["y"]) / aspect)
                 width = max(_MIN_TEXT_WIDTH_FRACTION, min(sp["width"] + dx, width_cap))
                 height = width * aspect
-                self.model.update(self._drag["id"], width=width, height=height)
+                self._apply_drag(width=width, height=height)
             else:
                 width = max(_MIN_TEXT_WIDTH_FRACTION, min(sp["width"] + dx, 1 - sp["x"]))
                 height = max(_MIN_TEXT_HEIGHT_FRACTION, min(sp["height"] + dy, 1 - sp["y"]))
-                self.model.update(self._drag["id"], width=width, height=height)
+                self._apply_drag(width=width, height=height)
         elif self._drag["mode"] == "resize-width":
             width = max(_MIN_TEXT_WIDTH_FRACTION, min(sp["width"] + dx, 1 - sp["x"]))
-            self.model.update(self._drag["id"], width=width)
+            self._apply_drag(width=width)
         elif self._drag["mode"] == "resize-height":
             height = max(_MIN_TEXT_HEIGHT_FRACTION, min(sp["height"] + dy, 1 - sp["y"]))
-            self.model.update(self._drag["id"], height=height)
+            self._apply_drag(height=height)
 
     def mouseReleaseEvent(self, e) -> None:
-        if self._drag is None:
-            return
-        # mousePressEvent arms a drag for every body/handle press, including
-        # a plain click-to-select that never moves. Committing that would
-        # push a junk undo step AND clear the redo stack, so only commit a
-        # gesture that actually changed the element.
-        current = next((e_ for e_ in self.model.elements if e_["id"] == self._drag["id"]), None)
-        if current is not None and current != self._drag["start_element"]:
-            self.model.commit()
+        # Deliberately commits NOTHING: _apply_drag already pushed this
+        # gesture's single undo step, pre-mutation, the moment the gesture
+        # first changed anything - and a gesture that changed nothing (the
+        # plain click-to-select mousePressEvent also arms a drag for) must
+        # not push one at all.
         self._drag = None
 
     def _open_text_editor_for_new(self, point: tuple[float, float]) -> None:

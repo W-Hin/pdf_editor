@@ -1770,6 +1770,67 @@ def test_edit_page_widget_editing_existing_text_is_undoable_to_the_old_text():
     assert next(e for e in model.elements if e["id"] == el_id)["text"] == "original"
 
 
+def test_edit_page_widget_undo_after_a_drag_restores_the_pre_drag_position():
+    # The gesture's undo step has to be pushed BEFORE its first mutation:
+    # mouseMoveEvent mutates the live element in place, so committing at
+    # release time would snapshot the already-moved element and undo would
+    # pop the state it already has - a silent no-op.
+    model = EditElementsModel()
+    el_id = model.add(_new_text_element(page=1, x=0.3, y=0.3, width=0.2, height=0.1))
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    w, h = widget.width(), widget.height()
+
+    body = QPoint(int(w * 0.35), int(h * 0.33))
+    moved_to = QPoint(body.x() + 20, body.y() + 10)
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, body)
+    QTest.mouseMove(widget, moved_to)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, moved_to)
+    dragged = next(e for e in model.elements if e["id"] == el_id)
+    assert dragged["x"] == pytest.approx(0.3 + 20 / w)
+
+    model.undo()
+    reverted = next(e for e in model.elements if e["id"] == el_id)
+    assert reverted["x"] == pytest.approx(0.3)
+    assert reverted["y"] == pytest.approx(0.3)
+
+
+def test_edit_page_widget_undo_after_a_resize_restores_the_pre_resize_size():
+    model = EditElementsModel()
+    el_id = model.add(_new_text_element(page=1, x=0.3, y=0.3, width=0.2, height=0.1))
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    handle_center = widget._resize_handles(model.elements[0])["corner"].center()
+    moved_to = QPoint(handle_center.x() + 40, handle_center.y() + 40)
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, handle_center)
+    QTest.mouseMove(widget, moved_to)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, moved_to)
+    assert next(e for e in model.elements if e["id"] == el_id)["width"] > 0.2
+
+    model.undo()
+    reverted = next(e for e in model.elements if e["id"] == el_id)
+    assert reverted["width"] == pytest.approx(0.2)
+    assert reverted["height"] == pytest.approx(0.1)
+
+
+def test_edit_page_widget_a_drag_pushes_exactly_one_undo_step():
+    # Many intermediate mouse-move events, ONE undo step - the gesture must
+    # commit lazily on its first real change and never again.
+    model = EditElementsModel()
+    model.add(_new_text_element(page=1, x=0.3, y=0.3, width=0.2, height=0.1))
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    body = QPoint(int(widget.width() * 0.35), int(widget.height() * 0.33))
+    depth_before = len(model._undo_stack)
+
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, body)
+    for step in (5, 12, 20, 31):
+        QTest.mouseMove(widget, QPoint(body.x() + step, body.y() + step))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(body.x() + 31, body.y() + 31))
+
+    assert len(model._undo_stack) == depth_before + 1
+
+
 def test_edit_page_widget_zero_movement_click_pushes_no_undo_step():
     model = EditElementsModel()
     id1 = model.add(_new_text_element(page=1, x=0.3, y=0.3, width=0.2, height=0.1, text="first"))
