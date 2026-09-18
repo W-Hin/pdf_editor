@@ -1,7 +1,8 @@
+import math
 import uuid
 
-from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
+from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap, QPolygon
 from PySide6.QtWidgets import QTextEdit, QWidget
 
 _PASTE_OFFSET = 0.03
@@ -9,6 +10,8 @@ _MARKER_SIZE = 14
 _HANDLE_SIZE = 14
 _MIN_TEXT_WIDTH_FRACTION = 0.05
 _MIN_TEXT_HEIGHT_FRACTION = 0.03
+_MIN_DRAG_FRACTION = 0.02
+_WIDTH_PRESETS = {"thin": 1, "medium": 3, "thick": 6}
 
 
 class EditElementsModel:
@@ -118,6 +121,15 @@ class EditElementsModel:
             dy = min(max(room_y, 0), _PASTE_OFFSET)
             shifted["x"] = el["x"] + dx
             shifted["y"] = el["y"] + dy
+        elif el["type"] == "shape":
+            room_x = 1 - max(el["x0"], el["x1"])
+            room_y = 1 - max(el["y0"], el["y1"])
+            dx = min(max(room_x, 0), _PASTE_OFFSET)
+            dy = min(max(room_y, 0), _PASTE_OFFSET)
+            shifted["x0"] = el["x0"] + dx
+            shifted["x1"] = el["x1"] + dx
+            shifted["y0"] = el["y0"] + dy
+            shifted["y1"] = el["y1"] + dy
         return shifted
 
     def copy(self) -> None:
@@ -179,6 +191,15 @@ class EditElementsModel:
                 if el["type"] in ("new_text", "image"):
                     el["x"] = min(max(el["x"] + dx, 0), 1 - el["width"])
                     el["y"] = min(max(el["y"] + dy, 0), 1 - el["height"])
+                elif el["type"] == "shape":
+                    x_min, x_max = min(el["x0"], el["x1"]), max(el["x0"], el["x1"])
+                    y_min, y_max = min(el["y0"], el["y1"]), max(el["y0"], el["y1"])
+                    clamped_dx = min(max(dx, -x_min), 1 - x_max)
+                    clamped_dy = min(max(dy, -y_min), 1 - y_max)
+                    el["x0"] += clamped_dx
+                    el["x1"] += clamped_dx
+                    el["y0"] += clamped_dy
+                    el["y1"] += clamped_dy
                 break
         self._notify()
 
@@ -203,7 +224,12 @@ class EditPageWidget(QWidget):
         self.create_mode = "new_text"
         self.on_image_click = on_image_click
         self.image_cache: dict = {}
+        self.shape_type = "rectangle"
+        self.color = "#ff0000"
+        self.width_preset = "medium"
+        self.filled = False
         self._drag: dict | None = None
+        self._create_drag: dict | None = None
         self._text_editor: QTextEdit | None = None
         self._editing_element_id: str | None = None
         self.model.on_change.append(self.update)
@@ -224,11 +250,16 @@ class EditPageWidget(QWidget):
         return (x, y)
 
     def _element_rect_px(self, el: dict) -> QRect:
-        x0 = el["x"] * self.width()
-        y0 = el["y"] * self.height()
-        x1 = (el["x"] + el["width"]) * self.width()
-        y1 = (el["y"] + el["height"]) * self.height()
-        return QRect(int(x0), int(y0), int(x1 - x0), int(y1 - y0))
+        t = el.get("type")
+        if t == "shape":
+            x0, x1 = sorted((el["x0"], el["x1"]))
+            y0, y1 = sorted((el["y0"], el["y1"]))
+        else:
+            x0, y0 = el["x"], el["y"]
+            x1, y1 = el["x"] + el["width"], el["y"] + el["height"]
+        px0, py0 = x0 * self.width(), y0 * self.height()
+        px1, py1 = x1 * self.width(), y1 * self.height()
+        return QRect(int(px0), int(py0), int(px1 - px0), int(py1 - py0))
 
     def _corner_size(self, rect: QRect) -> int:
         # Same clamp ImagePlacementWidget._corner_size uses (deliberately
@@ -248,7 +279,8 @@ class EditPageWidget(QWidget):
         return QRect(rect.right() - size, rect.top(), size, size)
 
     def _resize_handles(self, el: dict) -> dict:
-        """One handle for new_text (free resize, bottom-right). Three for
+        """One handle for new_text (free resize, bottom-right) and for
+        shape (drags x1,y1 directly - see mouseMoveEvent). Three for
         image: a corner (aspect-locked uniform scale, matching
         ImagePlacementWidget's existing formula exactly), plus independent
         width-only and height-only handles (mid-right / mid-bottom edges)
@@ -257,7 +289,7 @@ class EditPageWidget(QWidget):
         keep_proportion=False trusts whatever box the editor produced)."""
         rect = self._element_rect_px(el)
         size = self._corner_size(rect)
-        if el["type"] == "new_text":
+        if el["type"] in ("new_text", "shape"):
             return {"corner": QRect(rect.right() - size, rect.bottom() - size, size, size)}
         if el["type"] == "image":
             mid_x = rect.left() + rect.width() // 2
@@ -303,7 +335,15 @@ class EditPageWidget(QWidget):
                     return
         for i in reversed(range(len(elements))):
             el = elements[i]
-            if self._element_rect_px(el).contains(pos):
+            hit_rect = self._element_rect_px(el)
+            if el["type"] == "shape":
+                # A horizontal/vertical line or arrow has a zero-height or
+                # zero-width bounding box, which QRect.contains() can never
+                # match for a real (integer-rounded) click point - inflate
+                # the hit target so thin shapes stay selectable/movable.
+                margin = max(6, el["width"])
+                hit_rect = hit_rect.adjusted(-margin, -margin, margin, margin)
+            if hit_rect.contains(pos):
                 point = self._point_from_pos(pos)
                 self.model.select(el["id"])
                 self._drag = {"mode": "move", "id": el["id"], "start": point, "start_element": dict(el), "committed": False}
@@ -315,6 +355,8 @@ class EditPageWidget(QWidget):
             self._open_text_editor_for_new(point)
         elif self.create_mode == "image" and self.on_image_click is not None:
             self.on_image_click(point)
+        elif self.create_mode in ("shape", "stroke", "highlight"):
+            self._create_drag = {"start": point, "current": point, "points": [point]}
 
     def create_image_at(self, x: float, y: float, image_path: str) -> str:
         pixmap = self.image_cache.get(image_path)
@@ -363,6 +405,13 @@ class EditPageWidget(QWidget):
         self.model.update(self._drag["id"], **changes)
 
     def mouseMoveEvent(self, e) -> None:
+        if self._create_drag is not None:
+            point = self._point_from_pos(e.position().toPoint())
+            if point is not None:
+                self._create_drag["current"] = point
+                self._create_drag["points"].append(point)
+                self.update()
+            return
         if self._drag is None:
             return
         point = self._point_from_pos(e.position().toPoint())
@@ -372,11 +421,18 @@ class EditPageWidget(QWidget):
         dy = point[1] - self._drag["start"][1]
         sp = self._drag["start_element"]
         if self._drag["mode"] == "move":
-            x = min(max(sp["x"] + dx, 0), 1 - sp["width"])
-            y = min(max(sp["y"] + dy, 0), 1 - sp["height"])
-            self._apply_drag(x=x, y=y)
+            if sp["type"] == "shape":
+                self._apply_drag(x0=sp["x0"] + dx, y0=sp["y0"] + dy, x1=sp["x1"] + dx, y1=sp["y1"] + dy)
+            else:
+                x = min(max(sp["x"] + dx, 0), 1 - sp["width"])
+                y = min(max(sp["y"] + dy, 0), 1 - sp["height"])
+                self._apply_drag(x=x, y=y)
         elif self._drag["mode"] == "resize-corner":
-            if sp["type"] == "image":
+            if sp["type"] == "shape":
+                new_x1 = min(max(sp["x1"] + dx, 0), 1)
+                new_y1 = min(max(sp["y1"] + dy, 0), 1)
+                self._apply_drag(x1=new_x1, y1=new_y1)
+            elif sp["type"] == "image":
                 aspect = sp["height"] / sp["width"]
                 width_cap = min(1 - sp["x"], (1 - sp["y"]) / aspect)
                 width = max(_MIN_TEXT_WIDTH_FRACTION, min(sp["width"] + dx, width_cap))
@@ -394,12 +450,60 @@ class EditPageWidget(QWidget):
             self._apply_drag(height=height)
 
     def mouseReleaseEvent(self, e) -> None:
+        if self._create_drag is not None:
+            drag = self._create_drag
+            self._create_drag = None
+            self._finish_create_drag(drag)
+            self.update()
+            return
         # Deliberately commits NOTHING: _apply_drag already pushed this
         # gesture's single undo step, pre-mutation, the moment the gesture
         # first changed anything - and a gesture that changed nothing (the
         # plain click-to-select mousePressEvent also arms a drag for) must
         # not push one at all.
         self._drag = None
+
+    def _finish_create_drag(self, drag: dict) -> str | None:
+        """Dispatches a completed drag-to-create gesture by self.create_mode
+        into the appropriate new element, or discards it if it didn't clear
+        that type's own minimum-size/extent gate. Task 1 (shape) is the
+        only branch that exists yet; Tasks 2 (stroke) and 3 (highlight)
+        each add their own elif branch here - see this plan's Global
+        Constraints for each type's exact threshold rule, confirmed against
+        the web app's own EditPdfCanvas.jsx."""
+        x0, y0 = drag["start"]
+        x1, y1 = drag["current"]
+        if self.create_mode == "shape":
+            if self.shape_type in ("rectangle", "ellipse"):
+                ok = abs(x1 - x0) >= _MIN_DRAG_FRACTION and abs(y1 - y0) >= _MIN_DRAG_FRACTION
+            else:
+                ok = abs(x1 - x0) >= _MIN_DRAG_FRACTION or abs(y1 - y0) >= _MIN_DRAG_FRACTION
+            if not ok:
+                return None
+            filled = self.filled if self.shape_type in ("rectangle", "ellipse") else False
+            return self.model.add({
+                "page": self.page_number, "type": "shape", "shape": self.shape_type,
+                "x0": x0, "y0": y0, "x1": x1, "y1": y1,
+                "color": self.color, "width": _WIDTH_PRESETS[self.width_preset], "filled": filled,
+            })
+        return None
+
+    def _paint_create_preview(self, painter: QPainter) -> None:
+        """Renders the in-progress drag-to-create gesture directly from
+        local widget state - deliberately never touches the model, so
+        there is nothing to undo/commit if the drag is abandoned (e.g.
+        released below the minimum threshold)."""
+        if self._create_drag is None:
+            return
+        if self.create_mode == "shape":
+            filled = self.filled if self.shape_type in ("rectangle", "ellipse") else False
+            preview = {
+                "type": "shape", "shape": self.shape_type,
+                "x0": self._create_drag["start"][0], "y0": self._create_drag["start"][1],
+                "x1": self._create_drag["current"][0], "y1": self._create_drag["current"][1],
+                "color": self.color, "width": _WIDTH_PRESETS[self.width_preset], "filled": filled,
+            }
+            self._paint_shape(painter, preview)
 
     def _open_text_editor_for_new(self, point: tuple[float, float]) -> None:
         width, height = 0.25, 0.08
@@ -472,7 +576,10 @@ class EditPageWidget(QWidget):
                 self._paint_new_text(painter, el)
             elif el["type"] == "image":
                 self._paint_image(painter, el)
+            elif el["type"] == "shape":
+                self._paint_shape(painter, el)
             self._paint_chrome(painter, el)
+        self._paint_create_preview(painter)
 
     def _paint_new_text(self, painter: QPainter, el: dict) -> None:
         if self._editing_element_id == el["id"] and self._text_editor is not None:
@@ -489,6 +596,43 @@ class EditPageWidget(QWidget):
             pixmap = QPixmap(el["file_id"])
             self.image_cache[el["file_id"]] = pixmap
         painter.drawPixmap(self._element_rect_px(el), pixmap)
+
+    def _paint_shape(self, painter: QPainter, el: dict) -> None:
+        x0_px, y0_px = el["x0"] * self.width(), el["y0"] * self.height()
+        x1_px, y1_px = el["x1"] * self.width(), el["y1"] * self.height()
+        color = QColor(el["color"])
+        painter.setPen(QPen(color, el["width"]))
+        if el["shape"] in ("rectangle", "ellipse"):
+            rect = QRect(int(min(x0_px, x1_px)), int(min(y0_px, y1_px)), int(abs(x1_px - x0_px)), int(abs(y1_px - y0_px)))
+            painter.setBrush(color if el["filled"] else Qt.NoBrush)
+            if el["shape"] == "rectangle":
+                painter.drawRect(rect)
+            else:
+                painter.drawEllipse(rect)
+        elif el["shape"] == "line":
+            painter.setBrush(Qt.NoBrush)
+            painter.drawLine(int(x0_px), int(y0_px), int(x1_px), int(y1_px))
+        else:  # arrow
+            painter.setBrush(color)
+            self._draw_arrow_head(painter, x0_px, y0_px, x1_px, y1_px, el["width"])
+
+    def _draw_arrow_head(self, painter: QPainter, x0: float, y0: float, x1: float, y1: float, width: float) -> None:
+        """Client-side port of _apply_shape's _draw_arrow (pdf_ops.py:693)
+        for the on-screen preview only - the actual PDF export still goes
+        through the unchanged, existing _apply_shape/_draw_arrow, so this
+        only needs to look reasonably like an arrow, not byte-for-byte
+        match the export's geometry."""
+        painter.drawLine(int(x0), int(y0), int(x1), int(y1))
+        angle = math.atan2(y1 - y0, x1 - x0)
+        head_len = max(8, width * 3)
+        head_angle = math.radians(25)
+        h1x = x1 - head_len * math.cos(angle - head_angle)
+        h1y = y1 - head_len * math.sin(angle - head_angle)
+        h2x = x1 - head_len * math.cos(angle + head_angle)
+        h2y = y1 - head_len * math.sin(angle + head_angle)
+        painter.drawPolygon(QPolygon([
+            QPoint(int(x1), int(y1)), QPoint(int(h1x), int(h1y)), QPoint(int(h2x), int(h2y)),
+        ]))
 
     def _paint_chrome(self, painter: QPainter, el: dict) -> None:
         if self.model.selected_id != el["id"]:

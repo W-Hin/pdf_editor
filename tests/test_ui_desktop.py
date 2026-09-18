@@ -9,6 +9,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit, QTextEdit
 
 from app.core.pdf_ops import crop_pdf, extract_form_fields, render_page_thumbnail
+from app.ui.edit_canvas import EditElementsModel, EditPageWidget
 from app.ui.widgets import DiffPreviewWidget, FormFieldsWidget, RectangleOverlayWidget, SignaturePadWidget, box_to_insets, insets_to_box
 
 _app = QApplication.instance() or QApplication([])
@@ -1957,3 +1958,187 @@ def test_edit_model_remove_listener_unsubscribes_a_callback():
     model.add(_new_text_element(page=1, text="Second"))
     assert len(calls) == 1  # not fired again
     model.remove_listener(callback)  # removing twice is a no-op, not an error
+
+
+def _shape_element(page=1, shape="rectangle", x0=0.2, y0=0.2, x1=0.5, y1=0.4, color="#ff0000", width=3, filled=False):
+    return {"page": page, "type": "shape", "shape": shape, "x0": x0, "y0": y0, "x1": x1, "y1": y1, "color": color, "width": width, "filled": filled}
+
+
+def test_edit_model_shape_paste_offset_shifts_both_corners_and_clamps_near_edge():
+    model = EditElementsModel()
+    el_id = model.add(_shape_element(x0=0.2, y0=0.2, x1=0.4, y1=0.3))
+    model.select(el_id)
+    model.copy()
+    pasted_id = model.paste()
+    pasted = next(e for e in model.elements if e["id"] == pasted_id)
+    assert pasted["x0"] == pytest.approx(0.23)
+    assert pasted["x1"] == pytest.approx(0.43)
+    assert pasted["y0"] == pytest.approx(0.23)
+    assert pasted["y1"] == pytest.approx(0.33)
+
+    el_id2 = model.add(_shape_element(x0=0.9, y0=0.2, x1=0.99, y1=0.3))
+    model.select(el_id2)
+    model.copy()
+    pasted_id2 = model.paste()
+    pasted2 = next(e for e in model.elements if e["id"] == pasted_id2)
+    # room_x = 1 - max(0.9, 0.99) = 0.01, clamped to 0.01 (not the full 0.03 offset)
+    assert pasted2["x1"] == pytest.approx(1.0)
+    assert pasted2["x0"] == pytest.approx(0.91)
+
+
+def test_edit_model_shape_nudge_shifts_both_corners_and_clamps_at_the_page_edge():
+    model = EditElementsModel()
+    el_id = model.add(_shape_element(x0=0.9, y0=0.3, x1=0.98, y1=0.4))
+    model.nudge(el_id, 0.5, 0.0)  # far past the right edge
+    el = next(e for e in model.elements if e["id"] == el_id)
+    assert el["x1"] == pytest.approx(1.0)
+    assert el["x0"] == pytest.approx(0.92)  # bbox width (0.08) preserved
+    model.undo()
+    reverted = next(e for e in model.elements if e["id"] == el_id)
+    assert reverted["x0"] == pytest.approx(0.9) and reverted["x1"] == pytest.approx(0.98)
+
+
+def test_edit_model_shape_nudge_clamps_correctly_even_when_drawn_backwards():
+    model = EditElementsModel()
+    # x0 > x1: the shape was drawn from bottom-right to top-left.
+    el_id = model.add(_shape_element(x0=0.98, y0=0.3, x1=0.9, y1=0.4))
+    model.nudge(el_id, 0.5, 0.0)
+    el = next(e for e in model.elements if e["id"] == el_id)
+    assert el["x0"] == pytest.approx(1.0)  # x0 is the bbox max here, still clamps correctly
+    assert el["x1"] == pytest.approx(0.92)
+
+
+def test_edit_page_widget_dragging_creates_a_rectangle_shape():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "shape"
+    widget.shape_type = "rectangle"
+    widget.color = "#0000ff"
+    widget.width_preset = "thick"
+    w, h = widget.width(), widget.height()
+    start = QPoint(int(w * 0.2), int(h * 0.2))
+    end = QPoint(int(w * 0.5), int(h * 0.4))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(widget, end)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
+    assert len(model.elements) == 1
+    el = model.elements[0]
+    assert el["type"] == "shape" and el["shape"] == "rectangle"
+    assert el["x0"] == pytest.approx(0.2) and el["y0"] == pytest.approx(0.2)
+    assert el["x1"] == pytest.approx(0.5) and el["y1"] == pytest.approx(0.4)
+    assert el["color"] == "#0000ff" and el["width"] == 6 and el["filled"] is False
+
+
+def test_edit_page_widget_below_threshold_rectangle_drag_creates_nothing():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "shape"
+    widget.shape_type = "rectangle"
+    w, h = widget.width(), widget.height()
+    start = QPoint(int(w * 0.2), int(h * 0.2))
+    end = QPoint(int(w * 0.205), int(h * 0.205))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(widget, end)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
+    assert model.elements == []
+
+
+def test_edit_page_widget_arrow_only_needs_one_axis_to_clear_the_threshold():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "shape"
+    widget.shape_type = "arrow"
+    w, h = widget.width(), widget.height()
+    # a horizontal drag: dx is large, dy is a sub-threshold sliver
+    start = QPoint(int(w * 0.1), int(h * 0.5))
+    end = QPoint(int(w * 0.4), int(h * 0.5005))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(widget, end)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
+    assert len(model.elements) == 1
+    assert model.elements[0]["shape"] == "arrow"
+
+
+def test_edit_page_widget_arrow_with_both_axes_below_threshold_creates_nothing():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "shape"
+    widget.shape_type = "arrow"
+    w, h = widget.width(), widget.height()
+    start = QPoint(int(w * 0.5), int(h * 0.5))
+    end = QPoint(int(w * 0.501), int(h * 0.501))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(widget, end)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
+    assert model.elements == []
+
+
+def test_edit_page_widget_line_or_arrow_shape_forces_filled_false_at_creation():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "shape"
+    widget.shape_type = "line"
+    widget.filled = True  # toolbar checkbox happens to be checked
+    w, h = widget.width(), widget.height()
+    start = QPoint(int(w * 0.1), int(h * 0.1))
+    end = QPoint(int(w * 0.4), int(h * 0.3))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(widget, end)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
+    assert model.elements[0]["filled"] is False
+
+
+def test_edit_page_widget_shape_resize_handle_always_drags_x1_y1_even_when_drawn_backwards():
+    model = EditElementsModel()
+    el_id = model.add(_shape_element(x0=0.6, y0=0.6, x1=0.3, y1=0.3))  # drawn backwards
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    w, h = widget.width(), widget.height()
+    el = next(e for e in model.elements if e["id"] == el_id)
+    handle = widget._resize_handles(el)["corner"]
+    center = handle.center()
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, center)
+    QTest.mouseMove(widget, QPoint(center.x() + 20, center.y() + 10))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(center.x() + 20, center.y() + 10))
+    el = next(e for e in model.elements if e["id"] == el_id)
+    assert el["x0"] == 0.6 and el["y0"] == 0.6  # untouched
+    assert el["x1"] == pytest.approx(0.3 + 20 / w)
+    assert el["y1"] == pytest.approx(0.3 + 10 / h)
+    model.undo()
+    reverted = next(e for e in model.elements if e["id"] == el_id)
+    assert reverted["x1"] == 0.3 and reverted["y1"] == 0.3  # undo restores the pre-resize corner
+
+
+def test_edit_page_widget_shape_move_shifts_all_four_coordinates():
+    model = EditElementsModel()
+    el_id = model.add(_shape_element(shape="line", x0=0.3, y0=0.3, x1=0.5, y1=0.3))
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    w, h = widget.width(), widget.height()
+    # A horizontal line's bbox has zero height - click must still hit its
+    # (margin-inflated) body, not fall through to empty-space handling.
+    body = QPoint(int(w * 0.4), int(h * 0.3))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, body)
+    QTest.mouseMove(widget, QPoint(body.x() + 10, body.y() + 10))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(body.x() + 10, body.y() + 10))
+    el = next(e for e in model.elements if e["id"] == el_id)
+    dx, dy = 10 / w, 10 / h
+    assert el["x0"] == pytest.approx(0.3 + dx) and el["x1"] == pytest.approx(0.5 + dx)
+    assert el["y0"] == pytest.approx(0.3 + dy) and el["y1"] == pytest.approx(0.3 + dy)
+    assert model.selected_id == el_id
+
+
+def test_edit_page_widget_clicking_a_shapes_marker_removes_it():
+    model = EditElementsModel()
+    el_id = model.add(_shape_element())
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    el = next(e for e in model.elements if e["id"] == el_id)
+    marker = widget._marker_rect(el)
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, marker.center())
+    assert model.elements == []
