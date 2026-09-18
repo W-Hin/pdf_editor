@@ -200,7 +200,6 @@ class EditPageWidget(QWidget):
     def set_page_pixmap(self, pixmap) -> None:
         self.page_pixmap = pixmap
         self.setFixedSize(pixmap.size())
-        self.show()
         self.update()
 
     def _elements(self) -> list[dict]:

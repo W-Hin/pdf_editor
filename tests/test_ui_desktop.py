@@ -1357,12 +1357,20 @@ def test_edit_page_widget_empty_click_in_new_text_mode_opens_a_text_editor():
     widget = EditPageWidget(model, page_number=1)
     widget.set_page_pixmap(QPixmap(400, 600))
     widget.create_mode = "new_text"
+    # isVisible() on the child QTextEdit only reflects reality once this
+    # widget itself has been shown - show()/close() are scoped to this one
+    # test rather than to set_page_pixmap, so the many other EditPageWidget
+    # tests in this file don't each leak a real top-level shown window
+    # (shown-and-never-closed windows accumulating across tests was
+    # confirmed to hang the full suite once enough of them piled up).
+    widget.show()
     w, h = widget.width(), widget.height()
     click = QPoint(int(w * 0.3), int(h * 0.3))
     QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, click)
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, click)
     assert widget._text_editor is not None
     assert widget._text_editor.isVisible()
+    widget.close()
 
 
 def test_edit_page_widget_typing_and_committing_a_new_text_creates_an_element():
