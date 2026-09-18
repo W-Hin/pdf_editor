@@ -1248,7 +1248,12 @@ def test_compare_dialog_clear_files_button_resets_state(tmp_path):
     assert dlg.gather_params()["file_count"] == 0
 
 
-from app.ui.edit_canvas import EditElementsModel, EditPageWidget
+from app.ui.edit_canvas import (
+    _MIN_TEXT_HEIGHT_FRACTION,
+    _MIN_TEXT_WIDTH_FRACTION,
+    EditElementsModel,
+    EditPageWidget,
+)
 
 
 def _new_text_element(page, x=0.1, y=0.1, width=0.2, height=0.1, text="Hello"):
@@ -1682,11 +1687,11 @@ def test_edit_pdf_dialog_shortcuts_are_suppressed_while_a_text_editor_is_open(tm
     page1._open_text_editor_for_existing(dlg.model.elements[0])
     assert page1._text_editor is not None
     # A "delete" shortcut fired while a text editor is still open (e.g. a
-    # keyboard shortcut pressed mid-edit, before any real focus-out has
-    # committed it) must be left for the QTextEdit itself to handle
-    # (deleting a character), NOT deleted at the model level - matching
-    # the web's own "any text-input-like element has focus" suppression
-    # rule.
+    # keyboard shortcut pressed mid-edit, before the editor has been
+    # committed) must NOT delete at the model level - matching the web's
+    # own "any text-input-like element has focus" suppression rule.
+    # _handle_shortcut simply returns early here: the action no-ops
+    # entirely, it is not forwarded on to the QTextEdit.
     dlg._handle_shortcut("delete")
     assert len(dlg.model.elements) == 1
 
@@ -1710,3 +1715,184 @@ def test_edit_pdf_dialog_gather_params_raises_when_no_elements_placed(tmp_path):
         assert False, "expected PDFError"
     except PDFError:
         pass
+
+
+def test_edit_page_widget_clicking_elsewhere_commits_the_open_text_draft():
+    # Deliberately never calls _commit_text_editor() itself: every other
+    # text test does, which is exactly why "nothing in production code ever
+    # calls it" shipped unnoticed. This drives the REAL user gesture -
+    # click empty space, type, click somewhere else - end to end.
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "new_text"
+    w, h = widget.width(), widget.height()
+    click = QPoint(int(w * 0.3), int(h * 0.3))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.keyClicks(widget._text_editor, "Committed by clicking away")
+
+    elsewhere = QPoint(int(w * 0.8), int(h * 0.8))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, elsewhere)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, elsewhere)
+
+    assert len(model.elements) == 1
+    assert model.elements[0]["text"] == "Committed by clicking away"
+    assert model.elements[0]["type"] == "new_text"
+
+
+def test_edit_page_widget_opening_a_second_editor_commits_the_first_draft():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "new_text"
+    widget._open_text_editor_for_new((0.3, 0.3))
+    QTest.keyClicks(widget._text_editor, "First")
+    widget._open_text_editor_for_new((0.7, 0.7))  # directly opens another
+    assert len(model.elements) == 1
+    assert model.elements[0]["text"] == "First"  # committed, not discarded
+
+
+def test_edit_page_widget_editing_existing_text_is_undoable_to_the_old_text():
+    model = EditElementsModel()
+    el_id = model.add(_new_text_element(page=1, text="original"))
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget._open_text_editor_for_existing(model.elements[0])
+    widget._text_editor.selectAll()
+    QTest.keyClicks(widget._text_editor, "CHANGED")
+    widget._commit_text_editor()
+    assert next(e for e in model.elements if e["id"] == el_id)["text"] == "CHANGED"
+
+    model.undo()
+    # commit() snapshots the state BEFORE the mutation, so undo must reach
+    # the pre-edit text - not the post-edit text it had already become.
+    assert next(e for e in model.elements if e["id"] == el_id)["text"] == "original"
+
+
+def test_edit_page_widget_zero_movement_click_pushes_no_undo_step():
+    model = EditElementsModel()
+    id1 = model.add(_new_text_element(page=1, x=0.3, y=0.3, width=0.2, height=0.1, text="first"))
+    model.add(_new_text_element(page=1, x=0.6, y=0.6, width=0.2, height=0.1, text="second"))
+    model.undo()  # drops "second"; a redo of it is now pending
+    assert len(model.elements) == 1
+
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    undo_depth = len(model._undo_stack)
+    redo_depth = len(model._redo_stack)
+    assert redo_depth == 1
+
+    # A plain click-to-select on the element's body: press and release at
+    # the SAME point, i.e. a gesture that changes nothing.
+    body = QPoint(int(widget.width() * 0.35), int(widget.height() * 0.33))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, body)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, body)
+    assert model.selected_id == id1  # it did select
+
+    assert len(model._undo_stack) == undo_depth  # no junk entry pushed
+    assert len(model._redo_stack) == redo_depth  # pending redo not wiped
+    model.redo()
+    assert len(model.elements) == 2  # the real redo still works
+
+
+def test_edit_page_widget_marker_and_handle_do_not_overlap_at_minimum_size():
+    # Mirrors ImagePlacementWidget's own overlap test. At the minimum text
+    # box size on a small page preview the old fixed-14px rects overlapped,
+    # and since markers are hit-tested first, a click meant to resize
+    # deleted the element instead.
+    model = EditElementsModel()
+    model.add(_new_text_element(
+        page=1, x=0.3, y=0.3,
+        width=_MIN_TEXT_WIDTH_FRACTION, height=_MIN_TEXT_HEIGHT_FRACTION,
+    ))
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(318, 450))
+    el = model.elements[0]
+    rect = widget._element_rect_px(el)
+    assert rect.height() < 28  # confirms this really is the extreme case
+
+    marker = widget._marker_rect(el)
+    handle = widget._resize_handles(el)["corner"]
+    assert not marker.intersects(handle)
+    assert not marker.contains(handle.center())
+
+
+def test_edit_pdf_dialog_image_lands_on_its_own_page_after_a_render_failure(tmp_path, monkeypatch):
+    from app.core.errors import PDFError
+    from app.core.pdf_ops import render_page_thumbnail as real_render_page_thumbnail
+    from app.ui.dialogs import edit_dialogs
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    doc = fitz.open()
+    for _ in range(3):
+        doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    sig_pixmap = QPixmap(200, 80)
+    sig_pixmap.fill(Qt.blue)
+    sig_path = str(tmp_path / "sig.png")
+    sig_pixmap.save(sig_path, "PNG")
+
+    def flaky_render(path, page_num, max_size=100):
+        if page_num == 1:
+            raise PDFError("simulated render failure for page 1")
+        return real_render_page_thumbnail(path, page_num, max_size=max_size)
+
+    monkeypatch.setattr(edit_dialogs, "render_page_thumbnail", flaky_render)
+    monkeypatch.setattr(
+        edit_dialogs.QFileDialog, "getOpenFileName",
+        staticmethod(lambda *a, **k: (sig_path, "")),
+    )
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    # Page 1 was skipped, so _page_widgets no longer lines up 1:1 with page
+    # numbers: slot 0 is page 2, slot 1 is page 3.
+    assert [w.page_number for w in dlg._page_widgets] == [2, 3]
+
+    page2 = dlg._page_widgets[0]
+    page2.create_mode = "image"
+    click = QPoint(int(page2.width() * 0.5), int(page2.height() * 0.5))
+    QTest.mousePress(page2, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(page2, Qt.LeftButton, Qt.NoModifier, click)
+
+    assert len(dlg.model.elements) == 1
+    # The old page-number indexing would have reached _page_widgets[1] here
+    # and silently placed the image on page 3.
+    assert dlg.model.elements[0]["page"] == 2
+
+
+def test_edit_pdf_dialog_new_page_widgets_honor_the_current_create_mode(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    dlg = EditPdfDialog()
+    dlg._set_create_mode("image")
+    # Loading a file AFTER picking a mode must not silently revert the new
+    # page widgets to EditPageWidget's own "new_text" default while the
+    # toolbar still shows "Insert Image" checked.
+    dlg.on_files_changed([str(input_path)])
+    assert dlg.image_btn.isChecked()
+    assert dlg._page_widgets[0].create_mode == "image"
+
+
+def test_edit_model_remove_listener_unsubscribes_a_callback():
+    model = EditElementsModel()
+    calls = []
+    callback = lambda: calls.append(1)
+    model.on_change.append(callback)
+    model.add(_new_text_element(page=1))
+    assert len(calls) == 1
+
+    model.remove_listener(callback)
+    model.add(_new_text_element(page=1, text="Second"))
+    assert len(calls) == 1  # not fired again
+    model.remove_listener(callback)  # removing twice is a no-op, not an error

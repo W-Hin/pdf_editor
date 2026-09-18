@@ -1,7 +1,7 @@
 import uuid
 
-from PySide6.QtCore import QPoint, QRect, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QPixmap
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QTextEdit, QWidget
 
 _PASTE_OFFSET = 0.03
@@ -27,10 +27,21 @@ class EditElementsModel:
         self._undo_stack: list[list[dict]] = []
         self._redo_stack: list[list[dict]] = []
         self._clipboard: dict | None = None
+        # Caller-managed subscriptions: whoever appends a callback here is
+        # responsible for calling remove_listener() before discarding the
+        # object that callback is bound to, whenever this model will
+        # outlive that object (otherwise _notify() would later call into a
+        # deleted C++ widget).
         self.on_change: list = []
 
     def _snapshot(self) -> list[dict]:
         return [dict(e) for e in self.elements]
+
+    def remove_listener(self, callback) -> None:
+        """Unsubscribes a callback previously appended to on_change; a
+        no-op if it was never registered (or already removed)."""
+        if callback in self.on_change:
+            self.on_change.remove(callback)
 
     def _notify(self) -> None:
         for callback in self.on_change:
@@ -219,9 +230,22 @@ class EditPageWidget(QWidget):
         y1 = (el["y"] + el["height"]) * self.height()
         return QRect(int(x0), int(y0), int(x1 - x0), int(y1 - y0))
 
+    def _corner_size(self, rect: QRect) -> int:
+        # Same clamp ImagePlacementWidget._corner_size uses (deliberately
+        # duplicated - these two widgets share no base class). QRect's
+        # bottom()/right() are inclusive (bottom() == top() + height() - 1),
+        # so a marker anchored at the top and a handle anchored at the
+        # bottom, each sized height()//2, would share one row right where
+        # they meet. Halving (height() - 1) instead keeps them strictly
+        # apart. Without this, a minimum-sized element's marker rect
+        # swallows the resize handle's centre and - since markers are
+        # hit-tested first - a click meant to resize deletes instead.
+        return max(6, min(_MARKER_SIZE, _HANDLE_SIZE, (rect.height() - 1) // 2, (rect.width() - 1) // 2))
+
     def _marker_rect(self, el: dict) -> QRect:
         rect = self._element_rect_px(el)
-        return QRect(rect.right() - _MARKER_SIZE, rect.top(), _MARKER_SIZE, _MARKER_SIZE)
+        size = self._corner_size(rect)
+        return QRect(rect.right() - size, rect.top(), size, size)
 
     def _resize_handles(self, el: dict) -> dict:
         """One handle for new_text (free resize, bottom-right). Three for
@@ -232,15 +256,16 @@ class EditPageWidget(QWidget):
         own three-handle image behavior (_apply_image's own
         keep_proportion=False trusts whatever box the editor produced)."""
         rect = self._element_rect_px(el)
+        size = self._corner_size(rect)
         if el["type"] == "new_text":
-            return {"corner": QRect(rect.right() - _HANDLE_SIZE, rect.bottom() - _HANDLE_SIZE, _HANDLE_SIZE, _HANDLE_SIZE)}
+            return {"corner": QRect(rect.right() - size, rect.bottom() - size, size, size)}
         if el["type"] == "image":
             mid_x = rect.left() + rect.width() // 2
             mid_y = rect.top() + rect.height() // 2
             return {
-                "corner": QRect(rect.right() - _HANDLE_SIZE, rect.bottom() - _HANDLE_SIZE, _HANDLE_SIZE, _HANDLE_SIZE),
-                "width": QRect(rect.right() - _HANDLE_SIZE, mid_y - _HANDLE_SIZE // 2, _HANDLE_SIZE, _HANDLE_SIZE),
-                "height": QRect(mid_x - _HANDLE_SIZE // 2, rect.bottom() - _HANDLE_SIZE, _HANDLE_SIZE, _HANDLE_SIZE),
+                "corner": QRect(rect.right() - size, rect.bottom() - size, size, size),
+                "width": QRect(rect.right() - size, mid_y - size // 2, size, size),
+                "height": QRect(mid_x - size // 2, rect.bottom() - size, size, size),
             }
         return {}
 
@@ -252,6 +277,15 @@ class EditPageWidget(QWidget):
         return font
 
     def mousePressEvent(self, e) -> None:
+        # THE commit path for an open text draft in the real running app:
+        # clicking anywhere else on the page finishes whatever is being
+        # typed, before any hit-testing runs (so the click itself then
+        # acts on the post-commit element list). Without this, a typed
+        # draft is silently discarded and _text_editor never returns to
+        # None - which would also leave EditPdfDialog._any_text_editor_open
+        # stuck True, disabling every shortcut for the rest of the session.
+        if self._text_editor is not None:
+            self._commit_text_editor()
         pos = e.position().toPoint()
         elements = self._elements()
         for i in reversed(range(len(elements))):
@@ -338,9 +372,16 @@ class EditPageWidget(QWidget):
             self.model.update(self._drag["id"], height=height)
 
     def mouseReleaseEvent(self, e) -> None:
-        if self._drag is not None:
+        if self._drag is None:
+            return
+        # mousePressEvent arms a drag for every body/handle press, including
+        # a plain click-to-select that never moves. Committing that would
+        # push a junk undo step AND clear the redo stack, so only commit a
+        # gesture that actually changed the element.
+        current = next((e_ for e_ in self.model.elements if e_["id"] == self._drag["id"]), None)
+        if current is not None and current != self._drag["start_element"]:
             self.model.commit()
-            self._drag = None
+        self._drag = None
 
     def _open_text_editor_for_new(self, point: tuple[float, float]) -> None:
         width, height = 0.25, 0.08
@@ -358,7 +399,14 @@ class EditPageWidget(QWidget):
 
     def _show_text_editor(self, x: float, y: float, width: float, height: float, text: str, style: dict) -> None:
         if self._text_editor is not None:
-            self._text_editor.deleteLater()
+            # Switching straight from one text box to another commits the
+            # outgoing draft rather than discarding it. _commit_text_editor
+            # clears _editing_element_id as part of finishing that element,
+            # so the INCOMING element's id - already set by our caller - is
+            # saved across the call and restored afterwards.
+            incoming_id = self._editing_element_id
+            self._commit_text_editor()
+            self._editing_element_id = incoming_id
         editor = QTextEdit(self)
         editor.setPlainText(text)
         editor.setFont(self._qfont_for({**style, "text": text}))
@@ -387,14 +435,15 @@ class EditPageWidget(QWidget):
             "text": text, **{k: self._pending_style[k] for k in ("family", "bold", "italic", "underline", "size", "color", "align")},
         }
         if self._editing_element_id is not None:
-            self.model.update(self._editing_element_id, **{k: v for k, v in element.items() if k != "page"})
+            # commit() BEFORE update(), matching add/remove/nudge/reorder:
+            # commit() snapshots the CURRENT (pre-edit) state onto the undo
+            # stack, so mutating first would make the pre-edit text
+            # unrecoverable.
             self.model.commit()
+            self.model.update(self._editing_element_id, **{k: v for k, v in element.items() if k != "page"})
         else:
             self.model.add(element)
         self._editing_element_id = None
-
-    def focusOutEvent(self, e) -> None:
-        super().focusOutEvent(e)
 
     def paintEvent(self, e) -> None:
         painter = QPainter(self)

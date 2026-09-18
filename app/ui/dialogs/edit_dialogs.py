@@ -631,6 +631,7 @@ class EditPdfDialog(ToolDialog):
         self.model = EditElementsModel()
         self._page_widgets: list[EditPageWidget] = []
         self._input_path: str | None = None
+        self._create_mode = "new_text"
 
         for keys, action in (
             ("Ctrl+Z", "undo"), ("Ctrl+Y", "redo"),
@@ -641,16 +642,21 @@ class EditPdfDialog(ToolDialog):
             shortcut.activated.connect(lambda a=action: self._handle_shortcut(a))
 
     def _set_create_mode(self, mode: str) -> None:
+        self._create_mode = mode
         self.new_text_btn.setChecked(mode == "new_text")
         self.image_btn.setChecked(mode == "image")
         for widget in self._page_widgets:
             widget.create_mode = mode
 
-    def _prompt_for_image(self, page_num: int, point: tuple[float, float]) -> None:
+    def _prompt_for_image(self, widget, point: tuple[float, float]) -> None:
+        # Takes the page WIDGET, not a page number: self._page_widgets is
+        # not guaranteed to line up 1:1 with page numbers (on_files_changed
+        # skips any page whose thumbnail fails to render), so an index
+        # lookup could raise IndexError or silently target the wrong page.
         path, _ = QFileDialog.getOpenFileName(self, "Select image", "", "Image files (*.png *.jpg *.jpeg)")
         if not path:
             return
-        self._page_widgets[page_num - 1].create_image_at(point[0], point[1], path)
+        widget.create_image_at(point[0], point[1], path)
 
     def _any_text_editor_open(self) -> bool:
         """Every model-level keyboard action (shortcuts AND arrow-key
@@ -729,7 +735,15 @@ class EditPdfDialog(ToolDialog):
                 continue
             pixmap = QPixmap()
             pixmap.loadFromData(thumb_bytes)
-            widget = EditPageWidget(self.model, page_num, on_image_click=lambda point, pn=page_num: self._prompt_for_image(pn, point))
+            widget = EditPageWidget(self.model, page_num)
+            # The callback closes over the WIDGET itself rather than a page
+            # number, so it can never index into the wrong page's widget.
+            widget.on_image_click = lambda point, wgt=widget: self._prompt_for_image(wgt, point)
+            # A freshly built page must honour whichever toolbar mode is
+            # currently checked, not EditPageWidget's own "new_text"
+            # default - otherwise loading a file while "Insert Image" is
+            # selected silently reverts the new pages to text mode.
+            widget.create_mode = self._create_mode
             # addWidget (reparenting) BEFORE set_page_pixmap: keeps the
             # widget a real child of a shown container from the moment it
             # exists, rather than sitting unparented in between.
