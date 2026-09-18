@@ -1,7 +1,7 @@
 import uuid
 
 from PySide6.QtCore import QPoint, QRect, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QTextEdit, QWidget
 
 _PASTE_OFFSET = 0.03
@@ -184,12 +184,14 @@ class EditPageWidget(QWidget):
     creation mode is active - the mode only gates what an empty-space
     click does."""
 
-    def __init__(self, model, page_number: int, parent=None):
+    def __init__(self, model, page_number: int, parent=None, on_image_click=None):
         super().__init__(parent)
         self.model = model
         self.page_number = page_number
         self.page_pixmap = None
         self.create_mode = "new_text"
+        self.on_image_click = on_image_click
+        self.image_cache: dict = {}
         self._drag: dict | None = None
         self._text_editor: QTextEdit | None = None
         self._editing_element_id: str | None = None
@@ -223,11 +225,24 @@ class EditPageWidget(QWidget):
         return QRect(rect.right() - _MARKER_SIZE, rect.top(), _MARKER_SIZE, _MARKER_SIZE)
 
     def _resize_handles(self, el: dict) -> dict:
-        """One handle for new_text (free resize, bottom-right). Task 3
-        adds a 3-handle set for "image" here."""
+        """One handle for new_text (free resize, bottom-right). Three for
+        image: a corner (aspect-locked uniform scale, matching
+        ImagePlacementWidget's existing formula exactly), plus independent
+        width-only and height-only handles (mid-right / mid-bottom edges)
+        that deliberately allow aspect distortion, matching the web app's
+        own three-handle image behavior (_apply_image's own
+        keep_proportion=False trusts whatever box the editor produced)."""
         rect = self._element_rect_px(el)
         if el["type"] == "new_text":
             return {"corner": QRect(rect.right() - _HANDLE_SIZE, rect.bottom() - _HANDLE_SIZE, _HANDLE_SIZE, _HANDLE_SIZE)}
+        if el["type"] == "image":
+            mid_x = rect.left() + rect.width() // 2
+            mid_y = rect.top() + rect.height() // 2
+            return {
+                "corner": QRect(rect.right() - _HANDLE_SIZE, rect.bottom() - _HANDLE_SIZE, _HANDLE_SIZE, _HANDLE_SIZE),
+                "width": QRect(rect.right() - _HANDLE_SIZE, mid_y - _HANDLE_SIZE // 2, _HANDLE_SIZE, _HANDLE_SIZE),
+                "height": QRect(mid_x - _HANDLE_SIZE // 2, rect.bottom() - _HANDLE_SIZE, _HANDLE_SIZE, _HANDLE_SIZE),
+            }
         return {}
 
     def _qfont_for(self, el: dict) -> QFont:
@@ -265,6 +280,24 @@ class EditPageWidget(QWidget):
             return
         if self.create_mode == "new_text":
             self._open_text_editor_for_new(point)
+        elif self.create_mode == "image" and self.on_image_click is not None:
+            self.on_image_click(point)
+
+    def create_image_at(self, x: float, y: float, image_path: str) -> str:
+        pixmap = self.image_cache.get(image_path)
+        if pixmap is None:
+            pixmap = QPixmap(image_path)
+            self.image_cache[image_path] = pixmap
+        sig_w, sig_h = pixmap.width(), pixmap.height()
+        width = 0.25
+        height = min(0.9, width * (sig_h / sig_w))
+        box_x = min(max(x - width / 2, 0), 1 - width)
+        box_y = min(max(y - height / 2, 0), 1 - height)
+        return self.model.add({
+            "page": self.page_number, "type": "image",
+            "x": box_x, "y": box_y, "width": width, "height": height,
+            "file_id": image_path,
+        })
 
     def mouseDoubleClickEvent(self, e) -> None:
         pos = e.position().toPoint()
@@ -288,9 +321,22 @@ class EditPageWidget(QWidget):
             y = min(max(sp["y"] + dy, 0), 1 - sp["height"])
             self.model.update(self._drag["id"], x=x, y=y)
         elif self._drag["mode"] == "resize-corner":
+            if sp["type"] == "image":
+                aspect = sp["height"] / sp["width"]
+                width_cap = min(1 - sp["x"], (1 - sp["y"]) / aspect)
+                width = max(_MIN_TEXT_WIDTH_FRACTION, min(sp["width"] + dx, width_cap))
+                height = width * aspect
+                self.model.update(self._drag["id"], width=width, height=height)
+            else:
+                width = max(_MIN_TEXT_WIDTH_FRACTION, min(sp["width"] + dx, 1 - sp["x"]))
+                height = max(_MIN_TEXT_HEIGHT_FRACTION, min(sp["height"] + dy, 1 - sp["y"]))
+                self.model.update(self._drag["id"], width=width, height=height)
+        elif self._drag["mode"] == "resize-width":
             width = max(_MIN_TEXT_WIDTH_FRACTION, min(sp["width"] + dx, 1 - sp["x"]))
+            self.model.update(self._drag["id"], width=width)
+        elif self._drag["mode"] == "resize-height":
             height = max(_MIN_TEXT_HEIGHT_FRACTION, min(sp["height"] + dy, 1 - sp["y"]))
-            self.model.update(self._drag["id"], width=width, height=height)
+            self.model.update(self._drag["id"], height=height)
 
     def mouseReleaseEvent(self, e) -> None:
         if self._drag is not None:
@@ -358,6 +404,8 @@ class EditPageWidget(QWidget):
         for el in self._elements():
             if el["type"] == "new_text":
                 self._paint_new_text(painter, el)
+            elif el["type"] == "image":
+                self._paint_image(painter, el)
             self._paint_chrome(painter, el)
 
     def _paint_new_text(self, painter: QPainter, el: dict) -> None:
@@ -368,6 +416,13 @@ class EditPageWidget(QWidget):
         painter.setPen(QColor(el["color"]))
         align_flag = {"left": Qt.AlignLeft, "center": Qt.AlignHCenter, "right": Qt.AlignRight}[el["align"]]
         painter.drawText(rect, align_flag | Qt.AlignTop | Qt.TextWordWrap, el["text"])
+
+    def _paint_image(self, painter: QPainter, el: dict) -> None:
+        pixmap = self.image_cache.get(el["file_id"])
+        if pixmap is None:
+            pixmap = QPixmap(el["file_id"])
+            self.image_cache[el["file_id"]] = pixmap
+        painter.drawPixmap(self._element_rect_px(el), pixmap)
 
     def _paint_chrome(self, painter: QPainter, el: dict) -> None:
         if self.model.selected_id != el["id"]:

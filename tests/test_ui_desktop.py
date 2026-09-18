@@ -1453,3 +1453,96 @@ def test_edit_page_widget_marker_click_deletes_a_new_text_element():
     QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, click)
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, click)
     assert model.elements == []
+
+
+def test_edit_page_widget_creating_an_image_element(tmp_path):
+    from PySide6.QtGui import QPixmap as _QPixmap
+    sig_pixmap = _QPixmap(200, 80)
+    sig_pixmap.fill(Qt.blue)
+    sig_path = str(tmp_path / "sig.png")
+    sig_pixmap.save(sig_path, "PNG")
+
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "image"
+    w, h = widget.width(), widget.height()
+    click = QPoint(int(w * 0.5), int(h * 0.5))
+    widget.create_image_at(click.x() / w, click.y() / h, sig_path)
+    assert len(model.elements) == 1
+    el = model.elements[0]
+    assert el["type"] == "image"
+    assert el["file_id"] == sig_path
+    assert el["page"] == 1
+    # 200x80 signature -> aspect 0.4 -> default width 0.25, height 0.1,
+    # centered on the click point - same formula ImagePlacementWidget uses.
+    assert el["width"] == pytest.approx(0.25)
+    assert el["height"] == pytest.approx(0.1)
+    assert el["x"] == pytest.approx(0.5 - 0.125)
+    assert el["y"] == pytest.approx(0.5 - 0.05)
+
+
+def test_edit_page_widget_image_corner_handle_resizes_with_locked_aspect(tmp_path):
+    model = EditElementsModel()
+    el_id = model.add({"page": 1, "type": "image", "x": 0.3, "y": 0.3, "width": 0.2, "height": 0.1, "file_id": "sig.png"})
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    el = model.elements[0]
+    handle_center = widget._resize_handles(el)["corner"].center()
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, handle_center)
+    QTest.mouseMove(widget, QPoint(handle_center.x() + 40, handle_center.y() + 40))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(handle_center.x() + 40, handle_center.y() + 40))
+    resized = next(e for e in model.elements if e["id"] == el_id)
+    w = widget.width()
+    expected_width = 0.2 + 40 / w
+    assert resized["width"] == pytest.approx(expected_width)
+    assert resized["height"] == pytest.approx(expected_width * 0.5)  # locked aspect 0.1/0.2 = 0.5
+
+
+def test_edit_page_widget_image_width_only_handle_ignores_height():
+    model = EditElementsModel()
+    el_id = model.add({"page": 1, "type": "image", "x": 0.3, "y": 0.3, "width": 0.2, "height": 0.1, "file_id": "sig.png"})
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    el = model.elements[0]
+    handle_center = widget._resize_handles(el)["width"].center()
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, handle_center)
+    QTest.mouseMove(widget, QPoint(handle_center.x() + 40, handle_center.y() + 40))  # y-movement must be ignored
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(handle_center.x() + 40, handle_center.y() + 40))
+    resized = next(e for e in model.elements if e["id"] == el_id)
+    w = widget.width()
+    assert resized["width"] == pytest.approx(0.2 + 40 / w)
+    assert resized["height"] == pytest.approx(0.1)  # unchanged
+
+
+def test_edit_page_widget_image_height_only_handle_ignores_width():
+    model = EditElementsModel()
+    el_id = model.add({"page": 1, "type": "image", "x": 0.3, "y": 0.3, "width": 0.2, "height": 0.1, "file_id": "sig.png"})
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    el = model.elements[0]
+    handle_center = widget._resize_handles(el)["height"].center()
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, handle_center)
+    QTest.mouseMove(widget, QPoint(handle_center.x() + 40, handle_center.y() + 40))  # x-movement must be ignored
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(handle_center.x() + 40, handle_center.y() + 40))
+    resized = next(e for e in model.elements if e["id"] == el_id)
+    h = widget.height()
+    assert resized["width"] == pytest.approx(0.2)  # unchanged
+    assert resized["height"] == pytest.approx(0.1 + 40 / h)
+
+
+def test_edit_page_widget_selecting_an_image_does_not_require_new_text_mode():
+    # An existing image element must remain selectable/movable/deletable
+    # even while create_mode is "new_text" - matching the web's "mode only
+    # gates empty-space creation" behavior.
+    model = EditElementsModel()
+    el_id = model.add({"page": 1, "type": "image", "x": 0.3, "y": 0.3, "width": 0.2, "height": 0.1, "file_id": "sig.png"})
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "new_text"  # deliberately the OTHER mode
+    w, h = widget.width(), widget.height()
+    marker = widget._marker_rect(model.elements[0])
+    click = marker.center()
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, click)
+    assert model.elements == []  # deleted, despite create_mode being "new_text"
