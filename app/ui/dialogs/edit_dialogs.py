@@ -3,13 +3,14 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QShortcut, QKeySequence
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea, QTextEdit, QSpinBox
 
 from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, edit_pdf, extract_form_fields, fill_form
 from app.core.compare_pdf import extract_page_texts, diff_page_text, render_page_image, diff_page_visual
 from app.core.errors import PDFError
 from app.ui.dialogs.base import ToolDialog
+from app.ui.edit_canvas import EditElementsModel, EditPageWidget
 from app.ui.widgets import RectangleOverlayWidget, box_to_insets, insets_to_box, SignaturePadWidget, ImagePlacementWidget, FormFieldsWidget, DiffPreviewWidget
 
 
@@ -571,3 +572,178 @@ class CompareDialog(ToolDialog):
         if self._path_a is None or self._path_b is None:
             raise PDFError("Could not read one of the selected files. Check that both are valid PDFs.")
         return ([], f"Compared {len(self._pages)} page(s).")
+
+
+class EditPdfDialog(ToolDialog):
+    title = "Edit PDF"
+    dialog_size = (900, 800)
+
+    def build_preview(self, container: QWidget) -> None:
+        layout = QVBoxLayout(container)
+
+        mode_row = QHBoxLayout()
+        self.new_text_btn = QPushButton("New Text")
+        self.new_text_btn.setCheckable(True)
+        self.new_text_btn.setChecked(True)
+        self.new_text_btn.clicked.connect(lambda: self._set_create_mode("new_text"))
+        mode_row.addWidget(self.new_text_btn)
+        self.image_btn = QPushButton("Insert Image")
+        self.image_btn.setCheckable(True)
+        self.image_btn.clicked.connect(lambda: self._set_create_mode("image"))
+        mode_row.addWidget(self.image_btn)
+        layout.addLayout(mode_row)
+
+        action_row = QHBoxLayout()
+        undo_btn = QPushButton("Undo")
+        undo_btn.clicked.connect(lambda: self._handle_shortcut("undo"))
+        action_row.addWidget(undo_btn)
+        redo_btn = QPushButton("Redo")
+        redo_btn.clicked.connect(lambda: self._handle_shortcut("redo"))
+        action_row.addWidget(redo_btn)
+        copy_btn = QPushButton("Copy")
+        copy_btn.clicked.connect(lambda: self._handle_shortcut("copy"))
+        action_row.addWidget(copy_btn)
+        cut_btn = QPushButton("Cut")
+        cut_btn.clicked.connect(lambda: self._handle_shortcut("cut"))
+        action_row.addWidget(cut_btn)
+        paste_btn = QPushButton("Paste")
+        paste_btn.clicked.connect(lambda: self._handle_shortcut("paste"))
+        action_row.addWidget(paste_btn)
+        delete_btn = QPushButton("Delete")
+        delete_btn.clicked.connect(lambda: self._handle_shortcut("delete"))
+        action_row.addWidget(delete_btn)
+        layout.addLayout(action_row)
+
+        reorder_row = QHBoxLayout()
+        for label, direction in (("Bring to Front", "front"), ("Send to Back", "back"), ("Forward", "forward"), ("Backward", "backward")):
+            btn = QPushButton(label)
+            btn.clicked.connect(lambda _, d=direction: self._reorder_selected(d))
+            reorder_row.addWidget(btn)
+        layout.addLayout(reorder_row)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._container = QWidget()
+        self._container_layout = QVBoxLayout(self._container)
+        self._scroll.setWidget(self._container)
+        layout.addWidget(self._scroll)
+
+        self.model = EditElementsModel()
+        self._page_widgets: list[EditPageWidget] = []
+        self._input_path: str | None = None
+
+        for keys, action in (
+            ("Ctrl+Z", "undo"), ("Ctrl+Y", "redo"),
+            ("Ctrl+C", "copy"), ("Ctrl+X", "cut"), ("Ctrl+V", "paste"),
+            ("Delete", "delete"), ("Backspace", "delete"),
+        ):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.activated.connect(lambda a=action: self._handle_shortcut(a))
+
+    def _set_create_mode(self, mode: str) -> None:
+        self.new_text_btn.setChecked(mode == "new_text")
+        self.image_btn.setChecked(mode == "image")
+        for widget in self._page_widgets:
+            widget.create_mode = mode
+
+    def _prompt_for_image(self, page_num: int, point: tuple[float, float]) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Select image", "", "Image files (*.png *.jpg *.jpeg)")
+        if not path:
+            return
+        self._page_widgets[page_num - 1].create_image_at(point[0], point[1], path)
+
+    def _any_text_editor_open(self) -> bool:
+        """Every model-level keyboard action (shortcuts AND arrow-key
+        nudge) must be suppressed while ANY page's QTextEdit overlay is
+        open for editing - e.g. Ctrl+C or Delete must edit the TEXT, not
+        the model, matching the web's own "any text-input-like element
+        has focus" suppression rule. Deliberately checks "is an editor
+        currently open" rather than each editor's own .hasFocus() -
+        confirmed empirically that QTextEdit.hasFocus() is unreliable
+        under QT_QPA_PLATFORM=offscreen even after an explicit .show()/
+        .setFocus() (real window activation never happens without a
+        genuine event loop), so it's not a trustworthy signal in tests OR
+        in the same code path this app already runs under for CI. "Open"
+        is also the semantically right check for the real running app: a
+        toolbar button click naturally commits the open editor (via its
+        own focus-out) before the button's own click handler runs, so by
+        the time _handle_shortcut executes, _text_editor is already back
+        to None in that case - this check only actually matters for the
+        case a real focus-out hasn't fired yet (e.g. a keyboard shortcut
+        pressed while still actively typing). Centralized here so both
+        _handle_shortcut and keyPressEvent share one check."""
+        return any(w._text_editor is not None for w in self._page_widgets)
+
+    def _handle_shortcut(self, action: str) -> None:
+        if self._any_text_editor_open():
+            return
+        if action == "undo":
+            self.model.undo()
+        elif action == "redo":
+            self.model.redo()
+        elif action == "copy":
+            self.model.copy()
+        elif action == "cut":
+            self.model.cut()
+        elif action == "paste":
+            self.model.paste()
+        elif action == "delete":
+            if self.model.selected_id is not None:
+                self.model.remove(self.model.selected_id)
+
+    def _reorder_selected(self, direction: str) -> None:
+        if self.model.selected_id is not None:
+            self.model.reorder(self.model.selected_id, direction)
+
+    def keyPressEvent(self, e) -> None:
+        arrow_deltas = {
+            Qt.Key_Left: (-1, 0), Qt.Key_Right: (1, 0),
+            Qt.Key_Up: (0, -1), Qt.Key_Down: (0, 1),
+        }
+        if e.key() in arrow_deltas and not self._any_text_editor_open() and self.model.selected_id is not None:
+            step = 0.02 if e.modifiers() & Qt.ShiftModifier else 0.004
+            dx, dy = arrow_deltas[e.key()]
+            self.model.nudge(self.model.selected_id, dx * step, dy * step)
+            return
+        super().keyPressEvent(e)
+
+    def on_files_changed(self, paths: list[str]) -> None:
+        while self._container_layout.count():
+            item = self._container_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._page_widgets = []
+        self.model = EditElementsModel()
+        self._input_path = paths[0] if paths else None
+        if self._input_path is None:
+            return
+        try:
+            count = get_page_count(self._input_path)
+        except PDFError:
+            return
+        for page_num in range(1, count + 1):
+            try:
+                thumb_bytes = render_page_thumbnail(self._input_path, page_num, max_size=450)
+            except PDFError:
+                continue
+            pixmap = QPixmap()
+            pixmap.loadFromData(thumb_bytes)
+            widget = EditPageWidget(self.model, page_num, on_image_click=lambda point, pn=page_num: self._prompt_for_image(pn, point))
+            # addWidget (reparenting) BEFORE set_page_pixmap: keeps the
+            # widget a real child of a shown container from the moment it
+            # exists, rather than sitting unparented in between.
+            self._container_layout.addWidget(widget)
+            widget.set_page_pixmap(pixmap)
+            self._page_widgets.append(widget)
+
+    def gather_params(self) -> dict:
+        elements = [{k: v for k, v in el.items() if k != "id"} for el in self.model.elements]
+        image_paths = {el["file_id"]: el["file_id"] for el in elements if el["type"] == "image"}
+        return {"elements": elements, "image_paths": image_paths}
+
+    def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
+        input_path = input_paths[0]
+        out_path = str(Path(input_path).with_name(Path(input_path).stem + "_edited.pdf"))
+        edit_pdf(input_path, out_path, params["elements"], params["image_paths"])
+        return [out_path]

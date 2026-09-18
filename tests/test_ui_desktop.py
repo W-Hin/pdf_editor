@@ -1554,3 +1554,159 @@ def test_edit_page_widget_selecting_an_image_does_not_require_new_text_mode():
     QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, click)
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, click)
     assert model.elements == []  # deleted, despite create_mode being "new_text"
+
+
+def test_edit_pdf_dialog_places_new_text_and_image_across_pages_and_exports(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    sig_pixmap = QPixmap(200, 80)
+    sig_pixmap.fill(Qt.blue)
+    sig_path = str(tmp_path / "sig.png")
+    sig_pixmap.save(sig_path, "PNG")
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    assert len(dlg._page_widgets) == 2
+
+    page1 = dlg._page_widgets[0]
+    page1.create_mode = "new_text"
+    w, h = page1.width(), page1.height()
+    click = QPoint(int(w * 0.3), int(h * 0.3))
+    QTest.mousePress(page1, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(page1, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.keyClicks(page1._text_editor, "New text element")
+    page1._commit_text_editor()
+
+    page2 = dlg._page_widgets[1]
+    page2.create_image_at(0.3, 0.3, sig_path)
+
+    assert len(dlg.model.elements) == 2
+
+    # Undo the image placement, then redo it, proving the model's history
+    # survives into the actual export.
+    dlg.model.undo()
+    assert len(dlg.model.elements) == 1
+    dlg.model.redo()
+    assert len(dlg.model.elements) == 2
+
+    params = dlg.gather_params()
+    output_paths = dlg.run_operation([str(input_path)], params)
+    result = fitz.open(output_paths[0])
+    page1_text = result[0].get_text()
+    page2_images = result[1].get_images()
+    result.close()
+    assert "New text element" in page1_text
+    assert len(page2_images) == 1
+
+
+def test_edit_pdf_dialog_undo_redo_and_delete_keyboard_shortcuts(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    page1 = dlg._page_widgets[0]
+    page1.create_mode = "new_text"
+    w, h = page1.width(), page1.height()
+    click = QPoint(int(w * 0.3), int(h * 0.3))
+    QTest.mousePress(page1, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(page1, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.keyClicks(page1._text_editor, "Some text")
+    page1._commit_text_editor()
+    assert len(dlg.model.elements) == 1
+
+    dlg._handle_shortcut("undo")
+    assert dlg.model.elements == []
+    dlg._handle_shortcut("redo")
+    assert len(dlg.model.elements) == 1
+
+    dlg._handle_shortcut("delete")
+    assert dlg.model.elements == []
+
+
+def test_edit_pdf_dialog_arrow_key_nudges_the_selected_element(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    el_id = dlg.model.add({
+        "page": 1, "type": "new_text", "x": 0.3, "y": 0.3, "width": 0.1, "height": 0.05,
+        "text": "Hi", "family": "helvetica", "bold": False, "italic": False,
+        "underline": False, "size": 14, "color": "#000000", "align": "left",
+    })
+    dlg.model.select(el_id)
+    QTest.keyClick(dlg, Qt.Key_Right)
+    el = next(e for e in dlg.model.elements if e["id"] == el_id)
+    assert el["x"] == pytest.approx(0.3 + 0.004)
+    QTest.keyClick(dlg, Qt.Key_Down, Qt.ShiftModifier)
+    el = next(e for e in dlg.model.elements if e["id"] == el_id)
+    assert el["y"] == pytest.approx(0.3 + 0.02)
+
+
+def test_edit_pdf_dialog_shortcuts_are_suppressed_while_a_text_editor_is_open(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    el_id = dlg.model.add({
+        "page": 1, "type": "new_text", "x": 0.3, "y": 0.3, "width": 0.1, "height": 0.05,
+        "text": "Hi", "family": "helvetica", "bold": False, "italic": False,
+        "underline": False, "size": 14, "color": "#000000", "align": "left",
+    })
+    dlg.model.select(el_id)
+    page1 = dlg._page_widgets[0]
+    page1._open_text_editor_for_existing(dlg.model.elements[0])
+    assert page1._text_editor is not None
+    # A "delete" shortcut fired while a text editor is still open (e.g. a
+    # keyboard shortcut pressed mid-edit, before any real focus-out has
+    # committed it) must be left for the QTextEdit itself to handle
+    # (deleting a character), NOT deleted at the model level - matching
+    # the web's own "any text-input-like element has focus" suppression
+    # rule.
+    dlg._handle_shortcut("delete")
+    assert len(dlg.model.elements) == 1
+
+
+def test_edit_pdf_dialog_gather_params_raises_when_no_elements_placed(tmp_path):
+    from app.core.errors import PDFError
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), "Some text")
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    params = dlg.gather_params()
+    assert params["elements"] == []
+    try:
+        dlg.run_operation([str(input_path)], params)
+        assert False, "expected PDFError"
+    except PDFError:
+        pass
