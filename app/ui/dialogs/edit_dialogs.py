@@ -673,6 +673,8 @@ class EditPdfDialog(ToolDialog):
         self.text_size_spin = QSpinBox()
         self.text_size_spin.setRange(4, 200)
         self.text_size_spin.setValue(12)
+        # Typed digits must not apply (and refocus the editor) one at a time.
+        self.text_size_spin.setKeyboardTracking(False)
         self.text_size_spin.valueChanged.connect(lambda value: self._apply_text_style(size=value))
         text_row.addWidget(self.text_size_spin)
         self.text_bold_btn = QPushButton("B")

@@ -3648,3 +3648,29 @@ def test_deleting_a_text_edit_via_the_dialog_restores_the_original_run_on_export
     text = result[0].get_text()
     result.close()
     assert "First line of text" in text and "Temporary" not in text
+
+
+def test_edit_pdf_dialog_size_spin_does_not_track_keystrokes(tmp_path):
+    dlg, src = _dialog_with_text(tmp_path)
+    assert dlg.text_size_spin.keyboardTracking() is False
+
+
+def test_edit_pdf_dialog_typing_a_multi_digit_size_never_leaks_digits_into_the_run_text(tmp_path):
+    from PySide6.QtGui import QTextCursor
+    dlg, src = _dialog_with_text(tmp_path)
+    dlg._set_create_mode("text")
+    widget = dlg._page_widgets[0]
+    _dclick_run(widget, 0)
+    cur = widget._run_editor.textCursor()
+    cur.setPosition(0)
+    cur.setPosition(5, QTextCursor.KeepAnchor)
+    widget._run_editor.setTextCursor(cur)
+    before = widget._run_editor.toPlainText()
+    dlg.text_size_spin.selectAll()
+    QTest.keyClicks(dlg.text_size_spin, "100")  # no Enter: nothing may have been applied or leaked
+    assert widget._run_editor.toPlainText() == before
+    # committing the value (what Enter/focus-out does) applies it once, text untouched
+    dlg.text_size_spin.setValue(100)
+    assert widget._run_editor.toPlainText() == before
+    widget.commit_open_editors()
+    assert dlg.model.elements[0]["segments"][0]["size"] == 100.0
