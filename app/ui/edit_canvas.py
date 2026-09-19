@@ -86,7 +86,7 @@ def segments_from_document(doc: QTextDocument, default_style: dict) -> list[dict
                 families = fmt.fontFamilies()
                 pdf_size = fmt.property(_PDF_SIZE_PROP)
                 push(frag.text(), {
-                    "family": families[0] if families else default_style["family"],
+                    "family": closest_base14_family(families[0]) if families else default_style["family"],
                     "bold": fmt.fontWeight() >= QFont.Bold,
                     "italic": fmt.fontItalic(),
                     "size": float(pdf_size) if pdf_size else float(default_style["size"]),
@@ -901,6 +901,7 @@ class EditPageWidget(QWidget):
         segments = pending["segments"] if pending else [{"text": run["text"], **default}]
         editor = _RunTextEdit(self)
         editor.setFrameShape(QTextEdit.NoFrame)
+        editor.setAcceptRichText(False)  # paste/drop is plain text and takes the cursor's format
         editor.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         editor.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         editor.setLineWrapMode(QTextEdit.NoWrap)
@@ -930,7 +931,8 @@ class EditPageWidget(QWidget):
         editor.show()
         editor.setFocus()
         self._run_editor = editor
-        self._editing_run = {"run": run, "default": default}
+        self._editing_run = {"run": run, "default": default,
+                             "initial_segments": segments_from_document(doc, default)}
         editor.cursorPositionChanged.connect(self.run_editor_cursor_moved)
         self.run_editor_cursor_moved.emit()
         self.update()
@@ -946,11 +948,10 @@ class EditPageWidget(QWidget):
         editor.deleteLater()
         pending = self.model.text_edit_for_run(self.page_number, run["index"])
         default = info["default"]
-        unchanged = (
-            len(segments) == 1 and segments[0]["text"] == run["text"]
-            and all(segments[0][k] == default[k] for k in ("family", "bold", "italic", "size"))
-        )
-        if pending is None and unchanged:
+        # Compared against the seeded document as Qt actually holds it (not
+        # run["text"]), so Qt-normalised characters never look like an edit.
+        unchanged = segments == info["initial_segments"]
+        if unchanged:
             self.update()
             return  # opened and closed without touching it: no element, no undo step
         if pending is not None:
@@ -1022,6 +1023,7 @@ class EditPageWidget(QWidget):
         doc.setParent(self._run_editor)
         self._run_editor.setDocument(doc)
         self._run_editor.setCurrentCharFormat(_segment_format({**default, "text": ""}, self.px_per_pt))
+        self._editing_run["initial_segments"] = segments_from_document(doc, default)
         self._run_editor.setFocus()
         self.update()
 

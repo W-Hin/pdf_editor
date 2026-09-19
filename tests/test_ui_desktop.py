@@ -3252,3 +3252,49 @@ def test_run_edit_move_and_export_through_the_real_core(tmp_path):
     assert "Edited" in text
     assert "First line of text" not in text  # the original run was erased
     assert "Second line" in text             # untouched runs survive
+
+
+def test_pasted_rich_text_never_puts_a_non_base14_family_into_a_segment():
+    from PySide6.QtCore import QMimeData
+    model, widget = _text_widget()
+    _dclick_run(widget)
+    widget._run_editor.selectAll()
+    mime = QMimeData()
+    mime.setText("Pasted")  # real clipboards carry plain text alongside the HTML
+    mime.setHtml('<span style="font-family:Calibri; font-size:30pt">Pasted</span>')
+    widget._run_editor.insertFromMimeData(mime)
+    widget.commit_open_editors()
+    segs = model.elements[0]["segments"]
+    assert "".join(s["text"] for s in segs) == "Pasted"
+    assert all(s["family"] in ("helvetica", "times", "courier") for s in segs)
+
+
+def test_segments_from_document_snaps_foreign_families_to_base14():
+    from PySide6.QtGui import QTextCursor
+    doc = build_segments_document([], 1.0)
+    cur = QTextCursor(doc)
+    cur.insertText("a", _fmt(family="Calibri"))
+    cur.insertText("b", _fmt(family="Georgia"))
+    cur.insertText("c", _fmt(family="Consolas"))
+    assert [s["family"] for s in segments_from_document(doc, _DEFAULT_STYLE)] == ["helvetica", "times", "courier"]
+
+
+def test_reopening_and_closing_an_existing_text_edit_untouched_pushes_no_undo_step():
+    model, widget = _text_widget()
+    model.add(_text_edit_element(text="Pending"))
+    model.add({"page": 1, "type": "shape", "shape": "line", "x0": 0.1, "y0": 0.9, "x1": 0.2, "y1": 0.95,
+               "color": "#ff0000", "width": 1, "filled": False})
+    model.undo()  # redo stack now non-empty
+    assert len(model._redo_stack) == 1
+    undo_n, redo_n = len(model._undo_stack), len(model._redo_stack)
+    _dclick_run(widget)
+    widget.commit_open_editors()
+    assert (len(model._undo_stack), len(model._redo_stack)) == (undo_n, redo_n)
+    assert len(model.elements) == 1
+
+
+def test_a_run_with_a_nbsp_opened_and_closed_untouched_adds_nothing():
+    model, widget = _text_widget(runs=[_run(0, text="Hello\u00a0world", top=0.1, left=0.1, right=0.5, bottom=0.8)])
+    _dclick_run(widget)
+    widget.commit_open_editors()
+    assert model.elements == [] and model._undo_stack == []
