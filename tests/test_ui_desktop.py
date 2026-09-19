@@ -3298,3 +3298,90 @@ def test_a_run_with_a_nbsp_opened_and_closed_untouched_adds_nothing():
     _dclick_run(widget)
     widget.commit_open_editors()
     assert model.elements == [] and model._undo_stack == []
+
+
+def _export(model, src, out):
+    from app.core.pdf_ops import edit_pdf
+    elements = [{k: v for k, v in e.items() if k != "id"} for e in model.elements]
+    edit_pdf(str(src), str(out), elements, {})
+    result = fitz.open(str(out))
+    text = result[0].get_text()
+    result.close()
+    return text
+
+
+def _two_run_pdf(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "First line of text", fontname="helv", fontsize=14)
+    page.insert_text((72, 160), "Second line", fontname="helv", fontsize=12)
+    src = tmp_path / "in.pdf"
+    doc.save(str(src))
+    doc.close()
+    return src
+
+
+def _model_for(src):
+    from app.core.pdf_ops import extract_text_runs, get_page_size, get_page_rotation
+    model = EditElementsModel()
+    w, h = get_page_size(str(src), 1)
+    model.set_page_text_info(1, extract_text_runs(str(src), 1), get_page_rotation(str(src), 1), w, h)
+    return model
+
+
+def test_nudging_a_text_edit_to_the_page_edge_stays_in_bounds_and_exports(tmp_path):
+    src = _two_run_pdf(tmp_path)
+    model = _model_for(src)
+    el_id = model.add(_text_edit_element(text="Nudged"))
+    for _ in range(400):  # far more than enough to hit the right edge
+        model.nudge(el_id, 0.02, 0.02)
+    el = next(e for e in model.elements if e["id"] == el_id)
+    box = model.text_edit_box(el)
+    assert box["x"] + box["width"] <= 1 + 1e-9 and box["y"] + box["height"] <= 1 + 1e-9
+    assert 0 <= el["x"] <= 1 and 0 <= el["y"] <= 1
+    assert "width" not in el and "height" not in el
+    assert "Nudged" in _export(model, src, tmp_path / "out.pdf")
+
+
+def test_undo_and_redo_of_a_text_edit_round_trip_through_export(tmp_path):
+    src = _two_run_pdf(tmp_path)
+    model = _model_for(src)
+    model.add(_text_edit_element(text="Undone"))
+    model.add({"page": 1, "type": "shape", "shape": "rectangle", "x0": 0.1, "y0": 0.5, "x1": 0.3, "y1": 0.6,
+               "color": "#ff0000", "width": 3, "filled": False})
+    model.undo()  # removes the shape
+    model.undo()  # removes the text_edit
+    assert model.elements == []
+    model.redo()
+    assert "Undone" in _export(model, src, tmp_path / "o.pdf")
+
+
+def test_a_text_edit_and_a_shape_on_the_same_page_export_together(tmp_path):
+    src = _two_run_pdf(tmp_path)
+    model = _model_for(src)
+    model.add({"page": 1, "type": "shape", "shape": "rectangle", "x0": 0.1, "y0": 0.5, "x1": 0.3, "y1": 0.6,
+               "color": "#ff0000", "width": 3, "filled": False})
+    model.add(_text_edit_element(text="With shape"))
+    text = _export(model, src, tmp_path / "o.pdf")
+    assert "With shape" in text and "Second line" in text
+
+
+def test_reordering_a_text_edit_never_breaks_the_export(tmp_path):
+    src = _two_run_pdf(tmp_path)
+    model = _model_for(src)
+    model.add({"page": 1, "type": "shape", "shape": "rectangle", "x0": 0.1, "y0": 0.5, "x1": 0.3, "y1": 0.6,
+               "color": "#ff0000", "width": 3, "filled": False})
+    te = model.add(_text_edit_element(text="Reordered"))
+    for direction in ("back", "forward", "front", "backward"):
+        model.reorder(te, direction)
+    assert "Reordered" in _export(model, src, tmp_path / "o.pdf")
+
+
+def test_two_different_runs_each_get_their_own_text_edit_and_both_export(tmp_path):
+    src = _two_run_pdf(tmp_path)
+    model = _model_for(src)
+    model.add(_text_edit_element(run_index=0, text="One"))
+    model.add(_text_edit_element(run_index=1, text="Two"))
+    text = _export(model, src, tmp_path / "o.pdf")
+    assert "One" in text and "Two" in text
+    assert "First line of text" not in text and "Second line" not in text
