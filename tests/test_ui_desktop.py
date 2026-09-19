@@ -3402,3 +3402,249 @@ def test_two_different_runs_each_get_their_own_text_edit_and_both_export(tmp_pat
     text = _export(model, src, tmp_path / "o.pdf")
     assert "One" in text and "Two" in text
     assert "First line of text" not in text and "Second line" not in text
+
+
+def _dialog_with_text(tmp_path, pages=1):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+    doc = fitz.open()
+    for _ in range(pages):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 100), "First line of text", fontname="helv", fontsize=14)
+        page.insert_text((72, 160), "Second line", fontname="tiro", fontsize=12)
+    src = tmp_path / "in.pdf"
+    doc.save(str(src))
+    doc.close()
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(src)])
+    return dlg, src
+
+
+def test_edit_pdf_dialog_loads_each_pages_text_runs_and_scale_on_file_open(tmp_path):
+    dlg, src = _dialog_with_text(tmp_path, pages=2)
+    assert [r["text"] for r in dlg.model.text_runs[1]] == ["First line of text", "Second line"]
+    assert dlg.model.page_info[2]["width_pt"] == 595 and dlg.model.page_info[2]["height_pt"] == 842
+    assert dlg._page_widgets[0].px_per_pt == pytest.approx(dlg._page_widgets[0].width() / 595)
+
+
+def test_edit_pdf_dialog_a_page_whose_runs_cannot_be_read_still_loads_without_runs(tmp_path, monkeypatch):
+    from app.core.errors import PDFError
+    import app.ui.dialogs.edit_dialogs as mod
+    dlg, src = _dialog_with_text(tmp_path)
+
+    def boom(path, page):
+        raise PDFError("no text layer")
+    monkeypatch.setattr(mod, "extract_text_runs", boom)
+    dlg.on_files_changed([str(src)])
+    assert len(dlg._page_widgets) == 1 and dlg.model.text_runs.get(1, []) == []
+
+
+def test_edit_pdf_dialog_edit_text_mode_button_is_mutually_exclusive_with_the_others(tmp_path):
+    dlg, src = _dialog_with_text(tmp_path)
+    dlg._set_create_mode("text")
+    assert dlg.edit_text_btn.isChecked() is True
+    for other in (dlg.new_text_btn, dlg.image_btn, dlg.draw_btn, dlg.shapes_btn, dlg.highlight_btn):
+        assert other.isChecked() is False
+    assert dlg._page_widgets[0].create_mode == "text"
+    assert dlg._text_options.isHidden() is False
+    dlg._set_create_mode("shape")
+    assert dlg.edit_text_btn.isChecked() is False and dlg._text_options.isHidden() is True
+
+
+def test_edit_pdf_dialog_pages_opened_while_edit_text_is_active_inherit_that_mode(tmp_path):
+    dlg, src = _dialog_with_text(tmp_path)
+    dlg._set_create_mode("text")
+    dlg.on_files_changed([str(src)])
+    assert dlg._page_widgets[0].create_mode == "text"
+
+
+def test_edit_pdf_dialog_edit_a_run_and_export_through_the_real_ui_path(tmp_path):
+    dlg, src = _dialog_with_text(tmp_path)
+    dlg._set_create_mode("text")
+    widget = dlg._page_widgets[0]
+    _dclick_run(widget, 0)
+    widget._run_editor.selectAll()
+    QTest.keyClicks(widget._run_editor, "Rewritten")
+    # the user clicks straight on Run - no click back on the page first
+    params = dlg.gather_params()
+    assert widget._run_editor is None  # gather_params committed the open editor
+    assert [e["type"] for e in dlg.model.elements] == ["text_edit"]
+    out = dlg.run_operation([str(src)], params)
+    result = fitz.open(out[0])
+    text = result[0].get_text()
+    result.close()
+    assert "Rewritten" in text and "First line of text" not in text and "Second line" in text
+
+
+def test_edit_pdf_dialog_typed_new_text_is_not_lost_when_run_is_clicked_first(tmp_path):
+    # Phase 6A shipped with this bug: a new_text draft only committed on the
+    # next click on the PAGE, so clicking Run first silently dropped it.
+    dlg, src = _dialog_with_text(tmp_path)
+    dlg._set_create_mode("new_text")
+    widget = dlg._page_widgets[0]
+    QTest.mouseClick(widget, Qt.LeftButton, Qt.NoModifier, QPoint(int(widget.width() * 0.5), int(widget.height() * 0.6)))
+    QTest.keyClicks(widget._text_editor, "Typed then Run")
+    params = dlg.gather_params()
+    assert widget._text_editor is None
+    assert [e["type"] for e in dlg.model.elements] == ["new_text"]
+    assert params["elements"][0]["text"] == "Typed then Run"
+
+
+def test_edit_pdf_dialog_toolbar_buttons_commit_an_open_editor_before_acting(tmp_path):
+    dlg, src = _dialog_with_text(tmp_path)
+    dlg._set_create_mode("text")
+    widget = dlg._page_widgets[0]
+    _dclick_run(widget, 0)
+    widget._run_editor.selectAll()
+    QTest.keyClicks(widget._run_editor, "Committed by button")
+    dlg._toolbar_action("undo")  # a real toolbar click, not the (suppressed) keyboard shortcut
+    assert widget._run_editor is None
+    # commit pushed the edit, then undo took it back out
+    assert dlg.model.elements == []
+
+
+def test_edit_pdf_dialog_keyboard_shortcuts_stay_suppressed_while_a_run_editor_is_open(tmp_path):
+    dlg, src = _dialog_with_text(tmp_path)
+    dlg._set_create_mode("text")
+    widget = dlg._page_widgets[0]
+    _dclick_run(widget, 0)
+    el_id = dlg.model.add({"page": 1, "type": "shape", "shape": "rectangle", "x0": 0.1, "y0": 0.5, "x1": 0.3, "y1": 0.6,
+                           "color": "#ff0000", "width": 3, "filled": False})
+    dlg.model.select(el_id)
+    dlg._handle_shortcut("delete")  # a keystroke that belongs to the text editor
+    assert len(dlg.model.elements) == 1
+    assert widget._run_editor is not None
+
+
+def test_edit_pdf_dialog_style_row_restyles_the_selection_and_reflects_the_cursor(tmp_path):
+    from PySide6.QtGui import QTextCursor
+    dlg, src = _dialog_with_text(tmp_path)
+    dlg._set_create_mode("text")
+    widget = dlg._page_widgets[0]
+    _dclick_run(widget, 0)
+    cur = widget._run_editor.textCursor()
+    cur.setPosition(0)
+    cur.setPosition(5, QTextCursor.KeepAnchor)
+    widget._run_editor.setTextCursor(cur)
+    dlg.text_bold_btn.click()
+    dlg.text_family_combo.setCurrentText("courier")
+    dlg.text_size_spin.setValue(20)
+    dlg.text_italic_btn.click()
+    widget.commit_open_editors()
+    first = dlg.model.elements[0]["segments"][0]
+    assert first["text"] == "First" and first["bold"] is True and first["italic"] is True
+    assert first["family"] == "courier" and first["size"] == 20.0
+    # the rest of the run kept the run's own style
+    assert dlg.model.elements[0]["segments"][1]["bold"] is False
+
+
+def test_edit_pdf_dialog_style_row_follows_the_cursor_position(tmp_path):
+    dlg, src = _dialog_with_text(tmp_path)
+    dlg._set_create_mode("text")
+    widget = dlg._page_widgets[0]
+    model = dlg.model
+    model.add({"page": 1, "type": "text_edit", "run_index": 1, "segments": [
+        {"text": "Plain ", "family": "helvetica", "bold": False, "italic": False, "size": 12.0},
+        {"text": "Loud", "family": "times", "bold": True, "italic": False, "size": 18.0}]})
+    _dclick_run(widget, 1)
+    cur = widget._run_editor.textCursor()
+    cur.setPosition(9)  # inside "Loud"
+    widget._run_editor.setTextCursor(cur)
+    dlg._sync_text_style_row()
+    assert dlg.text_bold_btn.isChecked() is True
+    assert dlg.text_family_combo.currentText() == "times"
+    assert dlg.text_size_spin.value() == 18
+
+
+def test_edit_pdf_dialog_revert_button_restores_the_original_run(tmp_path):
+    dlg, src = _dialog_with_text(tmp_path)
+    dlg._set_create_mode("text")
+    widget = dlg._page_widgets[0]
+    _dclick_run(widget, 0)
+    widget._run_editor.selectAll()
+    QTest.keyClicks(widget._run_editor, "Changed")
+    widget.commit_open_editors()
+    _dclick_run(widget, 0)
+    dlg.text_revert_btn.click()
+    assert dlg.model.elements == []
+    assert widget._run_editor.toPlainText() == "First line of text"
+
+
+def test_edit_pdf_dialog_a_text_edit_moved_by_mouse_still_exports(tmp_path):
+    dlg, src = _dialog_with_text(tmp_path)
+    dlg._set_create_mode("text")
+    widget = dlg._page_widgets[0]
+    _dclick_run(widget, 0)
+    widget._run_editor.selectAll()
+    QTest.keyClicks(widget._run_editor, "Dragged")
+    widget.commit_open_editors()
+    box = dlg.model.text_edit_box(dlg.model.elements[0])
+    body = QPoint(int((box["x"] + box["width"] / 2) * widget.width()), int((box["y"] + box["height"] / 2) * widget.height()))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, body)
+    QTest.mouseMove(widget, QPoint(widget.width() - 2, widget.height() - 2))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(widget.width() - 2, widget.height() - 2))
+    el = dlg.model.elements[0]
+    assert 0 <= el["x"] <= 1 and 0 <= el["y"] <= 1 and "width" not in el
+    out = dlg.run_operation([str(src)], dlg.gather_params())
+    result = fitz.open(out[0])
+    assert "Dragged" in result[0].get_text()
+    result.close()
+
+
+def test_edit_pdf_dialog_mixed_styling_end_to_end_lands_in_the_exported_pdf(tmp_path):
+    from PySide6.QtGui import QTextCursor
+    dlg, src = _dialog_with_text(tmp_path)
+    dlg._set_create_mode("text")
+    widget = dlg._page_widgets[0]
+    _dclick_run(widget, 0)
+    widget._run_editor.selectAll()
+    QTest.keyClicks(widget._run_editor, "Plain and BOLD")
+    cur = widget._run_editor.textCursor()
+    cur.setPosition(10)
+    cur.setPosition(14, QTextCursor.KeepAnchor)
+    widget._run_editor.setTextCursor(cur)
+    dlg.text_bold_btn.click()
+    out = dlg.run_operation([str(src)], dlg.gather_params())
+    result = fitz.open(out[0])
+    spans = [s for b in result[0].get_text("dict")["blocks"] for l in b.get("lines", []) for s in l["spans"]]
+    result.close()
+    by_text = {s["text"].strip(): s for s in spans}
+    assert "Plain and" in by_text and "BOLD" in by_text
+    assert by_text["BOLD"]["flags"] & 16          # bold font flag
+    assert not by_text["Plain and"]["flags"] & 16
+
+def test_nudging_a_text_edit_through_the_dialogs_arrow_keys_exports(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+    src = _two_run_pdf(tmp_path)
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(src)])
+    el_id = dlg.model.add(_text_edit_element(text="Arrow nudged"))
+    dlg.model.select(el_id)
+    QTest.keyClick(dlg, Qt.Key_Right)
+    QTest.keyClick(dlg, Qt.Key_Down, Qt.ShiftModifier)
+    el = next(e for e in dlg.model.elements if e["id"] == el_id)
+    box = dlg.model.text_edit_box({**el, "x": None, "y": None})  # the run's own top-left
+    assert el["x"] == pytest.approx(box["x"] + 0.004)
+    assert el["y"] == pytest.approx(box["y"] + 0.02)
+    out = dlg.run_operation([str(src)], dlg.gather_params())
+    result = fitz.open(out[0])
+    assert "Arrow nudged" in result[0].get_text()
+    result.close()
+
+
+def test_deleting_a_text_edit_via_the_dialog_restores_the_original_run_on_export(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+    src = _two_run_pdf(tmp_path)
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(src)])
+    dlg.model.add(_text_edit_element(text="Temporary"))
+    dlg.model.add({"page": 1, "type": "shape", "shape": "rectangle", "x0": 0.1, "y0": 0.5, "x1": 0.3, "y1": 0.6,
+                   "color": "#ff0000", "width": 3, "filled": False})  # export needs some element left
+    text_edit_id = dlg.model.elements[0]["id"]
+    dlg.model.select(text_edit_id)
+    dlg._handle_shortcut("delete")
+    assert all(e["type"] != "text_edit" for e in dlg.model.elements)
+    out = dlg.run_operation([str(src)], dlg.gather_params())
+    result = fitz.open(out[0])
+    text = result[0].get_text()
+    result.close()
+    assert "First line of text" in text and "Temporary" not in text

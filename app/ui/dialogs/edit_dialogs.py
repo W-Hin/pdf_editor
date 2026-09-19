@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap, QShortcut, QKeySequence
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea, QTextEdit, QSpinBox, QCheckBox
 
-from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, edit_pdf, extract_form_fields, fill_form
+from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, get_page_size, get_page_rotation, extract_text_runs, edit_pdf, extract_form_fields, fill_form
 from app.core.compare_pdf import extract_page_texts, diff_page_text, render_page_image, diff_page_visual
 from app.core.errors import PDFError
 from app.ui.dialogs.base import ToolDialog
@@ -626,6 +626,10 @@ class EditPdfDialog(ToolDialog):
         self.highlight_btn.setCheckable(True)
         self.highlight_btn.clicked.connect(lambda: self._set_create_mode("highlight"))
         mode_row.addWidget(self.highlight_btn)
+        self.edit_text_btn = QPushButton("Edit Text")
+        self.edit_text_btn.setCheckable(True)
+        self.edit_text_btn.clicked.connect(lambda: self._set_create_mode("text"))
+        mode_row.addWidget(self.edit_text_btn)
         layout.addLayout(mode_row)
 
         self._draw_options = QWidget()
@@ -660,37 +664,65 @@ class EditPdfDialog(ToolDialog):
         highlight_row.addLayout(self._make_swatch_row("highlight"))
         layout.addWidget(self._highlight_options)
 
+        self._text_options = QWidget()
+        text_row = QHBoxLayout(self._text_options)
+        self.text_family_combo = QComboBox()
+        self.text_family_combo.addItems(["helvetica", "times", "courier"])
+        self.text_family_combo.currentTextChanged.connect(lambda text: self._apply_text_style(family=text))
+        text_row.addWidget(self.text_family_combo)
+        self.text_size_spin = QSpinBox()
+        self.text_size_spin.setRange(4, 200)
+        self.text_size_spin.setValue(12)
+        self.text_size_spin.valueChanged.connect(lambda value: self._apply_text_style(size=value))
+        text_row.addWidget(self.text_size_spin)
+        self.text_bold_btn = QPushButton("B")
+        self.text_bold_btn.setCheckable(True)
+        self.text_bold_btn.setFocusPolicy(Qt.NoFocus)
+        self.text_bold_btn.clicked.connect(lambda checked: self._apply_text_style(bold=checked))
+        text_row.addWidget(self.text_bold_btn)
+        self.text_italic_btn = QPushButton("I")
+        self.text_italic_btn.setCheckable(True)
+        self.text_italic_btn.setFocusPolicy(Qt.NoFocus)
+        self.text_italic_btn.clicked.connect(lambda checked: self._apply_text_style(italic=checked))
+        text_row.addWidget(self.text_italic_btn)
+        self.text_revert_btn = QPushButton("Revert")
+        self.text_revert_btn.setFocusPolicy(Qt.NoFocus)
+        self.text_revert_btn.clicked.connect(self._revert_open_run)
+        text_row.addWidget(self.text_revert_btn)
+        layout.addWidget(self._text_options)
+
         self._width_combos = {"draw": self.draw_width_combo, "shape": self.shape_width_combo}
 
         self._draw_options.setVisible(False)
         self._shapes_options.setVisible(False)
         self._highlight_options.setVisible(False)
+        self._text_options.setVisible(False)
 
         action_row = QHBoxLayout()
         undo_btn = QPushButton("Undo")
-        undo_btn.clicked.connect(lambda: self._handle_shortcut("undo"))
+        undo_btn.clicked.connect(lambda: self._toolbar_action("undo"))
         action_row.addWidget(undo_btn)
         redo_btn = QPushButton("Redo")
-        redo_btn.clicked.connect(lambda: self._handle_shortcut("redo"))
+        redo_btn.clicked.connect(lambda: self._toolbar_action("redo"))
         action_row.addWidget(redo_btn)
         copy_btn = QPushButton("Copy")
-        copy_btn.clicked.connect(lambda: self._handle_shortcut("copy"))
+        copy_btn.clicked.connect(lambda: self._toolbar_action("copy"))
         action_row.addWidget(copy_btn)
         cut_btn = QPushButton("Cut")
-        cut_btn.clicked.connect(lambda: self._handle_shortcut("cut"))
+        cut_btn.clicked.connect(lambda: self._toolbar_action("cut"))
         action_row.addWidget(cut_btn)
         paste_btn = QPushButton("Paste")
-        paste_btn.clicked.connect(lambda: self._handle_shortcut("paste"))
+        paste_btn.clicked.connect(lambda: self._toolbar_action("paste"))
         action_row.addWidget(paste_btn)
         delete_btn = QPushButton("Delete")
-        delete_btn.clicked.connect(lambda: self._handle_shortcut("delete"))
+        delete_btn.clicked.connect(lambda: self._toolbar_action("delete"))
         action_row.addWidget(delete_btn)
         layout.addLayout(action_row)
 
         reorder_row = QHBoxLayout()
         for label, direction in (("Bring to Front", "front"), ("Send to Back", "back"), ("Forward", "forward"), ("Backward", "backward")):
             btn = QPushButton(label)
-            btn.clicked.connect(lambda _, d=direction: self._reorder_selected(d))
+            btn.clicked.connect(lambda _, d=direction: self._reorder_from_toolbar(d))
             reorder_row.addWidget(btn)
         layout.addLayout(reorder_row)
 
@@ -764,12 +796,15 @@ class EditPdfDialog(ToolDialog):
             self._apply_style_to(widget)
 
     def _set_create_mode(self, mode: str) -> None:
+        self._commit_open_editors()
         self._create_mode = mode
         self.new_text_btn.setChecked(mode == "new_text")
         self.image_btn.setChecked(mode == "image")
         self.draw_btn.setChecked(mode == "draw")
         self.shapes_btn.setChecked(mode == "shape")
         self.highlight_btn.setChecked(mode == "highlight")
+        self.edit_text_btn.setChecked(mode == "text")
+        self._text_options.setVisible(mode == "text")
         self._draw_options.setVisible(mode == "draw")
         self._shapes_options.setVisible(mode == "shape")
         self._highlight_options.setVisible(mode == "highlight")
@@ -828,6 +863,52 @@ class EditPdfDialog(ToolDialog):
         for widget in self._page_widgets:
             widget.filled = filled
 
+    def _commit_open_editors(self) -> None:
+        for widget in self._page_widgets:
+            widget.commit_open_editors()
+
+    def _toolbar_action(self, action: str) -> None:
+        """A toolbar CLICK (unlike a keyboard shortcut, whose keystroke
+        belongs to an open text editor) finishes any open editor first so the
+        click acts on the committed state."""
+        self._commit_open_editors()
+        self._handle_shortcut(action)
+
+    def _reorder_from_toolbar(self, direction: str) -> None:
+        self._commit_open_editors()
+        self._reorder_selected(direction)
+
+    def _open_run_widget(self):
+        return next((w for w in self._page_widgets if w._run_editor is not None), None)
+
+    def _apply_text_style(self, **patch) -> None:
+        widget = self._open_run_widget()
+        if widget is not None:
+            widget.apply_run_style(**patch)
+
+    def _revert_open_run(self) -> None:
+        widget = self._open_run_widget()
+        if widget is not None:
+            widget.revert_run_editor()
+            self._sync_text_style_row()
+
+    def _sync_text_style_row(self) -> None:
+        """Shows the style at the open run editor's cursor in the row's
+        controls (signals blocked so reading state never writes it back)."""
+        widget = self._open_run_widget()
+        state = widget.run_editor_state() if widget is not None else None
+        if state is None:
+            return
+        controls = (self.text_family_combo, self.text_size_spin, self.text_bold_btn, self.text_italic_btn)
+        for control in controls:
+            control.blockSignals(True)
+        self.text_family_combo.setCurrentText(state["family"])
+        self.text_size_spin.setValue(int(round(state["size"])))
+        self.text_bold_btn.setChecked(state["bold"])
+        self.text_italic_btn.setChecked(state["italic"])
+        for control in controls:
+            control.blockSignals(False)
+
     def _prompt_for_image(self, widget, point: tuple[float, float]) -> None:
         # Takes the page WIDGET, not a page number: self._page_widgets is
         # not guaranteed to line up 1:1 with page numbers (on_files_changed
@@ -858,7 +939,7 @@ class EditPdfDialog(ToolDialog):
         case a real focus-out hasn't fired yet (e.g. a keyboard shortcut
         pressed while still actively typing). Centralized here so both
         _handle_shortcut and keyPressEvent share one check."""
-        return any(w._text_editor is not None for w in self._page_widgets)
+        return any(w._text_editor is not None or w._run_editor is not None for w in self._page_widgets)
 
     def _handle_shortcut(self, action: str) -> None:
         if self._any_text_editor_open():
@@ -915,7 +996,16 @@ class EditPdfDialog(ToolDialog):
                 continue
             pixmap = QPixmap()
             pixmap.loadFromData(thumb_bytes)
+            try:
+                runs = extract_text_runs(self._input_path, page_num)
+                width_pt, height_pt = get_page_size(self._input_path, page_num)
+                rotation = get_page_rotation(self._input_path, page_num)
+            except PDFError:
+                runs, width_pt, height_pt, rotation = [], 0.0, 0.0, 0
+            if width_pt:
+                self.model.set_page_text_info(page_num, runs, rotation, width_pt, height_pt)
             widget = EditPageWidget(self.model, page_num)
+            widget.run_editor_cursor_moved.connect(self._sync_text_style_row)
             # The callback closes over the WIDGET itself rather than a page
             # number, so it can never index into the wrong page's widget.
             widget.on_image_click = lambda point, wgt=widget: self._prompt_for_image(wgt, point)
@@ -934,6 +1024,8 @@ class EditPdfDialog(ToolDialog):
             self._page_widgets.append(widget)
 
     def gather_params(self) -> dict:
+        # Commit a typed draft when Run is clicked without clicking the page.
+        self._commit_open_editors()
         elements = [{k: v for k, v in el.items() if k != "id"} for el in self.model.elements]
         image_paths = {el["file_id"]: el["file_id"] for el in elements if el["type"] == "image"}
         return {"elements": elements, "image_paths": image_paths}
