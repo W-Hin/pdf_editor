@@ -46,6 +46,19 @@ def get_page_rotation(path: str, page_number: int) -> int:
         doc.close()
 
 
+def get_page_size(path: str, page_number: int) -> tuple[float, float]:
+    """The DISPLAYED (rotation-applied) size of a page in PDF points - the
+    same rect extract_text_runs' fractions are relative to."""
+    doc = open_pdf(path)
+    try:
+        if page_number < 1 or page_number > doc.page_count:
+            raise PDFError(f"Page {page_number} does not exist in this document ({doc.page_count} pages).")
+        rect = doc[page_number - 1].rect
+        return (float(rect.width), float(rect.height))
+    finally:
+        doc.close()
+
+
 def merge_pdfs(input_paths: list[str], output_path: str) -> None:
     if len(input_paths) < 2:
         raise PDFError("Select at least two PDF files to merge.")

@@ -1254,6 +1254,7 @@ from app.ui.edit_canvas import (
     _MIN_TEXT_WIDTH_FRACTION,
     EditElementsModel,
     EditPageWidget,
+    closest_base14_family,
 )
 
 
@@ -2766,3 +2767,116 @@ def test_edit_pdf_dialog_file_loaded_in_draw_mode_gives_pages_stroke_mode(tmp_pa
         assert widget.create_mode == "stroke"
         assert widget.color == "#0000ff"
         assert widget.width_preset == "thin"
+
+
+def _run(index=0, text="Hello", font="Helvetica", size=14.0, bold=False, italic=False,
+         top=0.1, left=0.2, right=0.5, bottom=0.8):
+    return {"index": index, "text": text, "font": font, "size": size, "bold": bold,
+            "italic": italic, "bbox": {"top": top, "left": left, "right": right, "bottom": bottom}}
+
+
+def _text_edit_element(page=1, run_index=0, text="Edited", **extra):
+    el = {"page": page, "type": "text_edit", "run_index": run_index,
+          "segments": [{"text": text, "family": "helvetica", "bold": False, "italic": False, "size": 14.0}]}
+    el.update(extra)
+    return el
+
+
+def test_closest_base14_family_matches_the_web_apps_rules():
+    assert closest_base14_family("Times-Roman") == "times"
+    assert closest_base14_family("DejaVuSerif") == "times"
+    assert closest_base14_family("Georgia") == "times"
+    assert closest_base14_family("Courier-Bold") == "courier"
+    assert closest_base14_family("Consolas") == "courier"
+    assert closest_base14_family("LucidaMono") == "courier"
+    assert closest_base14_family("Helvetica") == "helvetica"
+    assert closest_base14_family("Arial") == "helvetica"
+    assert closest_base14_family("") == "helvetica"
+    assert closest_base14_family(None) == "helvetica"
+
+
+def test_edit_model_stores_page_text_info_and_finds_runs():
+    model = EditElementsModel()
+    model.set_page_text_info(1, [_run(0), _run(1, text="Second")], rotation=0, width_pt=595, height_pt=842)
+    assert model.find_run(1, 1)["text"] == "Second"
+    assert model.find_run(1, 9) is None
+    assert model.find_run(2, 0) is None
+    assert model.page_info[1] == {"rotation": 0, "width_pt": 595, "height_pt": 842}
+
+
+def test_edit_model_text_edit_box_defaults_to_the_runs_own_box_and_moves_with_xy():
+    model = EditElementsModel()
+    model.set_page_text_info(1, [_run(0, top=0.1, left=0.2, right=0.5, bottom=0.8)], rotation=0, width_pt=595, height_pt=842)
+    el_id = model.add(_text_edit_element())
+    el = next(e for e in model.elements if e["id"] == el_id)
+    box = model.text_edit_box(el)
+    assert box == pytest.approx({"x": 0.2, "y": 0.1, "width": 0.3, "height": 0.1})
+    el.update(x=0.4, y=0.5)
+    moved = model.text_edit_box(el)
+    assert moved == pytest.approx({"x": 0.4, "y": 0.5, "width": 0.3, "height": 0.1})  # rotation 0: no swap
+    assert model.text_edit_box({"page": 1, "type": "text_edit", "run_index": 9, "segments": []}) is None
+
+
+def test_edit_model_text_edit_box_swaps_dimensions_in_points_when_moved_on_a_rotated_page():
+    model = EditElementsModel()
+    # displayed page 842 x 595 (a 90-degree page); the run is tall and narrow (sideways text)
+    model.set_page_text_info(1, [_run(0, top=0.121, left=0.876, right=0.101, bottom=0.719)], rotation=90, width_pt=842, height_pt=595)
+    el_id = model.add(_text_edit_element())
+    el = next(e for e in model.elements if e["id"] == el_id)
+    unmoved = model.text_edit_box(el)
+    assert unmoved["width"] == pytest.approx(1 - 0.876 - 0.101)
+    assert unmoved["height"] == pytest.approx(1 - 0.121 - 0.719)  # never swapped while unmoved
+    el.update(x=0.3, y=0.3)
+    moved = model.text_edit_box(el)
+    w_pt, h_pt = unmoved["width"] * 842, unmoved["height"] * 595
+    assert moved["width"] == pytest.approx(h_pt / 842)  # transposed extent, converted back to fractions
+    assert moved["height"] == pytest.approx(w_pt / 595)
+
+
+def test_edit_model_clamped_translate_for_text_edit_returns_only_xy_and_clamps_to_the_page():
+    model = EditElementsModel()
+    model.set_page_text_info(1, [_run(0, top=0.1, left=0.2, right=0.5, bottom=0.8)], rotation=0, width_pt=595, height_pt=842)
+    el_id = model.add(_text_edit_element())
+    el = next(e for e in model.elements if e["id"] == el_id)
+    changes = model.clamped_translate(el, 0.1, 0.1)
+    assert set(changes) == {"x", "y"}
+    assert changes["x"] == pytest.approx(0.3) and changes["y"] == pytest.approx(0.2)
+    far = model.clamped_translate(el, 5.0, 5.0)  # far past the bottom-right
+    assert far["x"] == pytest.approx(1 - 0.3) and far["y"] == pytest.approx(1 - 0.1)
+    away = model.clamped_translate(el, -5.0, -5.0)
+    assert away["x"] == pytest.approx(0.0) and away["y"] == pytest.approx(0.0)
+
+
+def test_edit_model_nudge_moves_a_text_edit_and_never_stores_width_or_height():
+    model = EditElementsModel()
+    model.set_page_text_info(1, [_run(0)], rotation=0, width_pt=595, height_pt=842)
+    el_id = model.add(_text_edit_element())
+    model.nudge(el_id, 0.02, 0.0)
+    el = next(e for e in model.elements if e["id"] == el_id)
+    assert el["x"] == pytest.approx(0.22) and el["y"] == pytest.approx(0.1)
+    assert "width" not in el and "height" not in el
+    model.undo()
+    reverted = next(e for e in model.elements if e["id"] == el_id)
+    assert "x" not in reverted and "y" not in reverted  # nudge was its own undo step
+
+
+def test_edit_model_text_edit_for_run_finds_the_pending_edit():
+    model = EditElementsModel()
+    model.set_page_text_info(1, [_run(0), _run(1)], rotation=0, width_pt=595, height_pt=842)
+    el_id = model.add(_text_edit_element(run_index=1))
+    assert model.text_edit_for_run(1, 1)["id"] == el_id
+    assert model.text_edit_for_run(1, 0) is None
+    assert model.text_edit_for_run(2, 1) is None
+
+
+def test_edit_model_copy_and_cut_are_complete_no_ops_for_a_text_edit():
+    model = EditElementsModel()
+    model.set_page_text_info(1, [_run(0)], rotation=0, width_pt=595, height_pt=842)
+    el_id = model.add(_text_edit_element())
+    model.select(el_id)
+    model.copy()
+    assert model._clipboard is None
+    model.cut()
+    assert [e["id"] for e in model.elements] == [el_id]  # NOT deleted
+    assert model.selected_id == el_id
+    assert model.paste() is None

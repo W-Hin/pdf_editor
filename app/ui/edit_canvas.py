@@ -16,6 +16,18 @@ _MIN_DRAG_FRACTION = 0.02
 _WIDTH_PRESETS = {"thin": 1, "medium": 3, "thick": 6}
 
 
+def closest_base14_family(font_name) -> str:
+    """Port of the web app's closestBase14Family (EditPdfCanvas.jsx:87): the
+    core can only draw replacement text in the three base-14 families, so a
+    run's detected font is snapped to the nearest one."""
+    lowered = (font_name or "").lower()
+    if "times" in lowered or "serif" in lowered or "georgia" in lowered:
+        return "times"
+    if "courier" in lowered or "mono" in lowered or "consolas" in lowered:
+        return "courier"
+    return "helvetica"
+
+
 class EditElementsModel:
     """Owns the state that must be shared ACROSS every page of an Edit PDF
     session - unlike RedactDialog/SignDialog's fully independent per-page
@@ -38,6 +50,12 @@ class EditElementsModel:
         # outlive that object (otherwise _notify() would later call into a
         # deleted C++ widget).
         self.on_change: list = []
+        # Per-page text-run data, filled by whoever opens a document (see
+        # set_page_text_info). Kept on the model - not on the page widgets -
+        # because clamped_translate/nudge need a text_edit's box and the
+        # model is the single source of truth for move math.
+        self.text_runs: dict[int, list[dict]] = {}
+        self.page_info: dict[int, dict] = {}
 
     def _snapshot(self) -> list[dict]:
         return [dict(e) for e in self.elements]
@@ -93,6 +111,45 @@ class EditElementsModel:
 
     def elements_for_page(self, page: int) -> list[dict]:
         return [e for e in self.elements if e["page"] == page]
+
+    def set_page_text_info(self, page: int, runs: list[dict], rotation: int, width_pt: float, height_pt: float) -> None:
+        self.text_runs[page] = list(runs)
+        self.page_info[page] = {"rotation": rotation, "width_pt": width_pt, "height_pt": height_pt}
+
+    def find_run(self, page: int, run_index: int) -> dict | None:
+        return next((r for r in self.text_runs.get(page, []) if r["index"] == run_index), None)
+
+    def text_edit_for_run(self, page: int, run_index: int) -> dict | None:
+        return next(
+            (e for e in self.elements if e["type"] == "text_edit" and e["page"] == page and e["run_index"] == run_index),
+            None,
+        )
+
+    def text_edit_box(self, el: dict) -> dict | None:
+        """The box a text_edit occupies, in page fractions - ALWAYS derived
+        from its run (a text_edit never stores width/height). Position is
+        the element's own x/y once it has been moved, else the run's
+        top-left. Once moved on a 90/270 page the core draws the replacement
+        upright in displayed space, transposing the (sideways) original
+        run's extent - swapped in POINTS, not fractions, so it is exact for
+        a non-square page (the web app swaps the fractions)."""
+        run = self.find_run(el["page"], el["run_index"])
+        if run is None:
+            return None
+        bbox = run["bbox"]
+        width = 1 - bbox["left"] - bbox["right"]
+        height = 1 - bbox["top"] - bbox["bottom"]
+        moved = el.get("x") is not None and el.get("y") is not None
+        info = self.page_info.get(el["page"])
+        if moved and info and info["rotation"] in (90, 270):
+            w_pt, h_pt = width * info["width_pt"], height * info["height_pt"]
+            width, height = h_pt / info["width_pt"], w_pt / info["height_pt"]
+        return {
+            "x": el["x"] if moved else bbox["left"],
+            "y": el["y"] if moved else bbox["top"],
+            "width": width,
+            "height": height,
+        }
 
     def undo(self) -> None:
         if not self._undo_stack:
@@ -157,12 +214,17 @@ class EditElementsModel:
             return
         for el in self.elements:
             if el["id"] == self.selected_id:
+                if el["type"] == "text_edit":
+                    return  # a run_index is meaningless anywhere but its own run
                 clip = dict(el)
                 clip.pop("id", None)
                 self._clipboard = clip
                 return
 
     def cut(self) -> None:
+        selected = next((e for e in self.elements if e["id"] == self.selected_id), None)
+        if selected is not None and selected["type"] == "text_edit":
+            return  # not copyable, so cutting would just destroy it
         self.copy()
         if self.selected_id is not None:
             self.remove(self.selected_id)
@@ -241,6 +303,16 @@ class EditElementsModel:
             return {
                 "left": el["left"] + clamped_dx, "right": el["right"] - clamped_dx,
                 "top": el["top"] + clamped_dy, "bottom": el["bottom"] - clamped_dy,
+            }
+        if el_type == "text_edit":
+            # Box comes from the run; only x/y are ever returned, so a
+            # move can never leak width/height onto the stored element.
+            box = self.text_edit_box(el)
+            if box is None:
+                return {}
+            return {
+                "x": min(max(box["x"] + dx, 0), 1 - box["width"]),
+                "y": min(max(box["y"] + dy, 0), 1 - box["height"]),
             }
         # new_text / image: x,y is the top-left corner and width/height are
         # stored, so the clamp can be expressed on the coordinates directly.

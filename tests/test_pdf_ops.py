@@ -2619,3 +2619,34 @@ def test_pdf_to_markdown_zip_on_rotated_ocred_page_documents_known_limitation(tm
     with zipfile.ZipFile(zip_path) as zf:
         md_text = zf.read("document.md").decode("utf-8")
     assert "verify automatic page orientation detection" not in md_text
+
+
+def test_get_page_size_returns_the_displayed_size_including_rotation(tmp_path):
+    from app.core.pdf_ops import get_page_size
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    path = tmp_path / "a.pdf"
+    doc.save(str(path))
+    doc.close()
+    assert get_page_size(str(path), 1) == (595.0, 842.0)
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.set_rotation(90)
+    rotated = tmp_path / "r.pdf"
+    doc.save(str(rotated))
+    doc.close()
+    assert get_page_size(str(rotated), 1) == (842.0, 595.0)  # displayed, not raw
+
+
+def test_get_page_size_rejects_a_missing_page(tmp_path):
+    from app.core.pdf_ops import get_page_size
+
+    doc = fitz.open()
+    doc.new_page()
+    path = tmp_path / "a.pdf"
+    doc.save(str(path))
+    doc.close()
+    with pytest.raises(PDFError):
+        get_page_size(str(path), 5)
