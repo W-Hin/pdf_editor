@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import fitz
 import pytest
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QFont, QImage, QPixmap, QTextCharFormat
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit, QTextEdit
 
@@ -1254,7 +1254,9 @@ from app.ui.edit_canvas import (
     _MIN_TEXT_WIDTH_FRACTION,
     EditElementsModel,
     EditPageWidget,
+    build_segments_document,
     closest_base14_family,
+    segments_from_document,
 )
 
 
@@ -2880,3 +2882,373 @@ def test_edit_model_copy_and_cut_are_complete_no_ops_for_a_text_edit():
     assert [e["id"] for e in model.elements] == [el_id]  # NOT deleted
     assert model.selected_id == el_id
     assert model.paste() is None
+
+
+def _text_widget(model=None, runs=None, rotation=0, page=1, w=400, h=600):
+    model = model or EditElementsModel()
+    model.set_page_text_info(page, runs if runs is not None else [_run(0, text="Hello world", top=0.1, left=0.1, right=0.5, bottom=0.8)],
+                             rotation=rotation, width_pt=595, height_pt=842)
+    widget = EditPageWidget(model, page_number=page)
+    widget.set_page_pixmap(QPixmap(w, h))
+    widget.create_mode = "text"
+    return model, widget
+
+
+def _dclick_run(widget, run_index=0):
+    run = widget.model.find_run(widget.page_number, run_index)
+    b = run["bbox"]
+    x = (b["left"] + (1 - b["right"])) / 2 * widget.width()
+    y = (b["top"] + (1 - b["bottom"])) / 2 * widget.height()
+    QTest.mouseDClick(widget, Qt.LeftButton, Qt.NoModifier, QPoint(int(x), int(y)))
+
+
+def _fmt(family="helvetica", bold=False, italic=False, size=14.0, ppp=1.0):
+    from PySide6.QtGui import QTextFormat
+    f = QTextCharFormat()
+    f.setFontFamilies([family])
+    f.setFontWeight(QFont.Bold if bold else QFont.Normal)
+    f.setFontItalic(italic)
+    f.setProperty(QTextFormat.FontPixelSize, max(1, round(size * ppp)))
+    f.setProperty(QTextFormat.UserProperty + 1, float(size))
+    return f
+
+
+_DEFAULT_STYLE = {"family": "helvetica", "bold": False, "italic": False, "size": 14.0}
+
+
+def test_segments_from_document_walks_fragments_into_exact_segments():
+    from PySide6.QtGui import QTextCursor
+    doc = build_segments_document([], 1.0)
+    cur = QTextCursor(doc)
+    cur.insertText("Hello ", _fmt())
+    cur.insertText("BOLD", _fmt(bold=True))
+    cur.insertText(" and ", _fmt(italic=True))
+    cur.insertText("plain", _fmt())
+    cur.insertText("more", _fmt())  # identical neighbour - must merge
+    cur.insertText("Mono", _fmt(family="courier", size=11.5))
+    assert segments_from_document(doc, _DEFAULT_STYLE) == [
+        {"text": "Hello ", "family": "helvetica", "bold": False, "italic": False, "size": 14.0},
+        {"text": "BOLD", "family": "helvetica", "bold": True, "italic": False, "size": 14.0},
+        {"text": " and ", "family": "helvetica", "bold": False, "italic": True, "size": 14.0},
+        {"text": "plainmore", "family": "helvetica", "bold": False, "italic": False, "size": 14.0},
+        {"text": "Mono", "family": "courier", "bold": False, "italic": False, "size": 11.5},
+    ]
+
+
+def test_segments_from_document_of_an_empty_document_is_one_empty_default_segment():
+    doc = build_segments_document([], 1.0)
+    assert segments_from_document(doc, _DEFAULT_STYLE) == [{"text": "", **_DEFAULT_STYLE}]
+
+
+def test_build_segments_document_round_trips_segments_exactly():
+    segs = [
+        {"text": "a", "family": "times", "bold": True, "italic": False, "size": 12.0},
+        {"text": "b", "family": "courier", "bold": False, "italic": True, "size": 9.5},
+    ]
+    doc = build_segments_document(segs, 0.534)
+    assert segments_from_document(doc, _DEFAULT_STYLE) == segs
+
+
+def test_segments_from_document_joins_multiple_blocks_with_a_single_space():
+    from PySide6.QtGui import QTextCursor
+    doc = build_segments_document([], 1.0)
+    cur = QTextCursor(doc)
+    cur.insertText("ab", _fmt())
+    cur.insertBlock()
+    cur.insertText("cd", _fmt())
+    assert "".join(s["text"] for s in segments_from_document(doc, _DEFAULT_STYLE)) == "ab cd"
+
+
+def test_double_click_on_a_run_in_edit_text_mode_opens_the_editor_seeded_with_the_run():
+    model, widget = _text_widget()
+    _dclick_run(widget)
+    assert widget._run_editor is not None
+    assert widget._run_editor.toPlainText() == "Hello world"
+    assert model.elements == []  # opening adds nothing
+
+
+def test_double_click_on_a_run_outside_edit_text_mode_does_nothing():
+    model, widget = _text_widget()
+    widget.create_mode = "new_text"
+    _dclick_run(widget)
+    assert widget._run_editor is None
+
+
+def test_double_click_off_any_run_opens_nothing():
+    model, widget = _text_widget()
+    QTest.mouseDClick(widget, Qt.LeftButton, Qt.NoModifier, QPoint(int(widget.width() * 0.9), int(widget.height() * 0.9)))
+    assert widget._run_editor is None
+
+
+def test_opening_and_closing_an_untouched_run_editor_adds_no_element_and_no_undo_step():
+    model, widget = _text_widget()
+    _dclick_run(widget)
+    widget.commit_open_editors()
+    assert widget._run_editor is None
+    assert model.elements == []
+    assert model._undo_stack == []
+
+
+def test_editing_a_run_and_clicking_elsewhere_commits_a_text_edit_with_segments():
+    model, widget = _text_widget()
+    _dclick_run(widget)
+    widget._run_editor.selectAll()
+    QTest.keyClicks(widget._run_editor, "Brand new")
+    # a real click on empty page space is the production commit path
+    QTest.mouseClick(widget, Qt.LeftButton, Qt.NoModifier, QPoint(int(widget.width() * 0.9), int(widget.height() * 0.9)))
+    assert widget._run_editor is None
+    assert len(model.elements) == 1
+    el = model.elements[0]
+    assert el["type"] == "text_edit" and el["run_index"] == 0 and el["page"] == 1
+    assert el["segments"] == [{"text": "Brand new", "family": "helvetica", "bold": False, "italic": False, "size": 14.0}]
+    assert "x" not in el and "y" not in el and "width" not in el and "height" not in el
+
+
+def test_a_run_editor_edits_the_existing_text_edit_instead_of_adding_a_second():
+    model, widget = _text_widget()
+    _dclick_run(widget)
+    widget._run_editor.selectAll()
+    QTest.keyClicks(widget._run_editor, "First")
+    widget.commit_open_editors()
+    _dclick_run(widget)
+    assert widget._run_editor.toPlainText() == "First"  # reopened from the stored segments
+    widget._run_editor.selectAll()
+    QTest.keyClicks(widget._run_editor, "Second")
+    widget.commit_open_editors()
+    assert len(model.elements) == 1  # exactly one text_edit per run
+    assert model.elements[0]["segments"][0]["text"] == "Second"
+
+
+def test_editing_an_existing_text_edit_is_undoable_back_to_the_previous_text():
+    model, widget = _text_widget()
+    _dclick_run(widget)
+    widget._run_editor.selectAll()
+    QTest.keyClicks(widget._run_editor, "First")
+    widget.commit_open_editors()
+    _dclick_run(widget)
+    widget._run_editor.selectAll()
+    QTest.keyClicks(widget._run_editor, "Second")
+    widget.commit_open_editors()
+    model.undo()
+    assert model.elements[0]["segments"][0]["text"] == "First"  # commit-before-mutate
+    model.undo()
+    assert model.elements == []
+
+
+def test_reopening_a_styled_text_edit_rebuilds_its_rich_content():
+    model, widget = _text_widget()
+    segs = [
+        {"text": "Hi ", "family": "helvetica", "bold": False, "italic": False, "size": 14.0},
+        {"text": "there", "family": "times", "bold": True, "italic": True, "size": 12.0},
+    ]
+    model.add({"page": 1, "type": "text_edit", "run_index": 0, "segments": segs})
+    _dclick_run(widget)
+    assert segments_from_document(widget._run_editor.document(), _DEFAULT_STYLE) == segs
+
+
+def test_an_intentionally_emptied_run_commits_as_a_real_erase():
+    model, widget = _text_widget()
+    _dclick_run(widget)
+    widget._run_editor.selectAll()
+    QTest.keyClick(widget._run_editor, Qt.Key_Delete)
+    widget.commit_open_editors()
+    assert len(model.elements) == 1
+    assert model.elements[0]["segments"] == [{"text": "", "family": "helvetica", "bold": False, "italic": False, "size": 14.0}]
+
+
+def test_apply_run_style_restyles_only_the_selection():
+    from PySide6.QtGui import QTextCursor
+    model, widget = _text_widget(runs=[_run(0, text="abcdef", top=0.1, left=0.1, right=0.5, bottom=0.8)])
+    _dclick_run(widget)
+    cur = widget._run_editor.textCursor()
+    cur.setPosition(2)
+    cur.setPosition(4, QTextCursor.KeepAnchor)
+    widget._run_editor.setTextCursor(cur)
+    widget.apply_run_style(bold=True)
+    widget.commit_open_editors()
+    assert [(s["text"], s["bold"]) for s in model.elements[0]["segments"]] == [("ab", False), ("cd", True), ("ef", False)]
+
+
+def test_apply_run_style_with_no_selection_styles_what_is_typed_next():
+    model, widget = _text_widget(runs=[_run(0, text="", top=0.1, left=0.1, right=0.5, bottom=0.8)])
+    _dclick_run(widget)
+    widget.apply_run_style(bold=True, family="times", size=20)
+    QTest.keyClicks(widget._run_editor, "typed")
+    widget.commit_open_editors()
+    assert model.elements[0]["segments"] == [{"text": "typed", "family": "times", "bold": True, "italic": False, "size": 20.0}]
+
+
+def test_revert_run_editor_discards_the_pending_edit_and_reseeds_from_the_run():
+    model, widget = _text_widget()
+    _dclick_run(widget)
+    widget._run_editor.selectAll()
+    QTest.keyClicks(widget._run_editor, "Changed")
+    widget.commit_open_editors()
+    assert len(model.elements) == 1
+    _dclick_run(widget)
+    widget.revert_run_editor()
+    assert model.elements == []
+    assert widget._run_editor.toPlainText() == "Hello world"  # editor still open, reseeded
+    widget.commit_open_editors()
+    assert model.elements == []  # reverted and unchanged: still nothing
+
+
+def test_opening_a_run_editor_and_moving_its_cursor_emit_the_style_row_signal():
+    model, widget = _text_widget()
+    seen = []
+    widget.run_editor_cursor_moved.connect(lambda: seen.append(1))
+    _dclick_run(widget)
+    assert len(seen) >= 1  # emitted on open so the style row shows the run's style straight away
+    before = len(seen)
+    cur = widget._run_editor.textCursor()
+    cur.setPosition(3)
+    widget._run_editor.setTextCursor(cur)
+    assert len(seen) > before
+
+
+def test_run_editor_ignores_the_return_key():
+    model, widget = _text_widget()
+    _dclick_run(widget)
+    QTest.keyClick(widget._run_editor, Qt.Key_Return)
+    QTest.keyClick(widget._run_editor, Qt.Key_Enter)
+    assert widget._run_editor.document().blockCount() == 1
+
+
+def test_a_text_edit_is_selectable_and_movable_and_the_move_is_clamped_and_undoable():
+    model, widget = _text_widget()
+    el_id = model.add(_text_edit_element())
+    w, h = widget.width(), widget.height()
+    box = model.text_edit_box(model.elements[0])
+    body = QPoint(int((box["x"] + box["width"] / 2) * w), int((box["y"] + box["height"] / 2) * h))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, body)
+    QTest.mouseMove(widget, QPoint(body.x() + 30, body.y() + 20))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(body.x() + 30, body.y() + 20))
+    el = next(e for e in model.elements if e["id"] == el_id)
+    assert el["x"] == pytest.approx(box["x"] + 30 / w) and el["y"] == pytest.approx(box["y"] + 20 / h)
+    assert "width" not in el and "height" not in el
+    assert model.selected_id == el_id
+    model.undo()
+    assert "x" not in model.elements[0]  # back to un-moved
+
+    # drag far past the top-left: must clamp to the page, not leave it
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, body)
+    QTest.mouseMove(widget, QPoint(1, 1))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(1, 1))
+    el = model.elements[0]
+    assert 0 <= el["x"] <= 1 - box["width"] + 1e-9 and 0 <= el["y"] <= 1 - box["height"] + 1e-9
+
+
+def test_a_zero_movement_click_on_a_text_edit_pushes_no_undo_step():
+    model, widget = _text_widget()
+    model.add(_text_edit_element())
+    before = len(model._undo_stack)
+    box = model.text_edit_box(model.elements[0])
+    pt = QPoint(int((box["x"] + box["width"] / 2) * widget.width()), int((box["y"] + box["height"] / 2) * widget.height()))
+    QTest.mouseClick(widget, Qt.LeftButton, Qt.NoModifier, pt)
+    assert len(model._undo_stack) == before
+    assert "x" not in model.elements[0]
+
+
+def test_a_text_edit_dragged_against_its_own_clamp_does_not_pin_xy_without_a_move():
+    # a box already flush with the top-left corner: dragging further up-left
+    # changes nothing, so it must not add x/y or push an undo step
+    model, widget = _text_widget(runs=[_run(0, top=0.0, left=0.0, right=0.7, bottom=0.9)])
+    model.add(_text_edit_element())
+    before = len(model._undo_stack)
+    pt = QPoint(int(0.15 * widget.width()), int(0.05 * widget.height()))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, pt)
+    QTest.mouseMove(widget, QPoint(1, 1))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(1, 1))
+    assert "x" not in model.elements[0] and len(model._undo_stack) == before
+
+
+def test_a_text_edits_marker_click_removes_it_and_restores_the_original_run():
+    model, widget = _text_widget()
+    model.add(_text_edit_element())
+    model.select(model.elements[0]["id"])
+    marker = widget._marker_rect(model.elements[0])
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, marker.center())
+    assert model.elements == []
+
+
+def test_a_text_edit_paints_the_replacement_and_whites_out_the_original_run():
+    model, widget = _text_widget()
+    pm = QPixmap(400, 600)
+    pm.fill(Qt.black)  # a dark "page" so the white-out is unmistakable
+    widget.set_page_pixmap(pm)
+    run_box = model.find_run(1, 0)["bbox"]
+    model.add({"page": 1, "type": "text_edit", "run_index": 0,
+               "segments": [{"text": "", "family": "helvetica", "bold": False, "italic": False, "size": 14.0}]})
+    img = widget.grab().toImage()
+    cx = int(((run_box["left"] + (1 - run_box["right"])) / 2) * 400)
+    cy = int(((run_box["top"] + (1 - run_box["bottom"])) / 2) * 600)
+    assert img.pixelColor(cx, cy).lightness() > 200  # original run area painted white (erased)
+
+
+def test_text_edit_elements_paint_before_other_elements_like_the_export_applies_them():
+    model, widget = _text_widget()
+    pm = QPixmap(400, 600)
+    pm.fill(Qt.black)
+    widget.set_page_pixmap(pm)
+    run_box = model.find_run(1, 0)["bbox"]
+    # a filled red rectangle covering the run, added BEFORE the text_edit in the array
+    model.add({"page": 1, "type": "shape", "shape": "rectangle", "x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0,
+               "color": "#ff0000", "width": 1, "filled": True})
+    model.add({"page": 1, "type": "text_edit", "run_index": 0,
+               "segments": [{"text": "", "family": "helvetica", "bold": False, "italic": False, "size": 14.0}]})
+    model.select(None)
+    img = widget.grab().toImage()
+    cx = int(((run_box["left"] + (1 - run_box["right"])) / 2) * 400)
+    cy = int(((run_box["top"] + (1 - run_box["bottom"])) / 2) * 600)
+    c = img.pixelColor(cx, cy)
+    assert c.red() > 200 and c.green() < 60  # the shape is on top of the white-out, as in the export
+
+
+def test_a_run_with_a_pending_edit_still_opens_by_double_click_on_its_element():
+    model, widget = _text_widget()
+    model.add(_text_edit_element(text="Pending"))
+    box = model.text_edit_box(model.elements[0])
+    pt = QPoint(int((box["x"] + box["width"] / 2) * widget.width()), int((box["y"] + box["height"] / 2) * widget.height()))
+    QTest.mouseDClick(widget, Qt.LeftButton, Qt.NoModifier, pt)
+    assert widget._run_editor is not None and widget._run_editor.toPlainText() == "Pending"
+
+
+def test_run_edit_move_and_export_through_the_real_core(tmp_path):
+    from app.core.pdf_ops import edit_pdf, extract_text_runs, get_page_size
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "First line of text", fontname="helv", fontsize=14)
+    page.insert_text((72, 160), "Second line", fontname="helv", fontsize=12)
+    src = tmp_path / "in.pdf"
+    doc.save(str(src))
+    doc.close()
+
+    runs = extract_text_runs(str(src), 1)
+    w_pt, h_pt = get_page_size(str(src), 1)
+    model, widget = _text_widget(runs=runs)
+    widget.px_per_pt = 400 / w_pt
+
+    _dclick_run(widget, 0)
+    widget._run_editor.selectAll()
+    QTest.keyClicks(widget._run_editor, "Edited")
+    widget.commit_open_editors()
+
+    # drag it hard toward the top-left corner: must clamp, and must still export
+    box = model.text_edit_box(model.elements[0])
+    body = QPoint(int((box["x"] + box["width"] / 2) * widget.width()), int((box["y"] + box["height"] / 2) * widget.height()))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, body)
+    QTest.mouseMove(widget, QPoint(1, 1))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(1, 1))
+    el = model.elements[0]
+    assert 0 <= el["x"] <= 1 and 0 <= el["y"] <= 1
+
+    out = tmp_path / "out.pdf"
+    elements = [{k: v for k, v in e.items() if k != "id"} for e in model.elements]
+    edit_pdf(str(src), str(out), elements, {})
+    result = fitz.open(str(out))
+    text = result[0].get_text()
+    result.close()
+    assert "Edited" in text
+    assert "First line of text" not in text  # the original run was erased
+    assert "Second line" in text             # untouched runs survive

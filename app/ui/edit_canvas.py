@@ -1,8 +1,11 @@
 import math
 import uuid
 
-from PySide6.QtCore import QPoint, QRect, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QPolygon
+from PySide6.QtCore import QPoint, QRect, QRectF, Qt, Signal
+from PySide6.QtGui import (
+    QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QPolygon,
+    QTextCharFormat, QTextCursor, QTextDocument, QTextFormat,
+)
 from PySide6.QtWidgets import QTextEdit, QWidget
 
 from app.ui.widgets import box_to_insets, insets_to_box
@@ -26,6 +29,84 @@ def closest_base14_family(font_name) -> str:
     if "courier" in lowered or "mono" in lowered or "consolas" in lowered:
         return "courier"
     return "helvetica"
+
+
+_PDF_SIZE_PROP = QTextFormat.UserProperty + 1  # a segment's TRUE size in PDF points
+
+
+def _segment_format(segment: dict, px_per_pt: float) -> QTextCharFormat:
+    fmt = QTextCharFormat()
+    fmt.setFontFamilies([segment["family"]])
+    fmt.setFontWeight(QFont.Bold if segment["bold"] else QFont.Normal)
+    fmt.setFontItalic(segment["italic"])
+    # Display size in pixels (independent of screen DPI); the true PDF-point
+    # size rides along as a custom property so the round trip is exact.
+    fmt.setProperty(QTextFormat.FontPixelSize, max(1, round(segment["size"] * px_per_pt)))
+    fmt.setProperty(_PDF_SIZE_PROP, float(segment["size"]))
+    return fmt
+
+
+def build_segments_document(segments: list[dict], px_per_pt: float) -> QTextDocument:
+    """A QTextDocument holding `segments` in order - used both to seed the
+    editor and to paint a committed edit, so the two can never disagree."""
+    doc = QTextDocument()
+    doc.setDocumentMargin(0)
+    cursor = QTextCursor(doc)
+    for segment in segments:
+        cursor.insertText(segment["text"], _segment_format(segment, px_per_pt))
+    return doc
+
+
+def segments_from_document(doc: QTextDocument, default_style: dict) -> list[dict]:
+    """Walks the document block-by-block, fragment-by-fragment - each
+    QTextFragment is already a maximal run of uniform formatting, i.e. one
+    segment - merging any identical neighbours. Blocks (a run is a single
+    line, and the editor refuses Return, so this is defensive) are joined by
+    one space. An empty document is an intentional erase: one empty segment
+    in the run's own default style."""
+    segments: list[dict] = []
+
+    def push(text, style):
+        if segments and all(segments[-1][k] == style[k] for k in ("family", "bold", "italic", "size")):
+            segments[-1]["text"] += text
+        else:
+            segments.append({"text": text, **style})
+
+    block = doc.begin()
+    first = True
+    while block.isValid():
+        if not first and segments:
+            push(" ", {k: segments[-1][k] for k in ("family", "bold", "italic", "size")})
+        first = False
+        it = block.begin()
+        while not it.atEnd():
+            frag = it.fragment()
+            if frag.isValid():
+                fmt = frag.charFormat()
+                families = fmt.fontFamilies()
+                pdf_size = fmt.property(_PDF_SIZE_PROP)
+                push(frag.text(), {
+                    "family": families[0] if families else default_style["family"],
+                    "bold": fmt.fontWeight() >= QFont.Bold,
+                    "italic": fmt.fontItalic(),
+                    "size": float(pdf_size) if pdf_size else float(default_style["size"]),
+                })
+            it += 1
+        block = block.next()
+    if not segments or all(s["text"] == "" for s in segments):
+        return [{"text": "", **{k: default_style[k] for k in ("family", "bold", "italic", "size")}}]
+    return segments
+
+
+class _RunTextEdit(QTextEdit):
+    """The in-place run editor. A run is a single text span, so line breaks
+    are refused outright (verified: without this Return starts a second
+    block)."""
+
+    def keyPressEvent(self, e) -> None:
+        if e.key() in (Qt.Key_Return, Qt.Key_Enter):
+            return
+        super().keyPressEvent(e)
 
 
 class EditElementsModel:
@@ -346,6 +427,8 @@ class EditPageWidget(QWidget):
     creation mode is active - the mode only gates what an empty-space
     click does."""
 
+    run_editor_cursor_moved = Signal()  # the dialog's style row listens to keep itself in step
+
     def __init__(self, model, page_number: int, parent=None, on_image_click=None):
         super().__init__(parent)
         self.model = model
@@ -358,6 +441,9 @@ class EditPageWidget(QWidget):
         self.color = "#ff0000"
         self.width_preset = "medium"
         self.filled = False
+        self.px_per_pt = 1.0
+        self._run_editor: _RunTextEdit | None = None
+        self._editing_run: dict | None = None
         self._drag: dict | None = None
         self._create_drag: dict | None = None
         self._text_editor: QTextEdit | None = None
@@ -367,6 +453,9 @@ class EditPageWidget(QWidget):
     def set_page_pixmap(self, pixmap) -> None:
         self.page_pixmap = pixmap
         self.setFixedSize(pixmap.size())
+        info = self.model.page_info.get(self.page_number)
+        if info and info["width_pt"]:
+            self.px_per_pt = pixmap.width() / info["width_pt"]
         self.update()
 
     def _elements(self) -> list[dict]:
@@ -381,7 +470,12 @@ class EditPageWidget(QWidget):
 
     def _element_rect_px(self, el: dict) -> QRect:
         t = el.get("type")
-        if t == "shape":
+        if t == "text_edit":
+            box = self.model.text_edit_box(el)
+            if box is None:
+                return QRect()
+            x0, y0, x1, y1 = box["x"], box["y"], box["x"] + box["width"], box["y"] + box["height"]
+        elif t == "shape":
             x0, x1 = sorted((el["x0"], el["x1"]))
             y0, y1 = sorted((el["y0"], el["y1"]))
         elif t == "stroke":
@@ -448,6 +542,24 @@ class EditPageWidget(QWidget):
         font.setUnderline(el["underline"])
         return font
 
+    def _run_bbox_rect_px(self, run: dict) -> QRect:
+        b = run["bbox"]
+        x0, y0 = b["left"] * self.width(), b["top"] * self.height()
+        x1, y1 = (1 - b["right"]) * self.width(), (1 - b["bottom"]) * self.height()
+        return QRect(int(x0), int(y0), int(x1 - x0), int(y1 - y0))
+
+    def _run_at(self, pos) -> dict | None:
+        """The detected run under `pos`, topmost (last) first."""
+        for run in reversed(self.model.text_runs.get(self.page_number, [])):
+            if self._run_bbox_rect_px(run).contains(pos):
+                return run
+        return None
+
+    @staticmethod
+    def _run_default_style(run: dict) -> dict:
+        return {"family": closest_base14_family(run["font"]), "bold": run["bold"],
+                "italic": run["italic"], "size": float(run["size"])}
+
     def mousePressEvent(self, e) -> None:
         # Every gesture this widget understands is a LEFT-button one, and
         # this guard runs before anything else (including the text-editor
@@ -465,8 +577,7 @@ class EditPageWidget(QWidget):
         # draft is silently discarded and _text_editor never returns to
         # None - which would also leave EditPdfDialog._any_text_editor_open
         # stuck True, disabling every shortcut for the rest of the session.
-        if self._text_editor is not None:
-            self._commit_text_editor()
+        self.commit_open_editors()
         pos = e.position().toPoint()
         elements = self._elements()
         for i in reversed(range(len(elements))):
@@ -531,12 +642,25 @@ class EditPageWidget(QWidget):
         })
 
     def mouseDoubleClickEvent(self, e) -> None:
+        if e.button() != Qt.LeftButton:
+            return
         pos = e.position().toPoint()
         for el in reversed(self._elements()):
             if el["type"] == "new_text" and self._element_rect_px(el).contains(pos):
                 self._drag = None
                 self._open_text_editor_for_existing(el)
                 return
+            if el["type"] == "text_edit" and self.create_mode == "text" and self._element_rect_px(el).contains(pos):
+                run = self.model.find_run(self.page_number, el["run_index"])
+                if run is not None:
+                    self._drag = None
+                    self.open_run_editor(run)
+                return
+        if self.create_mode == "text":
+            run = self._run_at(pos)
+            if run is not None:
+                self._drag = None
+                self.open_run_editor(run)
 
     def _apply_drag(self, **changes) -> None:
         """Applies one intermediate position of the in-progress gesture,
@@ -581,7 +705,12 @@ class EditPageWidget(QWidget):
             # total delta (never incrementally), so re-clamping on every
             # intermediate move is stable: dragging past the edge and back
             # returns the element to where the cursor actually is.
-            self._apply_drag(**self.model.clamped_translate(sp, dx, dy))
+            changes = self.model.clamped_translate(sp, dx, dy)
+            if sp["type"] == "text_edit" and sp.get("x") is None:
+                box = self.model.text_edit_box(sp)
+                if box is not None and changes.get("x") == box["x"] and changes.get("y") == box["y"]:
+                    return  # clamped to exactly where it already is: no move
+            self._apply_drag(**changes)
         elif self._drag["mode"] == "resize-corner":
             if sp["type"] == "shape":
                 new_x1 = min(max(sp["x1"] + dx, 0), 1)
@@ -762,11 +891,151 @@ class EditPageWidget(QWidget):
             self.model.add(element)
         self._editing_element_id = None
 
+    def open_run_editor(self, run: dict) -> None:
+        """Opens the unified rich-text editor over a detected run, seeded from
+        the pending text_edit's segments if there is one, else from the run's
+        own text in the run's own default style."""
+        self.commit_open_editors()
+        pending = self.model.text_edit_for_run(self.page_number, run["index"])
+        default = self._run_default_style(run)
+        segments = pending["segments"] if pending else [{"text": run["text"], **default}]
+        editor = _RunTextEdit(self)
+        editor.setFrameShape(QTextEdit.NoFrame)
+        editor.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        editor.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        editor.setLineWrapMode(QTextEdit.NoWrap)
+        doc = build_segments_document(segments, self.px_per_pt)
+        doc.setParent(editor)  # QTextEdit does not own a parentless document; without this it can be collected mid-use
+        # Verified: after select-all + Delete, Qt drops the character format,
+        # so whatever is typed next is unformatted. The document's default font
+        # is what such text displays in - set it to the run's own default style
+        # (export already falls back to that same style for a format-less
+        # fragment, see segments_from_document).
+        default_font = QFont(default["family"])
+        default_font.setPixelSize(max(1, round(default["size"] * self.px_per_pt)))
+        default_font.setBold(default["bold"])
+        default_font.setItalic(default["italic"])
+        doc.setDefaultFont(default_font)
+        editor.setDocument(doc)
+        editor.setStyleSheet("QTextEdit { background: white; color: #1f2937; }")
+        # typing continues in the style of the last segment (or the run's default)
+        cursor = editor.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        editor.setTextCursor(cursor)
+        editor.setCurrentCharFormat(_segment_format(segments[-1] if segments else {**default, "text": ""}, self.px_per_pt))
+        rect = self._element_rect_px(pending) if pending else self._run_bbox_rect_px(run)
+        # never narrower than a usable input, never past the page's right edge
+        width = min(max(rect.width() + 8, 120), max(self.width() - rect.x(), 40))
+        editor.setGeometry(rect.x(), rect.y(), width, max(rect.height() + 6, 20))
+        editor.show()
+        editor.setFocus()
+        self._run_editor = editor
+        self._editing_run = {"run": run, "default": default}
+        editor.cursorPositionChanged.connect(self.run_editor_cursor_moved)
+        self.run_editor_cursor_moved.emit()
+        self.update()
+
+    def _commit_run_editor(self) -> None:
+        if self._run_editor is None:
+            return
+        editor, info = self._run_editor, self._editing_run
+        self._run_editor = None
+        self._editing_run = None
+        run = info["run"]
+        segments = segments_from_document(editor.document(), info["default"])
+        editor.deleteLater()
+        pending = self.model.text_edit_for_run(self.page_number, run["index"])
+        default = info["default"]
+        unchanged = (
+            len(segments) == 1 and segments[0]["text"] == run["text"]
+            and all(segments[0][k] == default[k] for k in ("family", "bold", "italic", "size"))
+        )
+        if pending is None and unchanged:
+            self.update()
+            return  # opened and closed without touching it: no element, no undo step
+        if pending is not None:
+            # commit() BEFORE update(): the snapshot must be the pre-edit
+            # state so undo really restores the previous segments.
+            self.model.commit()
+            self.model.update(pending["id"], segments=segments)
+        else:
+            self.model.add({"page": self.page_number, "type": "text_edit", "run_index": run["index"], "segments": segments})
+        self.update()
+
+    def commit_open_editors(self) -> None:
+        """Commits whichever editor is open (new_text or run). Safe to call
+        with none open."""
+        if self._text_editor is not None:
+            self._commit_text_editor()
+        if self._run_editor is not None:
+            self._commit_run_editor()
+
+    def apply_run_style(self, **patch) -> None:
+        """Applies family/bold/italic/size to the run editor's SELECTION, or -
+        with nothing selected - to the cursor's typing format, so the next
+        characters typed take the style. No-op with no run editor open."""
+        if self._run_editor is None:
+            return
+        fmt = QTextCharFormat()
+        if "family" in patch:
+            fmt.setFontFamilies([patch["family"]])
+        if "bold" in patch:
+            fmt.setFontWeight(QFont.Bold if patch["bold"] else QFont.Normal)
+        if "italic" in patch:
+            fmt.setFontItalic(patch["italic"])
+        if "size" in patch:
+            fmt.setProperty(QTextFormat.FontPixelSize, max(1, round(float(patch["size"]) * self.px_per_pt)))
+            fmt.setProperty(_PDF_SIZE_PROP, float(patch["size"]))
+        cursor = self._run_editor.textCursor()
+        if cursor.hasSelection():
+            cursor.mergeCharFormat(fmt)
+            self._run_editor.setTextCursor(cursor)
+        else:
+            self._run_editor.mergeCurrentCharFormat(fmt)
+        self._run_editor.setFocus()
+
+    def run_editor_state(self) -> dict | None:
+        """The style at the run editor's cursor (for the dialog's style row)."""
+        if self._run_editor is None:
+            return None
+        fmt = self._run_editor.currentCharFormat()
+        families = fmt.fontFamilies()
+        size = fmt.property(_PDF_SIZE_PROP)
+        default = self._editing_run["default"]
+        return {
+            "family": families[0] if families else default["family"],
+            "bold": fmt.fontWeight() >= QFont.Bold,
+            "italic": fmt.fontItalic(),
+            "size": float(size) if size else default["size"],
+        }
+
+    def revert_run_editor(self) -> None:
+        """Discards this run's pending text_edit (if any) and reseeds the
+        still-open editor from the run's own original text and style."""
+        if self._run_editor is None:
+            return
+        run, default = self._editing_run["run"], self._editing_run["default"]
+        pending = self.model.text_edit_for_run(self.page_number, run["index"])
+        if pending is not None:
+            self.model.remove(pending["id"])
+        doc = build_segments_document([{"text": run["text"], **default}], self.px_per_pt)
+        doc.setParent(self._run_editor)
+        self._run_editor.setDocument(doc)
+        self._run_editor.setCurrentCharFormat(_segment_format({**default, "text": ""}, self.px_per_pt))
+        self._run_editor.setFocus()
+        self.update()
+
     def paintEvent(self, e) -> None:
         painter = QPainter(self)
         if self.page_pixmap is not None:
             painter.drawPixmap(0, 0, self.page_pixmap)
         elements = self._elements()
+        # edit_pdf applies every text_edit FIRST and everything else after,
+        # in array order - paint in that same order so the preview layers
+        # the way the export will.
+        for el in elements:
+            if el["type"] == "text_edit":
+                self._paint_text_edit(painter, el)
         for el in elements:
             if el["type"] == "new_text":
                 self._paint_new_text(painter, el)
@@ -778,10 +1047,6 @@ class EditPageWidget(QWidget):
                 self._paint_stroke(painter, el)
             elif el["type"] == "highlight":
                 self._paint_highlight(painter, el)
-        # Selection chrome goes on top of EVERY element, in a second pass:
-        # painted inline with its own element instead, a later element -
-        # notably a highlight's 40%-alpha wash - would tint the marker and
-        # handles of an earlier, selected one and make them hard to read.
         for el in elements:
             self._paint_chrome(painter, el)
         self._paint_create_preview(painter)
@@ -794,6 +1059,23 @@ class EditPageWidget(QWidget):
         painter.setPen(QColor(el["color"]))
         align_flag = {"left": Qt.AlignLeft, "center": Qt.AlignHCenter, "right": Qt.AlignRight}[el["align"]]
         painter.drawText(rect, align_flag | Qt.AlignTop | Qt.TextWordWrap, el["text"])
+
+    def _paint_text_edit(self, painter: QPainter, el: dict) -> None:
+        run = self.model.find_run(el["page"], el["run_index"])
+        if run is None:
+            return
+        # the export redacts the ORIGINAL run with a white fill, wherever the
+        # replacement ends up - mirror that
+        painter.fillRect(self._run_bbox_rect_px(run), QColor("white"))
+        if self._editing_run is not None and self._editing_run["run"]["index"] == el["run_index"]:
+            return  # the live editor overlay is showing this run's text
+        rect = self._element_rect_px(el)
+        doc = build_segments_document(el["segments"], self.px_per_pt)
+        painter.save()
+        painter.translate(rect.x(), rect.y())
+        painter.setPen(QColor("#1f2937"))
+        doc.drawContents(painter, QRectF(0, 0, max(rect.width(), int(doc.idealWidth()) + 1), max(rect.height(), 1)))
+        painter.restore()
 
     def _paint_image(self, painter: QPainter, el: dict) -> None:
         pixmap = self.image_cache.get(el["file_id"])
