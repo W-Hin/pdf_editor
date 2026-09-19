@@ -2052,9 +2052,10 @@ def test_edit_page_widget_arrow_only_needs_one_axis_to_clear_the_threshold():
     widget.create_mode = "shape"
     widget.shape_type = "arrow"
     w, h = widget.width(), widget.height()
-    # a horizontal drag: dx is large, dy is a sub-threshold sliver
+    # A horizontal drag: dx is large, dy is a real but sub-threshold
+    # 2px wobble (2/600 = 0.0033, under _MIN_DRAG_FRACTION's 0.02).
     start = QPoint(int(w * 0.1), int(h * 0.5))
-    end = QPoint(int(w * 0.4), int(h * 0.5005))
+    end = QPoint(int(w * 0.4), int(h * 0.5) + 2)
     QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
     QTest.mouseMove(widget, end)
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
@@ -2069,8 +2070,11 @@ def test_edit_page_widget_arrow_with_both_axes_below_threshold_creates_nothing()
     widget.create_mode = "shape"
     widget.shape_type = "arrow"
     w, h = widget.width(), widget.height()
+    # The mouse really does move - 2px on each axis (0.005 of the width,
+    # 0.0033 of the height) - but neither axis reaches 0.02, so even an
+    # arrow (which needs only ONE axis) is discarded.
     start = QPoint(int(w * 0.5), int(h * 0.5))
-    end = QPoint(int(w * 0.501), int(h * 0.501))
+    end = QPoint(int(w * 0.5) + 2, int(h * 0.5) + 2)
     QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
     QTest.mouseMove(widget, end)
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
@@ -2207,10 +2211,11 @@ def test_edit_page_widget_stroke_click_with_one_axis_of_jitter_is_kept():
     widget.set_page_pixmap(QPixmap(400, 600))
     widget.create_mode = "stroke"
     w, h = widget.width(), widget.height()
-    # dx clears the threshold; dy is a sub-pixel sliver - kept per the
-    # web's own "discard only if BOTH axes are below threshold" rule.
+    # dx clears the threshold; dy is a real 2px wobble (0.0033 of the
+    # page) that does not - kept per the web's own "discard only if BOTH
+    # axes are below threshold" rule.
     start = QPoint(int(w * 0.1), int(h * 0.5))
-    end = QPoint(int(w * 0.3), int(h * 0.5005))
+    end = QPoint(int(w * 0.3), int(h * 0.5) + 2)
     QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
     QTest.mouseMove(widget, end)
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
@@ -2223,8 +2228,10 @@ def test_edit_page_widget_stroke_with_both_axes_of_jitter_creates_nothing():
     widget.set_page_pixmap(QPixmap(400, 600))
     widget.create_mode = "stroke"
     w, h = widget.width(), widget.height()
+    # Two real points 2px apart on each axis: the stroke clears the
+    # "at least 2 points" gate and is discarded purely on its extent.
     start = QPoint(int(w * 0.5), int(h * 0.5))
-    end = QPoint(int(w * 0.501), int(h * 0.501))
+    end = QPoint(int(w * 0.5) + 2, int(h * 0.5) + 2)
     QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
     QTest.mouseMove(widget, end)
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
@@ -2532,3 +2539,230 @@ def test_edit_pdf_dialog_mode_buttons_are_mutually_exclusive_across_all_five(tmp
     assert dlg.image_btn.isChecked() is False
     assert dlg.draw_btn.isChecked() is False
     assert dlg.shapes_btn.isChecked() is False
+
+
+def _single_page_pdf(tmp_path, name="input.pdf"):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    path = tmp_path / name
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+def _drag_body_past_top_left(widget, body):
+    """Grabs an element by `body` and drags it into the widget's top-left
+    corner - which, for an element created mid-page, is further than it can
+    legally travel, so the move MUST clamp rather than run off the page.
+    Deliberately (0, 1) and not (0, 0): QPoint(0, 0) is a NULL QPoint, and
+    QTest.mouseMove silently substitutes the widget's centre for one."""
+    corner = QPoint(0, 1)
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, body)
+    QTest.mouseMove(widget, corner)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, corner)
+
+
+def _assert_exports_cleanly(dlg, input_path):
+    """Runs the REAL export path the dialog's Run button uses. edit_pdf
+    validates every element and raises on the first bad coordinate, which
+    fails the export of the whole document - so this is what actually
+    catches an element dragged off the page."""
+    params = dlg.gather_params()
+    output_paths = dlg.run_operation([str(input_path)], params)
+    assert os.path.exists(output_paths[0])
+
+
+def test_edit_pdf_dialog_dragging_a_shape_off_the_page_clamps_and_still_exports(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    input_path = _single_page_pdf(tmp_path)
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    page1 = dlg._page_widgets[0]
+    w, h = page1.width(), page1.height()
+    el_id = dlg.model.add(_shape_element(page=1, x0=0.3, y0=0.3, x1=0.5, y1=0.45))
+
+    _drag_body_past_top_left(page1, QPoint(int(w * 0.4), int(h * 0.37)))
+
+    el = next(e for e in dlg.model.elements if e["id"] == el_id)
+    assert all(0 <= el[k] <= 1 for k in ("x0", "y0", "x1", "y1"))
+    assert el["x0"] == pytest.approx(0.0) and el["y0"] == pytest.approx(0.0)
+    assert el["x1"] - el["x0"] == pytest.approx(0.2)  # size preserved, not squashed
+    assert el["y1"] - el["y0"] == pytest.approx(0.15)
+    _assert_exports_cleanly(dlg, input_path)
+
+
+def test_edit_pdf_dialog_dragging_a_stroke_off_the_page_clamps_and_still_exports(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    input_path = _single_page_pdf(tmp_path)
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    page1 = dlg._page_widgets[0]
+    w, h = page1.width(), page1.height()
+    points = [{"x": 0.3, "y": 0.3}, {"x": 0.35, "y": 0.4}, {"x": 0.45, "y": 0.35}]
+    el_id = dlg.model.add(_stroke_element(page=1, points=points))
+
+    _drag_body_past_top_left(page1, QPoint(int(w * 0.36), int(h * 0.35)))
+
+    el = next(e for e in dlg.model.elements if e["id"] == el_id)
+    xs = [p["x"] for p in el["points"]]
+    ys = [p["y"] for p in el["points"]]
+    assert all(0 <= v <= 1 for v in xs + ys)
+    assert min(xs) == pytest.approx(0.0) and min(ys) == pytest.approx(0.0)
+    assert max(xs) - min(xs) == pytest.approx(0.15)  # whole stroke translated as one
+    assert max(ys) - min(ys) == pytest.approx(0.1)
+    _assert_exports_cleanly(dlg, input_path)
+
+
+def test_edit_pdf_dialog_dragging_a_highlight_off_the_page_clamps_and_still_exports(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    input_path = _single_page_pdf(tmp_path)
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    page1 = dlg._page_widgets[0]
+    w, h = page1.width(), page1.height()
+    el_id = dlg.model.add(_highlight_element(page=1, top=0.3, left=0.3, right=0.4, bottom=0.4))
+
+    _drag_body_past_top_left(page1, QPoint(int(w * 0.4), int(h * 0.4)))
+
+    el = next(e for e in dlg.model.elements if e["id"] == el_id)
+    assert all(0 <= el[k] < 1 for k in ("top", "right", "bottom", "left"))
+    assert el["left"] == pytest.approx(0.0) and el["top"] == pytest.approx(0.0)
+    # insets move in opposite directions, so the box keeps its size
+    assert 1 - el["left"] - el["right"] == pytest.approx(0.3)
+    assert 1 - el["top"] - el["bottom"] == pytest.approx(0.3)
+    _assert_exports_cleanly(dlg, input_path)
+
+
+def test_edit_page_widget_a_clamped_drag_that_changes_nothing_pushes_no_undo_step():
+    model = EditElementsModel()
+    el_id = model.add(_shape_element(x0=0.0, y0=0.0, x1=0.2, y1=0.2))  # already at the corner
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    w, h = widget.width(), widget.height()
+    _drag_body_past_top_left(widget, QPoint(int(w * 0.1), int(h * 0.1)))
+    el = next(e for e in model.elements if e["id"] == el_id)
+    assert el["x0"] == pytest.approx(0.0) and el["x1"] == pytest.approx(0.2)
+    # The drag clamped to a no-op, so undo must still reach past it to the
+    # element's own creation rather than popping a junk step.
+    model.undo()
+    assert model.elements == []
+
+
+def test_edit_page_widget_right_button_in_stroke_mode_creates_nothing():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "stroke"
+    w, h = widget.width(), widget.height()
+    start = QPoint(int(w * 0.2), int(h * 0.2))
+    end = QPoint(int(w * 0.5), int(h * 0.5))
+    QTest.mousePress(widget, Qt.RightButton, Qt.NoModifier, start)
+    QTest.mouseMove(widget, end)
+    QTest.mouseRelease(widget, Qt.RightButton, Qt.NoModifier, end)
+    assert widget._create_drag is None
+    assert model.elements == []
+
+
+def test_edit_page_widget_right_button_during_a_left_drag_keeps_the_stroke():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "stroke"
+    w, h = widget.width(), widget.height()
+    start = QPoint(int(w * 0.1), int(h * 0.1))
+    mid = QPoint(int(w * 0.2), int(h * 0.2))
+    end = QPoint(int(w * 0.4), int(h * 0.4))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(widget, mid)
+    # A stray right-click partway through: it must not re-arm the gesture
+    # at its own position, which used to discard everything drawn so far.
+    QTest.mousePress(widget, Qt.RightButton, Qt.NoModifier, QPoint(int(w * 0.9), int(h * 0.9)))
+    QTest.mouseRelease(widget, Qt.RightButton, Qt.NoModifier, QPoint(int(w * 0.9), int(h * 0.9)))
+    QTest.mouseMove(widget, end)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
+    assert len(model.elements) == 1
+    el = model.elements[0]
+    assert el["type"] == "stroke"
+    assert len(el["points"]) == 3  # start + both moves, none lost
+    assert el["points"][0]["x"] == pytest.approx(start.x() / w)
+
+
+def test_edit_pdf_dialog_draw_and_shape_widths_are_independent(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    input_path = _single_page_pdf(tmp_path)
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    page1 = dlg._page_widgets[0]
+
+    dlg._set_create_mode("shape")
+    dlg._set_width_preset("thick")
+    assert dlg.shape_width_combo.currentText() == "thick"
+    assert page1.width_preset == "thick"
+
+    dlg._set_create_mode("draw")
+    # The Draw combo must keep reading - and the pen must keep drawing at -
+    # its OWN width, not the one just picked in Shapes.
+    assert dlg.draw_width_combo.currentText() == "medium"
+    assert page1.width_preset == "medium"
+
+    w, h = page1.width(), page1.height()
+    start = QPoint(int(w * 0.1), int(h * 0.1))
+    end = QPoint(int(w * 0.3), int(h * 0.3))
+    QTest.mousePress(page1, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(page1, end)
+    QTest.mouseRelease(page1, Qt.LeftButton, Qt.NoModifier, end)
+    assert dlg.model.elements[0]["width"] == 3  # "medium", not the shape tool's 6
+
+
+def test_edit_pdf_dialog_highlight_colour_defaults_to_amber_and_stays_its_own(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    input_path = _single_page_pdf(tmp_path)
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    page1 = dlg._page_widgets[0]
+    w, h = page1.width(), page1.height()
+
+    dlg._set_create_mode("highlight")
+    assert page1.color == "#ffd43b"
+    QTest.mousePress(page1, Qt.LeftButton, Qt.NoModifier, QPoint(int(w * 0.2), int(h * 0.2)))
+    QTest.mouseMove(page1, QPoint(int(w * 0.5), int(h * 0.4)))
+    QTest.mouseRelease(page1, Qt.LeftButton, Qt.NoModifier, QPoint(int(w * 0.5), int(h * 0.4)))
+    assert dlg.model.elements[0]["color"] == "#ffd43b"
+
+    dlg._set_color("#00aa00")  # picked from the HIGHLIGHT row
+    assert dlg._tool_colors["highlight"] == "#00aa00"
+    assert dlg._tool_colors["shape"] == "#ff0000" and dlg._tool_colors["draw"] == "#ff0000"
+    selected = [c for c, btn in dlg._swatch_buttons["highlight"] if "3px" in btn.styleSheet()]
+    assert selected == ["#00aa00"]  # the row shows which swatch is active
+
+    dlg._set_create_mode("shape")
+    assert page1.color == "#ff0000"
+
+
+def test_edit_pdf_dialog_file_loaded_in_draw_mode_gives_pages_stroke_mode(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    dlg = EditPdfDialog()
+    dlg._set_create_mode("draw")
+    dlg._set_color("#0000ff")
+    dlg._set_width_preset("thin")
+
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "two_pages.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    dlg.on_files_changed([str(input_path)])
+    assert len(dlg._page_widgets) == 2
+    for widget in dlg._page_widgets:
+        # the toolbar says "draw"; the widget's own vocabulary is "stroke"
+        assert widget.create_mode == "stroke"
+        assert widget.color == "#0000ff"
+        assert widget.width_preset == "thin"

@@ -23,7 +23,7 @@ class EditElementsModel:
     clipboard slot spanning the whole document, matching the web app's own
     single flat `elements` array (never bucketed per page internally - each
     element dict carries its own "page" field). EditPageWidget instances
-    (Task 2) are thin views onto this shared model, one per page.
+    are thin views onto this shared model, one per page.
     """
 
     def __init__(self):
@@ -112,9 +112,9 @@ class EditElementsModel:
         """Per-type paste-offset math, mirroring the web app's own shift()
         helper: translate the WHOLE element by the same delta on each axis
         (never clamp each coordinate independently - that would distort a
-        near-edge element), clamped to [0, _PASTE_OFFSET] per axis. Phase
-        6B/6C add their own type branches here later; nothing below needs
-        revisiting when they do."""
+        near-edge element), clamped to [0, _PASTE_OFFSET] per axis. Unlike
+        _clamped_translate, the delta here is always down-and-right and is
+        capped by the room LEFT of the page's bottom-right corner only."""
         shifted = dict(el)
         if el["type"] in ("new_text", "image"):
             room_x = 1 - (el["x"] + el["width"])
@@ -200,6 +200,55 @@ class EditElementsModel:
             self.elements.insert(insert_at, el)
         self._notify()
 
+    def clamped_translate(self, el: dict, dx: float, dy: float) -> dict:
+        """Returns the coordinate changes that translate the WHOLE of `el`
+        by (dx, dy), with that delta first clamped per axis so no part of
+        the element can leave the page - mirroring the web app's own
+        moveElement(). `el` itself is never mutated.
+
+        THE single source of truth for move math, shared by nudge (a
+        keypress) and EditPageWidget's mouse-drag "move" branch, so a drag
+        stops at the page edge exactly like a nudge does. That matters
+        beyond cosmetics: QPainter silently clips at the widget edge, so
+        out-of-page coordinates look fine on screen but make edit_pdf's
+        _validate_shape/_validate_stroke/_validate_highlight reject the
+        export of the WHOLE document.
+
+        The delta - not each coordinate independently - is what gets
+        clamped: clamping coordinates one by one would squash a
+        part-way-off-page element instead of sliding it."""
+        el_type = el["type"]
+        if el_type == "shape":
+            x_min, x_max = min(el["x0"], el["x1"]), max(el["x0"], el["x1"])
+            y_min, y_max = min(el["y0"], el["y1"]), max(el["y0"], el["y1"])
+            clamped_dx = min(max(dx, -x_min), 1 - x_max)
+            clamped_dy = min(max(dy, -y_min), 1 - y_max)
+            return {
+                "x0": el["x0"] + clamped_dx, "x1": el["x1"] + clamped_dx,
+                "y0": el["y0"] + clamped_dy, "y1": el["y1"] + clamped_dy,
+            }
+        if el_type == "stroke":
+            xs = [p["x"] for p in el["points"]]
+            ys = [p["y"] for p in el["points"]]
+            clamped_dx = min(max(dx, -min(xs)), 1 - max(xs))
+            clamped_dy = min(max(dy, -min(ys)), 1 - max(ys))
+            return {"points": [{"x": p["x"] + clamped_dx, "y": p["y"] + clamped_dy} for p in el["points"]]}
+        if el_type == "highlight":
+            # The stored insets ARE the available room on each side, so
+            # they double as this type's own clamp bounds directly.
+            clamped_dx = min(max(dx, -el["left"]), el["right"])
+            clamped_dy = min(max(dy, -el["top"]), el["bottom"])
+            return {
+                "left": el["left"] + clamped_dx, "right": el["right"] - clamped_dx,
+                "top": el["top"] + clamped_dy, "bottom": el["bottom"] - clamped_dy,
+            }
+        # new_text / image: x,y is the top-left corner and width/height are
+        # stored, so the clamp can be expressed on the coordinates directly.
+        return {
+            "x": min(max(el["x"] + dx, 0), 1 - el["width"]),
+            "y": min(max(el["y"] + dy, 0), 1 - el["height"]),
+        }
+
     def nudge(self, element_id: str, dx: float, dy: float) -> None:
         """A discrete, deliberate action (one keypress = one small move) -
         unlike a mouse drag's many intermediate positions, each nudge call
@@ -208,33 +257,7 @@ class EditElementsModel:
         self.commit()
         for el in self.elements:
             if el["id"] == element_id:
-                if el["type"] in ("new_text", "image"):
-                    el["x"] = min(max(el["x"] + dx, 0), 1 - el["width"])
-                    el["y"] = min(max(el["y"] + dy, 0), 1 - el["height"])
-                elif el["type"] == "shape":
-                    x_min, x_max = min(el["x0"], el["x1"]), max(el["x0"], el["x1"])
-                    y_min, y_max = min(el["y0"], el["y1"]), max(el["y0"], el["y1"])
-                    clamped_dx = min(max(dx, -x_min), 1 - x_max)
-                    clamped_dy = min(max(dy, -y_min), 1 - y_max)
-                    el["x0"] += clamped_dx
-                    el["x1"] += clamped_dx
-                    el["y0"] += clamped_dy
-                    el["y1"] += clamped_dy
-                elif el["type"] == "stroke":
-                    xs = [p["x"] for p in el["points"]]
-                    ys = [p["y"] for p in el["points"]]
-                    x_min, x_max = min(xs), max(xs)
-                    y_min, y_max = min(ys), max(ys)
-                    clamped_dx = min(max(dx, -x_min), 1 - x_max)
-                    clamped_dy = min(max(dy, -y_min), 1 - y_max)
-                    el["points"] = [{"x": p["x"] + clamped_dx, "y": p["y"] + clamped_dy} for p in el["points"]]
-                elif el["type"] == "highlight":
-                    clamped_dx = min(max(dx, -el["left"]), el["right"])
-                    clamped_dy = min(max(dy, -el["top"]), el["bottom"])
-                    el["left"] += clamped_dx
-                    el["right"] -= clamped_dx
-                    el["top"] += clamped_dy
-                    el["bottom"] -= clamped_dy
+                el.update(self.clamped_translate(el, dx, dy))
                 break
         self._notify()
 
@@ -321,9 +344,12 @@ class EditPageWidget(QWidget):
         return QRect(rect.right() - size, rect.top(), size, size)
 
     def _resize_handles(self, el: dict) -> dict:
-        """One handle for new_text (free resize, bottom-right) and for
-        shape (drags x1,y1 directly - see mouseMoveEvent). Three for
-        image: a corner (aspect-locked uniform scale, matching
+        """One bottom-right handle for new_text (free resize), for shape
+        (drags x1,y1 directly - see mouseMoveEvent) and for highlight
+        (drags the right/bottom insets only, keeping left/top pinned).
+        None at all for stroke, whose freehand points have no meaningful
+        resize gesture. Three for image: a corner (aspect-locked uniform
+        scale, matching
         ImagePlacementWidget's existing formula exactly), plus independent
         width-only and height-only handles (mid-right / mid-bottom edges)
         that deliberately allow aspect distortion, matching the web app's
@@ -351,6 +377,15 @@ class EditPageWidget(QWidget):
         return font
 
     def mousePressEvent(self, e) -> None:
+        # Every gesture this widget understands is a LEFT-button one, and
+        # this guard runs before anything else (including the text-editor
+        # commit and all hit-testing) so a non-left button is inert: a
+        # right-click must not delete an element via its marker, must not
+        # start a drag-to-create, and - crucially - must not re-arm
+        # _create_drag partway through a freehand stroke, which silently
+        # threw away everything drawn so far.
+        if e.button() != Qt.LeftButton:
+            return
         # THE commit path for an open text draft in the real running app:
         # clicking anywhere else on the page finishes whatever is being
         # typed, before any hit-testing runs (so the click itself then
@@ -379,10 +414,14 @@ class EditPageWidget(QWidget):
             el = elements[i]
             hit_rect = self._element_rect_px(el)
             if el["type"] in ("shape", "stroke"):
-                # A horizontal/vertical line or arrow has a zero-height or
-                # zero-width bounding box, which QRect.contains() can never
-                # match for a real (integer-rounded) click point - inflate
-                # the hit target so thin shapes stay selectable/movable.
+                # EVERY shape and stroke bbox is inflated, by at least 6px
+                # on each side: the degenerate case is a horizontal/vertical
+                # line or arrow, whose zero-height/zero-width bbox
+                # QRect.contains() could never match for a real
+                # (integer-rounded) click point, but a thin diagonal line or
+                # freehand stroke is just as hard to hit exactly, so the
+                # margin is applied unconditionally (and grows with the
+                # stroke's own drawn width).
                 margin = max(6, el["width"])
                 hit_rect = hit_rect.adjusted(-margin, -margin, margin, margin)
             if hit_rect.contains(pos):
@@ -397,7 +436,10 @@ class EditPageWidget(QWidget):
             self._open_text_editor_for_new(point)
         elif self.create_mode == "image" and self.on_image_click is not None:
             self.on_image_click(point)
-        elif self.create_mode in ("shape", "stroke", "highlight"):
+        elif self.create_mode in ("shape", "stroke", "highlight") and self._create_drag is None:
+            # Never re-arm an already-running gesture: a second press
+            # arriving mid-drag would reset it to the new press position
+            # and discard the in-progress element.
             self._create_drag = {"start": point, "current": point, "points": [point]}
 
     def create_image_at(self, x: float, y: float, image_path: str) -> str:
@@ -463,16 +505,11 @@ class EditPageWidget(QWidget):
         dy = point[1] - self._drag["start"][1]
         sp = self._drag["start_element"]
         if self._drag["mode"] == "move":
-            if sp["type"] == "shape":
-                self._apply_drag(x0=sp["x0"] + dx, y0=sp["y0"] + dy, x1=sp["x1"] + dx, y1=sp["y1"] + dy)
-            elif sp["type"] == "stroke":
-                self._apply_drag(points=[{"x": p["x"] + dx, "y": p["y"] + dy} for p in sp["points"]])
-            elif sp["type"] == "highlight":
-                self._apply_drag(top=sp["top"] + dy, left=sp["left"] + dx, right=sp["right"] - dx, bottom=sp["bottom"] - dy)
-            else:
-                x = min(max(sp["x"] + dx, 0), 1 - sp["width"])
-                y = min(max(sp["y"] + dy, 0), 1 - sp["height"])
-                self._apply_drag(x=x, y=y)
+            # Always translated from the PRE-gesture snapshot by the drag's
+            # total delta (never incrementally), so re-clamping on every
+            # intermediate move is stable: dragging past the edge and back
+            # returns the element to where the cursor actually is.
+            self._apply_drag(**self.model.clamped_translate(sp, dx, dy))
         elif self._drag["mode"] == "resize-corner":
             if sp["type"] == "shape":
                 new_x1 = min(max(sp["x1"] + dx, 0), 1)
@@ -501,6 +538,11 @@ class EditPageWidget(QWidget):
             self._apply_drag(height=height)
 
     def mouseReleaseEvent(self, e) -> None:
+        # Mirrors mousePressEvent's left-button guard: only the button that
+        # can START a gesture may end one, so releasing a second button
+        # mid-stroke neither commits nor cancels what is being drawn.
+        if e.button() != Qt.LeftButton:
+            return
         if self._create_drag is not None:
             drag = self._create_drag
             self._create_drag = None
@@ -517,11 +559,12 @@ class EditPageWidget(QWidget):
     def _finish_create_drag(self, drag: dict) -> str | None:
         """Dispatches a completed drag-to-create gesture by self.create_mode
         into the appropriate new element, or discards it if it didn't clear
-        that type's own minimum-size/extent gate. Task 1 (shape) is the
-        only branch that exists yet; Tasks 2 (stroke) and 3 (highlight)
-        each add their own elif branch here - see this plan's Global
-        Constraints for each type's exact threshold rule, confirmed against
-        the web app's own EditPdfCanvas.jsx."""
+        that type's own minimum-size/extent gate. Each gate matches the web
+        app's own EditPdfCanvas.jsx rule for that type, and they genuinely
+        differ: a rectangle/ellipse or a highlight needs BOTH axes to clear
+        _MIN_DRAG_FRACTION, a line/arrow needs EITHER axis, and a freehand
+        stroke is discarded only when BOTH axes of its whole extent fall
+        below it (so a deliberate near-straight line survives)."""
         x0, y0 = drag["start"]
         x1, y1 = drag["current"]
         if self.create_mode == "shape":
@@ -651,7 +694,8 @@ class EditPageWidget(QWidget):
         painter = QPainter(self)
         if self.page_pixmap is not None:
             painter.drawPixmap(0, 0, self.page_pixmap)
-        for el in self._elements():
+        elements = self._elements()
+        for el in elements:
             if el["type"] == "new_text":
                 self._paint_new_text(painter, el)
             elif el["type"] == "image":
@@ -662,6 +706,11 @@ class EditPageWidget(QWidget):
                 self._paint_stroke(painter, el)
             elif el["type"] == "highlight":
                 self._paint_highlight(painter, el)
+        # Selection chrome goes on top of EVERY element, in a second pass:
+        # painted inline with its own element instead, a later element -
+        # notably a highlight's 40%-alpha wash - would tint the marker and
+        # handles of an earlier, selected one and make them hard to read.
+        for el in elements:
             self._paint_chrome(painter, el)
         self._paint_create_preview(painter)
 

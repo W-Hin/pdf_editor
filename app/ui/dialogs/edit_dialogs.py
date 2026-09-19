@@ -578,7 +578,30 @@ class EditPdfDialog(ToolDialog):
     title = "Edit PDF"
     dialog_size = (900, 800)
 
+    # Each markup tool owns its OWN colour (and, where it draws strokes, its
+    # own width), exactly like the web app's drawColor/shapeColor/
+    # highlightColor and drawWidth/shapeWidth: picking "thick" in Shapes must
+    # not silently change what Draw produces, and a highlight colour must not
+    # leak into the pen. EditPageWidget stays single-valued (one .color, one
+    # .width_preset); the dialog is what pushes the ACTIVE tool's values onto
+    # every page widget.
+    _TOOL_COLOR_DEFAULTS = {"draw": "#ff0000", "shape": "#ff0000", "highlight": "#ffd43b"}
+    _TOOL_WIDTH_DEFAULTS = {"draw": "medium", "shape": "medium"}
+    # The amber is the web's own default highlight colour, so it must be
+    # offer-able from the swatch row too, not just be the starting value.
+    _PALETTE = ["#000000", "#ff0000", "#0000ff", "#00aa00", "#ffff00", "#ffd43b"]
+
     def build_preview(self, container: QWidget) -> None:
+        # Toolbar state first: the swatch rows below render their selected
+        # state straight from it while they are being built.
+        self._page_widgets: list[EditPageWidget] = []
+        self._create_mode = "new_text"
+        self._shape_type = "rectangle"
+        self._filled = False
+        self._tool_colors = dict(self._TOOL_COLOR_DEFAULTS)
+        self._tool_widths = dict(self._TOOL_WIDTH_DEFAULTS)
+        self._swatch_buttons: dict[str, list[tuple[str, QPushButton]]] = {}
+
         layout = QVBoxLayout(container)
 
         mode_row = QHBoxLayout()
@@ -605,25 +628,13 @@ class EditPdfDialog(ToolDialog):
         mode_row.addWidget(self.highlight_btn)
         layout.addLayout(mode_row)
 
-        _PALETTE = ["#000000", "#ff0000", "#0000ff", "#00aa00", "#ffff00"]
-
-        def _make_swatch_row(on_pick):
-            row = QHBoxLayout()
-            for hex_color in _PALETTE:
-                btn = QPushButton()
-                btn.setFixedSize(20, 20)
-                btn.setStyleSheet(f"background-color: {hex_color}; border: 1px solid #888;")
-                btn.clicked.connect(lambda _, c=hex_color: on_pick(c))
-                row.addWidget(btn)
-            return row
-
         self._draw_options = QWidget()
         draw_row = QHBoxLayout(self._draw_options)
-        draw_row.addLayout(_make_swatch_row(self._set_color))
+        draw_row.addLayout(self._make_swatch_row("draw"))
         self.draw_width_combo = QComboBox()
         self.draw_width_combo.addItems(["thin", "medium", "thick"])
-        self.draw_width_combo.setCurrentText("medium")
-        self.draw_width_combo.currentTextChanged.connect(self._set_width_preset)
+        self.draw_width_combo.setCurrentText(self._tool_widths["draw"])
+        self.draw_width_combo.currentTextChanged.connect(lambda preset: self._set_tool_width("draw", preset))
         draw_row.addWidget(self.draw_width_combo)
         layout.addWidget(self._draw_options)
 
@@ -633,11 +644,11 @@ class EditPdfDialog(ToolDialog):
         self.shape_type_combo.addItems(["rectangle", "ellipse", "line", "arrow"])
         self.shape_type_combo.currentTextChanged.connect(self._set_shape_type)
         shapes_row.addWidget(self.shape_type_combo)
-        shapes_row.addLayout(_make_swatch_row(self._set_color))
+        shapes_row.addLayout(self._make_swatch_row("shape"))
         self.shape_width_combo = QComboBox()
         self.shape_width_combo.addItems(["thin", "medium", "thick"])
-        self.shape_width_combo.setCurrentText("medium")
-        self.shape_width_combo.currentTextChanged.connect(self._set_width_preset)
+        self.shape_width_combo.setCurrentText(self._tool_widths["shape"])
+        self.shape_width_combo.currentTextChanged.connect(lambda preset: self._set_tool_width("shape", preset))
         shapes_row.addWidget(self.shape_width_combo)
         self.filled_checkbox = QCheckBox("Filled")
         self.filled_checkbox.toggled.connect(self._set_filled)
@@ -646,8 +657,10 @@ class EditPdfDialog(ToolDialog):
 
         self._highlight_options = QWidget()
         highlight_row = QHBoxLayout(self._highlight_options)
-        highlight_row.addLayout(_make_swatch_row(self._set_color))
+        highlight_row.addLayout(self._make_swatch_row("highlight"))
         layout.addWidget(self._highlight_options)
+
+        self._width_combos = {"draw": self.draw_width_combo, "shape": self.shape_width_combo}
 
         self._draw_options.setVisible(False)
         self._shapes_options.setVisible(False)
@@ -689,13 +702,7 @@ class EditPdfDialog(ToolDialog):
         layout.addWidget(self._scroll)
 
         self.model = EditElementsModel()
-        self._page_widgets: list[EditPageWidget] = []
         self._input_path: str | None = None
-        self._create_mode = "new_text"
-        self._shape_type = "rectangle"
-        self._color = "#ff0000"
-        self._width_preset = "medium"
-        self._filled = False
 
         for keys, action in (
             ("Ctrl+Z", "undo"), ("Ctrl+Y", "redo"),
@@ -704,6 +711,57 @@ class EditPdfDialog(ToolDialog):
         ):
             shortcut = QShortcut(QKeySequence(keys), self)
             shortcut.activated.connect(lambda a=action: self._handle_shortcut(a))
+
+    def _make_swatch_row(self, tool: str) -> QHBoxLayout:
+        """Builds one tool's colour palette row. Each row writes to - and
+        shows its selected state from - only its OWN tool's colour."""
+        row = QHBoxLayout()
+        buttons: list[tuple[str, QPushButton]] = []
+        for hex_color in self._PALETTE:
+            btn = QPushButton()
+            btn.setFixedSize(20, 20)
+            btn.clicked.connect(lambda _, c=hex_color, t=tool: self._set_tool_color(t, c))
+            row.addWidget(btn)
+            buttons.append((hex_color, btn))
+        self._swatch_buttons[tool] = buttons
+        self._refresh_swatch_row(tool)
+        return row
+
+    def _refresh_swatch_row(self, tool: str) -> None:
+        """A swatch is a bare coloured square, so its BORDER is the only
+        place a selected state can show - without this the row gives no
+        feedback at all about which colour the tool is actually using."""
+        for hex_color, btn in self._swatch_buttons[tool]:
+            selected = hex_color == self._tool_colors[tool]
+            border = "3px solid #1971c2" if selected else "1px solid #888"
+            btn.setStyleSheet(f"background-color: {hex_color}; border: {border};")
+
+    def _widget_create_mode(self) -> str:
+        """"draw" is this toolbar's label for the stroke tool -
+        EditPageWidget's own create_mode value is "stroke" (matching the
+        element type name), not "draw". Both the mode-switch path and the
+        build-a-new-page path go through here so they can never disagree."""
+        return "stroke" if self._create_mode == "draw" else self._create_mode
+
+    def _active_style_tool(self) -> str | None:
+        """Which markup tool's colour/width the page widgets should carry
+        right now, or None in the two modes (new_text, image) that draw no
+        markup at all and so leave the widgets' values untouched."""
+        return self._create_mode if self._create_mode in self._tool_colors else None
+
+    def _apply_style_to(self, widget) -> None:
+        widget.shape_type = self._shape_type
+        widget.filled = self._filled
+        tool = self._active_style_tool()
+        if tool is None:
+            return
+        widget.color = self._tool_colors[tool]
+        if tool in self._tool_widths:  # the highlight tool has no width
+            widget.width_preset = self._tool_widths[tool]
+
+    def _push_style_to_widgets(self) -> None:
+        for widget in self._page_widgets:
+            self._apply_style_to(widget)
 
     def _set_create_mode(self, mode: str) -> None:
         self._create_mode = mode
@@ -715,30 +773,58 @@ class EditPdfDialog(ToolDialog):
         self._draw_options.setVisible(mode == "draw")
         self._shapes_options.setVisible(mode == "shape")
         self._highlight_options.setVisible(mode == "highlight")
-        # "draw" is this toolbar's label for the stroke tool - EditPageWidget's
-        # own create_mode value is "stroke" (matching the element type name),
-        # not "draw".
-        widget_mode = "stroke" if mode == "draw" else mode
+        widget_mode = self._widget_create_mode()
         for widget in self._page_widgets:
             widget.create_mode = widget_mode
+        # Switching tool is what swaps the newly-active tool's own colour
+        # and width onto the page widgets, which keep one value each.
+        self._push_style_to_widgets()
 
     def _set_shape_type(self, shape_type: str) -> None:
         self._shape_type = shape_type
+        if self.shape_type_combo.currentText() != shape_type:
+            self.shape_type_combo.blockSignals(True)
+            self.shape_type_combo.setCurrentText(shape_type)
+            self.shape_type_combo.blockSignals(False)
         for widget in self._page_widgets:
             widget.shape_type = shape_type
 
+    def _set_tool_color(self, tool: str, color: str) -> None:
+        self._tool_colors[tool] = color
+        self._refresh_swatch_row(tool)
+        if self._active_style_tool() == tool:
+            self._push_style_to_widgets()
+
+    def _set_tool_width(self, tool: str, preset: str) -> None:
+        self._tool_widths[tool] = preset
+        combo = self._width_combos[tool]
+        if combo.currentText() != preset:
+            combo.blockSignals(True)
+            combo.setCurrentText(preset)
+            combo.blockSignals(False)
+        if self._active_style_tool() == tool:
+            self._push_style_to_widgets()
+
     def _set_color(self, color: str) -> None:
-        self._color = color
-        for widget in self._page_widgets:
-            widget.color = color
+        """Sets the ACTIVE tool's colour (the tool is taken from the current
+        create mode rather than passed in, so the toolbar's own rows and any
+        caller that predates per-tool state mean the same thing). In a mode
+        with no markup tool of its own, the pen ("draw") is the sensible
+        target: it is what the next Draw click will use."""
+        self._set_tool_color(self._active_style_tool() or "draw", color)
 
     def _set_width_preset(self, preset: str) -> None:
-        self._width_preset = preset
-        for widget in self._page_widgets:
-            widget.width_preset = preset
+        """Sets the ACTIVE tool's stroke width - see _set_color. Highlight
+        has no width of its own, so it falls back to the pen too."""
+        tool = self._active_style_tool()
+        self._set_tool_width(tool if tool in self._tool_widths else "draw", preset)
 
     def _set_filled(self, filled: bool) -> None:
         self._filled = filled
+        if self.filled_checkbox.isChecked() != filled:
+            self.filled_checkbox.blockSignals(True)
+            self.filled_checkbox.setChecked(filled)
+            self.filled_checkbox.blockSignals(False)
         for widget in self._page_widgets:
             widget.filled = filled
 
@@ -833,15 +919,13 @@ class EditPdfDialog(ToolDialog):
             # The callback closes over the WIDGET itself rather than a page
             # number, so it can never index into the wrong page's widget.
             widget.on_image_click = lambda point, wgt=widget: self._prompt_for_image(wgt, point)
-            # A freshly built page must honour whichever toolbar mode is
-            # currently checked, not EditPageWidget's own "new_text"
-            # default - otherwise loading a file while "Insert Image" is
-            # selected silently reverts the new pages to text mode.
-            widget.create_mode = "stroke" if self._create_mode == "draw" else self._create_mode
-            widget.shape_type = self._shape_type
-            widget.color = self._color
-            widget.width_preset = self._width_preset
-            widget.filled = self._filled
+            # A freshly built page must honour whichever toolbar mode and
+            # tool settings are currently in force, not EditPageWidget's own
+            # "new_text"/red/medium defaults - otherwise loading a file while
+            # "Insert Image" is selected silently reverts the new pages to
+            # text mode.
+            widget.create_mode = self._widget_create_mode()
+            self._apply_style_to(widget)
             # addWidget (reparenting) BEFORE set_page_pixmap: keeps the
             # widget a real child of a shown container from the moment it
             # exists, rather than sitting unparented in between.
