@@ -2142,3 +2142,137 @@ def test_edit_page_widget_clicking_a_shapes_marker_removes_it():
     marker = widget._marker_rect(el)
     QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, marker.center())
     assert model.elements == []
+
+
+def _stroke_element(page=1, points=None, color="#00aa00", width=3):
+    return {"page": page, "type": "stroke", "points": points or [{"x": 0.1, "y": 0.1}, {"x": 0.3, "y": 0.2}], "color": color, "width": width}
+
+
+def test_edit_model_stroke_paste_offset_shifts_every_point_and_clamps_near_edge():
+    model = EditElementsModel()
+    el_id = model.add(_stroke_element(points=[{"x": 0.1, "y": 0.1}, {"x": 0.3, "y": 0.2}]))
+    model.select(el_id)
+    model.copy()
+    pasted_id = model.paste()
+    pasted = next(e for e in model.elements if e["id"] == pasted_id)
+    assert pasted["points"][0]["x"] == pytest.approx(0.13)
+    assert pasted["points"][1]["y"] == pytest.approx(0.23)
+
+    el_id2 = model.add(_stroke_element(points=[{"x": 0.9, "y": 0.1}, {"x": 0.99, "y": 0.2}]))
+    model.select(el_id2)
+    model.copy()
+    pasted_id2 = model.paste()
+    pasted2 = next(e for e in model.elements if e["id"] == pasted_id2)
+    # room_x = 1 - max(0.9, 0.99) = 0.01, clamped to 0.01
+    assert pasted2["points"][1]["x"] == pytest.approx(1.0)
+    assert pasted2["points"][0]["x"] == pytest.approx(0.91)
+
+
+def test_edit_model_stroke_nudge_shifts_every_point_and_clamps_at_the_page_edge():
+    model = EditElementsModel()
+    el_id = model.add(_stroke_element(points=[{"x": 0.9, "y": 0.3}, {"x": 0.98, "y": 0.4}]))
+    model.nudge(el_id, 0.5, 0.0)
+    el = next(e for e in model.elements if e["id"] == el_id)
+    assert el["points"][1]["x"] == pytest.approx(1.0)
+    assert el["points"][0]["x"] == pytest.approx(0.92)
+    model.undo()
+    reverted = next(e for e in model.elements if e["id"] == el_id)
+    assert reverted["points"][0]["x"] == pytest.approx(0.9)
+
+
+def test_edit_page_widget_freehand_drag_captures_every_move_as_a_point():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "stroke"
+    widget.color = "#123456"
+    widget.width_preset = "thin"
+    w, h = widget.width(), widget.height()
+    start = QPoint(int(w * 0.1), int(h * 0.1))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(widget, QPoint(int(w * 0.15), int(h * 0.15)))
+    QTest.mouseMove(widget, QPoint(int(w * 0.2), int(h * 0.2)))
+    end = QPoint(int(w * 0.3), int(h * 0.3))
+    QTest.mouseMove(widget, end)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
+    assert len(model.elements) == 1
+    el = model.elements[0]
+    assert el["type"] == "stroke" and len(el["points"]) == 4  # start + 2 moves + end
+    assert el["color"] == "#123456" and el["width"] == 1
+
+
+def test_edit_page_widget_stroke_click_with_one_axis_of_jitter_is_kept():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "stroke"
+    w, h = widget.width(), widget.height()
+    # dx clears the threshold; dy is a sub-pixel sliver - kept per the
+    # web's own "discard only if BOTH axes are below threshold" rule.
+    start = QPoint(int(w * 0.1), int(h * 0.5))
+    end = QPoint(int(w * 0.3), int(h * 0.5005))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(widget, end)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
+    assert len(model.elements) == 1
+
+
+def test_edit_page_widget_stroke_with_both_axes_of_jitter_creates_nothing():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "stroke"
+    w, h = widget.width(), widget.height()
+    start = QPoint(int(w * 0.5), int(h * 0.5))
+    end = QPoint(int(w * 0.501), int(h * 0.501))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(widget, end)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
+    assert model.elements == []
+
+
+def test_edit_page_widget_stroke_single_point_click_creates_nothing():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "stroke"
+    click = QPoint(40, 60)
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, click)
+    assert model.elements == []
+
+
+def test_edit_page_widget_stroke_has_no_resize_handle():
+    model = EditElementsModel()
+    el_id = model.add(_stroke_element())
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    el = next(e for e in model.elements if e["id"] == el_id)
+    assert widget._resize_handles(el) == {}
+
+
+def test_edit_page_widget_moving_a_stroke_shifts_every_point():
+    model = EditElementsModel()
+    el_id = model.add(_stroke_element(points=[{"x": 0.2, "y": 0.2}, {"x": 0.25, "y": 0.25}, {"x": 0.3, "y": 0.2}]))
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    w, h = widget.width(), widget.height()
+    body = QPoint(int(w * 0.25), int(h * 0.22))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, body)
+    QTest.mouseMove(widget, QPoint(body.x() + 8, body.y() + 4))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(body.x() + 8, body.y() + 4))
+    el = next(e for e in model.elements if e["id"] == el_id)
+    dx, dy = 8 / w, 4 / h
+    assert el["points"][0]["x"] == pytest.approx(0.2 + dx)
+    assert el["points"][2]["y"] == pytest.approx(0.2 + dy)
+
+
+def test_edit_page_widget_clicking_a_strokes_marker_removes_it():
+    model = EditElementsModel()
+    el_id = model.add(_stroke_element())
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    el = next(e for e in model.elements if e["id"] == el_id)
+    marker = widget._marker_rect(el)
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, marker.center())
+    assert model.elements == []

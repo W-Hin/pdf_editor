@@ -2,7 +2,7 @@ import math
 import uuid
 
 from PySide6.QtCore import QPoint, QRect, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap, QPolygon
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QPolygon
 from PySide6.QtWidgets import QTextEdit, QWidget
 
 _PASTE_OFFSET = 0.03
@@ -130,6 +130,14 @@ class EditElementsModel:
             shifted["x1"] = el["x1"] + dx
             shifted["y0"] = el["y0"] + dy
             shifted["y1"] = el["y1"] + dy
+        elif el["type"] == "stroke":
+            xs = [p["x"] for p in el["points"]]
+            ys = [p["y"] for p in el["points"]]
+            room_x = 1 - max(xs)
+            room_y = 1 - max(ys)
+            dx = min(max(room_x, 0), _PASTE_OFFSET)
+            dy = min(max(room_y, 0), _PASTE_OFFSET)
+            shifted["points"] = [{"x": p["x"] + dx, "y": p["y"] + dy} for p in el["points"]]
         return shifted
 
     def copy(self) -> None:
@@ -200,6 +208,14 @@ class EditElementsModel:
                     el["x1"] += clamped_dx
                     el["y0"] += clamped_dy
                     el["y1"] += clamped_dy
+                elif el["type"] == "stroke":
+                    xs = [p["x"] for p in el["points"]]
+                    ys = [p["y"] for p in el["points"]]
+                    x_min, x_max = min(xs), max(xs)
+                    y_min, y_max = min(ys), max(ys)
+                    clamped_dx = min(max(dx, -x_min), 1 - x_max)
+                    clamped_dy = min(max(dy, -y_min), 1 - y_max)
+                    el["points"] = [{"x": p["x"] + clamped_dx, "y": p["y"] + clamped_dy} for p in el["points"]]
                 break
         self._notify()
 
@@ -254,6 +270,10 @@ class EditPageWidget(QWidget):
         if t == "shape":
             x0, x1 = sorted((el["x0"], el["x1"]))
             y0, y1 = sorted((el["y0"], el["y1"]))
+        elif t == "stroke":
+            xs = [p["x"] for p in el["points"]]
+            ys = [p["y"] for p in el["points"]]
+            x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
         else:
             x0, y0 = el["x"], el["y"]
             x1, y1 = el["x"] + el["width"], el["y"] + el["height"]
@@ -336,7 +356,7 @@ class EditPageWidget(QWidget):
         for i in reversed(range(len(elements))):
             el = elements[i]
             hit_rect = self._element_rect_px(el)
-            if el["type"] == "shape":
+            if el["type"] in ("shape", "stroke"):
                 # A horizontal/vertical line or arrow has a zero-height or
                 # zero-width bounding box, which QRect.contains() can never
                 # match for a real (integer-rounded) click point - inflate
@@ -423,6 +443,8 @@ class EditPageWidget(QWidget):
         if self._drag["mode"] == "move":
             if sp["type"] == "shape":
                 self._apply_drag(x0=sp["x0"] + dx, y0=sp["y0"] + dy, x1=sp["x1"] + dx, y1=sp["y1"] + dy)
+            elif sp["type"] == "stroke":
+                self._apply_drag(points=[{"x": p["x"] + dx, "y": p["y"] + dy} for p in sp["points"]])
             else:
                 x = min(max(sp["x"] + dx, 0), 1 - sp["width"])
                 y = min(max(sp["y"] + dy, 0), 1 - sp["height"])
@@ -486,6 +508,19 @@ class EditPageWidget(QWidget):
                 "x0": x0, "y0": y0, "x1": x1, "y1": y1,
                 "color": self.color, "width": _WIDTH_PRESETS[self.width_preset], "filled": filled,
             })
+        elif self.create_mode == "stroke":
+            pts = drag["points"]
+            if len(pts) < 2:
+                return None
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            if (max(xs) - min(xs)) < _MIN_DRAG_FRACTION and (max(ys) - min(ys)) < _MIN_DRAG_FRACTION:
+                return None
+            return self.model.add({
+                "page": self.page_number, "type": "stroke",
+                "points": [{"x": x, "y": y} for x, y in pts],
+                "color": self.color, "width": _WIDTH_PRESETS[self.width_preset],
+            })
         return None
 
     def _paint_create_preview(self, painter: QPainter) -> None:
@@ -504,6 +539,9 @@ class EditPageWidget(QWidget):
                 "color": self.color, "width": _WIDTH_PRESETS[self.width_preset], "filled": filled,
             }
             self._paint_shape(painter, preview)
+        elif self.create_mode == "stroke":
+            preview = {"points": [{"x": x, "y": y} for x, y in self._create_drag["points"]], "color": self.color, "width": _WIDTH_PRESETS[self.width_preset]}
+            self._paint_stroke(painter, preview)
 
     def _open_text_editor_for_new(self, point: tuple[float, float]) -> None:
         width, height = 0.25, 0.08
@@ -578,6 +616,8 @@ class EditPageWidget(QWidget):
                 self._paint_image(painter, el)
             elif el["type"] == "shape":
                 self._paint_shape(painter, el)
+            elif el["type"] == "stroke":
+                self._paint_stroke(painter, el)
             self._paint_chrome(painter, el)
         self._paint_create_preview(painter)
 
@@ -615,6 +655,18 @@ class EditPageWidget(QWidget):
         else:  # arrow
             painter.setBrush(color)
             self._draw_arrow_head(painter, x0_px, y0_px, x1_px, y1_px, el["width"])
+
+    def _paint_stroke(self, painter: QPainter, el: dict) -> None:
+        points = el["points"]
+        if not points:
+            return
+        path = QPainterPath()
+        first = points[0]
+        path.moveTo(first["x"] * self.width(), first["y"] * self.height())
+        for p in points[1:]:
+            path.lineTo(p["x"] * self.width(), p["y"] * self.height())
+        painter.setPen(QPen(QColor(el["color"]), el["width"]))
+        painter.drawPath(path)
 
     def _draw_arrow_head(self, painter: QPainter, x0: float, y0: float, x1: float, y1: float, width: float) -> None:
         """Client-side port of _apply_shape's _draw_arrow (pdf_ops.py:693)
