@@ -5,6 +5,8 @@ from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QPolygon
 from PySide6.QtWidgets import QTextEdit, QWidget
 
+from app.ui.widgets import box_to_insets, insets_to_box
+
 _PASTE_OFFSET = 0.03
 _MARKER_SIZE = 14
 _HANDLE_SIZE = 14
@@ -138,6 +140,16 @@ class EditElementsModel:
             dx = min(max(room_x, 0), _PASTE_OFFSET)
             dy = min(max(room_y, 0), _PASTE_OFFSET)
             shifted["points"] = [{"x": p["x"] + dx, "y": p["y"] + dy} for p in el["points"]]
+        elif el["type"] == "highlight":
+            # The stored right/bottom insets ARE the remaining-room
+            # quantity directly - unlike every other type, no separate
+            # max-corner calculation is needed here at all.
+            dx = min(max(el["right"], 0), _PASTE_OFFSET)
+            dy = min(max(el["bottom"], 0), _PASTE_OFFSET)
+            shifted["left"] = el["left"] + dx
+            shifted["right"] = el["right"] - dx
+            shifted["top"] = el["top"] + dy
+            shifted["bottom"] = el["bottom"] - dy
         return shifted
 
     def copy(self) -> None:
@@ -216,6 +228,13 @@ class EditElementsModel:
                     clamped_dx = min(max(dx, -x_min), 1 - x_max)
                     clamped_dy = min(max(dy, -y_min), 1 - y_max)
                     el["points"] = [{"x": p["x"] + clamped_dx, "y": p["y"] + clamped_dy} for p in el["points"]]
+                elif el["type"] == "highlight":
+                    clamped_dx = min(max(dx, -el["left"]), el["right"])
+                    clamped_dy = min(max(dy, -el["top"]), el["bottom"])
+                    el["left"] += clamped_dx
+                    el["right"] -= clamped_dx
+                    el["top"] += clamped_dy
+                    el["bottom"] -= clamped_dy
                 break
         self._notify()
 
@@ -274,6 +293,9 @@ class EditPageWidget(QWidget):
             xs = [p["x"] for p in el["points"]]
             ys = [p["y"] for p in el["points"]]
             x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+        elif t == "highlight":
+            box = insets_to_box({"top": el["top"], "left": el["left"], "right": el["right"], "bottom": el["bottom"]})
+            x0, y0, x1, y1 = box["x0"], box["y0"], box["x1"], box["y1"]
         else:
             x0, y0 = el["x"], el["y"]
             x1, y1 = el["x"] + el["width"], el["y"] + el["height"]
@@ -309,7 +331,7 @@ class EditPageWidget(QWidget):
         keep_proportion=False trusts whatever box the editor produced)."""
         rect = self._element_rect_px(el)
         size = self._corner_size(rect)
-        if el["type"] in ("new_text", "shape"):
+        if el["type"] in ("new_text", "shape", "highlight"):
             return {"corner": QRect(rect.right() - size, rect.bottom() - size, size, size)}
         if el["type"] == "image":
             mid_x = rect.left() + rect.width() // 2
@@ -445,6 +467,8 @@ class EditPageWidget(QWidget):
                 self._apply_drag(x0=sp["x0"] + dx, y0=sp["y0"] + dy, x1=sp["x1"] + dx, y1=sp["y1"] + dy)
             elif sp["type"] == "stroke":
                 self._apply_drag(points=[{"x": p["x"] + dx, "y": p["y"] + dy} for p in sp["points"]])
+            elif sp["type"] == "highlight":
+                self._apply_drag(top=sp["top"] + dy, left=sp["left"] + dx, right=sp["right"] - dx, bottom=sp["bottom"] - dy)
             else:
                 x = min(max(sp["x"] + dx, 0), 1 - sp["width"])
                 y = min(max(sp["y"] + dy, 0), 1 - sp["height"])
@@ -454,6 +478,11 @@ class EditPageWidget(QWidget):
                 new_x1 = min(max(sp["x1"] + dx, 0), 1)
                 new_y1 = min(max(sp["y1"] + dy, 0), 1)
                 self._apply_drag(x1=new_x1, y1=new_y1)
+            elif sp["type"] == "highlight":
+                box = insets_to_box({"top": sp["top"], "left": sp["left"], "right": sp["right"], "bottom": sp["bottom"]})
+                new_x1 = min(max(box["x1"] + dx, box["x0"] + _MIN_DRAG_FRACTION), 1)
+                new_y1 = min(max(box["y1"] + dy, box["y0"] + _MIN_DRAG_FRACTION), 1)
+                self._apply_drag(right=1 - new_x1, bottom=1 - new_y1)
             elif sp["type"] == "image":
                 aspect = sp["height"] / sp["width"]
                 width_cap = min(1 - sp["x"], (1 - sp["y"]) / aspect)
@@ -521,6 +550,13 @@ class EditPageWidget(QWidget):
                 "points": [{"x": x, "y": y} for x, y in pts],
                 "color": self.color, "width": _WIDTH_PRESETS[self.width_preset],
             })
+        elif self.create_mode == "highlight":
+            sx0, sx1 = sorted((x0, x1))
+            sy0, sy1 = sorted((y0, y1))
+            if (sx1 - sx0) < _MIN_DRAG_FRACTION or (sy1 - sy0) < _MIN_DRAG_FRACTION:
+                return None
+            insets = box_to_insets({"x0": sx0, "y0": sy0, "x1": sx1, "y1": sy1})
+            return self.model.add({"page": self.page_number, "type": "highlight", "color": self.color, **insets})
         return None
 
     def _paint_create_preview(self, painter: QPainter) -> None:
@@ -542,6 +578,12 @@ class EditPageWidget(QWidget):
         elif self.create_mode == "stroke":
             preview = {"points": [{"x": x, "y": y} for x, y in self._create_drag["points"]], "color": self.color, "width": _WIDTH_PRESETS[self.width_preset]}
             self._paint_stroke(painter, preview)
+        elif self.create_mode == "highlight":
+            sx0, sx1 = sorted((self._create_drag["start"][0], self._create_drag["current"][0]))
+            sy0, sy1 = sorted((self._create_drag["start"][1], self._create_drag["current"][1]))
+            insets = box_to_insets({"x0": sx0, "y0": sy0, "x1": sx1, "y1": sy1})
+            preview = {"color": self.color, **insets}
+            self._paint_highlight(painter, preview)
 
     def _open_text_editor_for_new(self, point: tuple[float, float]) -> None:
         width, height = 0.25, 0.08
@@ -618,6 +660,8 @@ class EditPageWidget(QWidget):
                 self._paint_shape(painter, el)
             elif el["type"] == "stroke":
                 self._paint_stroke(painter, el)
+            elif el["type"] == "highlight":
+                self._paint_highlight(painter, el)
             self._paint_chrome(painter, el)
         self._paint_create_preview(painter)
 
@@ -667,6 +711,17 @@ class EditPageWidget(QWidget):
             path.lineTo(p["x"] * self.width(), p["y"] * self.height())
         painter.setPen(QPen(QColor(el["color"]), el["width"]))
         painter.drawPath(path)
+
+    def _paint_highlight(self, painter: QPainter, el: dict) -> None:
+        box = insets_to_box({"top": el["top"], "left": el["left"], "right": el["right"], "bottom": el["bottom"]})
+        rect = QRect(
+            int(box["x0"] * self.width()), int(box["y0"] * self.height()),
+            int((box["x1"] - box["x0"]) * self.width()), int((box["y1"] - box["y0"]) * self.height()),
+        )
+        color = QColor(el["color"])
+        color.setAlphaF(0.4)
+        painter.setPen(Qt.NoPen)
+        painter.fillRect(rect, color)
 
     def _draw_arrow_head(self, painter: QPainter, x0: float, y0: float, x1: float, y1: float, width: float) -> None:
         """Client-side port of _apply_shape's _draw_arrow (pdf_ops.py:693)

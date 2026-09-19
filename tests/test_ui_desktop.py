@@ -2276,3 +2276,121 @@ def test_edit_page_widget_clicking_a_strokes_marker_removes_it():
     marker = widget._marker_rect(el)
     QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, marker.center())
     assert model.elements == []
+
+
+def _highlight_element(page=1, top=0.2, left=0.2, right=0.5, bottom=0.5, color="#ffff00"):
+    return {"page": page, "type": "highlight", "top": top, "left": left, "right": right, "bottom": bottom, "color": color}
+
+
+def test_edit_model_highlight_paste_offset_uses_insets_directly_as_room():
+    model = EditElementsModel()
+    el_id = model.add(_highlight_element(top=0.2, left=0.2, right=0.5, bottom=0.5))
+    model.select(el_id)
+    model.copy()
+    pasted_id = model.paste()
+    pasted = next(e for e in model.elements if e["id"] == pasted_id)
+    assert pasted["left"] == pytest.approx(0.23) and pasted["right"] == pytest.approx(0.47)
+    assert pasted["top"] == pytest.approx(0.23) and pasted["bottom"] == pytest.approx(0.47)
+
+    el_id2 = model.add(_highlight_element(top=0.2, left=0.2, right=0.01, bottom=0.5))
+    model.select(el_id2)
+    model.copy()
+    pasted_id2 = model.paste()
+    pasted2 = next(e for e in model.elements if e["id"] == pasted_id2)
+    # right=0.01 IS the room (no separate max-corner calc needed for this type) - clamps to itself
+    assert pasted2["right"] == pytest.approx(0.0)
+    assert pasted2["left"] == pytest.approx(0.21)
+
+
+def test_edit_model_highlight_nudge_shifts_left_top_and_shrinks_right_bottom():
+    model = EditElementsModel()
+    el_id = model.add(_highlight_element(top=0.2, left=0.2, right=0.01, bottom=0.5))
+    model.nudge(el_id, 0.5, 0.0)  # far past the right edge
+    el = next(e for e in model.elements if e["id"] == el_id)
+    assert el["right"] == pytest.approx(0.0)
+    assert el["left"] == pytest.approx(0.21)
+    model.undo()
+    reverted = next(e for e in model.elements if e["id"] == el_id)
+    assert reverted["right"] == pytest.approx(0.01) and reverted["left"] == pytest.approx(0.2)
+
+
+def test_edit_page_widget_dragging_creates_a_highlight_with_sorted_insets():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "highlight"
+    widget.color = "#ff00ff"
+    w, h = widget.width(), widget.height()
+    # drag from bottom-right to top-left - insets must still sort correctly
+    start = QPoint(int(w * 0.6), int(h * 0.5))
+    end = QPoint(int(w * 0.3), int(h * 0.2))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(widget, end)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
+    assert len(model.elements) == 1
+    el = model.elements[0]
+    assert el["type"] == "highlight" and el["color"] == "#ff00ff"
+    assert el["left"] == pytest.approx(0.3) and el["top"] == pytest.approx(0.2)
+    assert el["right"] == pytest.approx(1 - 0.6) and el["bottom"] == pytest.approx(1 - 0.5)
+
+
+def test_edit_page_widget_below_threshold_highlight_drag_creates_nothing():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.create_mode = "highlight"
+    w, h = widget.width(), widget.height()
+    start = QPoint(int(w * 0.2), int(h * 0.2))
+    end = QPoint(int(w * 0.205), int(h * 0.4))  # dx below threshold even though dy clears it
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(widget, end)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
+    assert model.elements == []
+
+
+def test_edit_page_widget_highlight_resize_only_changes_right_and_bottom():
+    model = EditElementsModel()
+    el_id = model.add(_highlight_element(top=0.2, left=0.2, right=0.5, bottom=0.5))
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    el = next(e for e in model.elements if e["id"] == el_id)
+    handle = widget._resize_handles(el)["corner"]
+    center = handle.center()
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, center)
+    QTest.mouseMove(widget, QPoint(center.x() + 15, center.y() + 15))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(center.x() + 15, center.y() + 15))
+    el = next(e for e in model.elements if e["id"] == el_id)
+    assert el["top"] == 0.2 and el["left"] == 0.2  # untouched
+    assert el["right"] < 0.5 and el["bottom"] < 0.5  # box grew -> insets shrank
+    model.undo()
+    reverted = next(e for e in model.elements if e["id"] == el_id)
+    assert reverted["right"] == 0.5 and reverted["bottom"] == 0.5
+
+
+def test_edit_page_widget_moving_a_highlight_shifts_left_top_up_and_right_bottom_down():
+    model = EditElementsModel()
+    el_id = model.add(_highlight_element(top=0.3, left=0.3, right=0.4, bottom=0.4))
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    w, h = widget.width(), widget.height()
+    body = QPoint(int(w * 0.35), int(h * 0.35))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, body)
+    QTest.mouseMove(widget, QPoint(body.x() + 12, body.y() + 6))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(body.x() + 12, body.y() + 6))
+    el = next(e for e in model.elements if e["id"] == el_id)
+    dx, dy = 12 / w, 6 / h
+    # Moving right/down must INCREASE left/top and DECREASE right/bottom -
+    # a sign error here was caught during this plan's own verification.
+    assert el["left"] == pytest.approx(0.3 + dx) and el["top"] == pytest.approx(0.3 + dy)
+    assert el["right"] == pytest.approx(0.4 - dx) and el["bottom"] == pytest.approx(0.4 - dy)
+
+
+def test_edit_page_widget_clicking_a_highlights_marker_removes_it():
+    model = EditElementsModel()
+    el_id = model.add(_highlight_element())
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    el = next(e for e in model.elements if e["id"] == el_id)
+    marker = widget._marker_rect(el)
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, marker.center())
+    assert model.elements == []
