@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap, QShortcut, QKeySequence
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea, QTextEdit, QSpinBox
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea, QTextEdit, QSpinBox, QCheckBox
 
 from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, edit_pdf, extract_form_fields, fill_form
 from app.core.compare_pdf import extract_page_texts, diff_page_text, render_page_image, diff_page_visual
@@ -591,7 +591,67 @@ class EditPdfDialog(ToolDialog):
         self.image_btn.setCheckable(True)
         self.image_btn.clicked.connect(lambda: self._set_create_mode("image"))
         mode_row.addWidget(self.image_btn)
+        self.draw_btn = QPushButton("Draw")
+        self.draw_btn.setCheckable(True)
+        self.draw_btn.clicked.connect(lambda: self._set_create_mode("draw"))
+        mode_row.addWidget(self.draw_btn)
+        self.shapes_btn = QPushButton("Shapes")
+        self.shapes_btn.setCheckable(True)
+        self.shapes_btn.clicked.connect(lambda: self._set_create_mode("shape"))
+        mode_row.addWidget(self.shapes_btn)
+        self.highlight_btn = QPushButton("Highlight")
+        self.highlight_btn.setCheckable(True)
+        self.highlight_btn.clicked.connect(lambda: self._set_create_mode("highlight"))
+        mode_row.addWidget(self.highlight_btn)
         layout.addLayout(mode_row)
+
+        _PALETTE = ["#000000", "#ff0000", "#0000ff", "#00aa00", "#ffff00"]
+
+        def _make_swatch_row(on_pick):
+            row = QHBoxLayout()
+            for hex_color in _PALETTE:
+                btn = QPushButton()
+                btn.setFixedSize(20, 20)
+                btn.setStyleSheet(f"background-color: {hex_color}; border: 1px solid #888;")
+                btn.clicked.connect(lambda _, c=hex_color: on_pick(c))
+                row.addWidget(btn)
+            return row
+
+        self._draw_options = QWidget()
+        draw_row = QHBoxLayout(self._draw_options)
+        draw_row.addLayout(_make_swatch_row(self._set_color))
+        self.draw_width_combo = QComboBox()
+        self.draw_width_combo.addItems(["thin", "medium", "thick"])
+        self.draw_width_combo.setCurrentText("medium")
+        self.draw_width_combo.currentTextChanged.connect(self._set_width_preset)
+        draw_row.addWidget(self.draw_width_combo)
+        layout.addWidget(self._draw_options)
+
+        self._shapes_options = QWidget()
+        shapes_row = QHBoxLayout(self._shapes_options)
+        self.shape_type_combo = QComboBox()
+        self.shape_type_combo.addItems(["rectangle", "ellipse", "line", "arrow"])
+        self.shape_type_combo.currentTextChanged.connect(self._set_shape_type)
+        shapes_row.addWidget(self.shape_type_combo)
+        shapes_row.addLayout(_make_swatch_row(self._set_color))
+        self.shape_width_combo = QComboBox()
+        self.shape_width_combo.addItems(["thin", "medium", "thick"])
+        self.shape_width_combo.setCurrentText("medium")
+        self.shape_width_combo.currentTextChanged.connect(self._set_width_preset)
+        shapes_row.addWidget(self.shape_width_combo)
+        self.filled_checkbox = QCheckBox("Filled")
+        self.filled_checkbox.toggled.connect(self._set_filled)
+        shapes_row.addWidget(self.filled_checkbox)
+        layout.addWidget(self._shapes_options)
+
+        self._highlight_options = QWidget()
+        highlight_row = QHBoxLayout(self._highlight_options)
+        highlight_row.addLayout(_make_swatch_row(self._set_color))
+        layout.addWidget(self._highlight_options)
+
+        self._draw_options.setVisible(False)
+        self._shapes_options.setVisible(False)
+        self._highlight_options.setVisible(False)
 
         action_row = QHBoxLayout()
         undo_btn = QPushButton("Undo")
@@ -632,6 +692,10 @@ class EditPdfDialog(ToolDialog):
         self._page_widgets: list[EditPageWidget] = []
         self._input_path: str | None = None
         self._create_mode = "new_text"
+        self._shape_type = "rectangle"
+        self._color = "#ff0000"
+        self._width_preset = "medium"
+        self._filled = False
 
         for keys, action in (
             ("Ctrl+Z", "undo"), ("Ctrl+Y", "redo"),
@@ -645,8 +709,38 @@ class EditPdfDialog(ToolDialog):
         self._create_mode = mode
         self.new_text_btn.setChecked(mode == "new_text")
         self.image_btn.setChecked(mode == "image")
+        self.draw_btn.setChecked(mode == "draw")
+        self.shapes_btn.setChecked(mode == "shape")
+        self.highlight_btn.setChecked(mode == "highlight")
+        self._draw_options.setVisible(mode == "draw")
+        self._shapes_options.setVisible(mode == "shape")
+        self._highlight_options.setVisible(mode == "highlight")
+        # "draw" is this toolbar's label for the stroke tool - EditPageWidget's
+        # own create_mode value is "stroke" (matching the element type name),
+        # not "draw".
+        widget_mode = "stroke" if mode == "draw" else mode
         for widget in self._page_widgets:
-            widget.create_mode = mode
+            widget.create_mode = widget_mode
+
+    def _set_shape_type(self, shape_type: str) -> None:
+        self._shape_type = shape_type
+        for widget in self._page_widgets:
+            widget.shape_type = shape_type
+
+    def _set_color(self, color: str) -> None:
+        self._color = color
+        for widget in self._page_widgets:
+            widget.color = color
+
+    def _set_width_preset(self, preset: str) -> None:
+        self._width_preset = preset
+        for widget in self._page_widgets:
+            widget.width_preset = preset
+
+    def _set_filled(self, filled: bool) -> None:
+        self._filled = filled
+        for widget in self._page_widgets:
+            widget.filled = filled
 
     def _prompt_for_image(self, widget, point: tuple[float, float]) -> None:
         # Takes the page WIDGET, not a page number: self._page_widgets is
@@ -743,7 +837,11 @@ class EditPdfDialog(ToolDialog):
             # currently checked, not EditPageWidget's own "new_text"
             # default - otherwise loading a file while "Insert Image" is
             # selected silently reverts the new pages to text mode.
-            widget.create_mode = self._create_mode
+            widget.create_mode = "stroke" if self._create_mode == "draw" else self._create_mode
+            widget.shape_type = self._shape_type
+            widget.color = self._color
+            widget.width_preset = self._width_preset
+            widget.filled = self._filled
             # addWidget (reparenting) BEFORE set_page_pixmap: keeps the
             # widget a real child of a shown container from the moment it
             # exists, rather than sitting unparented in between.

@@ -2394,3 +2394,141 @@ def test_edit_page_widget_clicking_a_highlights_marker_removes_it():
     marker = widget._marker_rect(el)
     QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, marker.center())
     assert model.elements == []
+
+
+def test_edit_pdf_dialog_shape_mode_places_a_shape_and_exports_it(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    page1 = dlg._page_widgets[0]
+
+    dlg._set_create_mode("shape")
+    dlg._set_shape_type("ellipse")
+    dlg._set_color("#00ff00")
+    dlg._set_width_preset("thick")
+    dlg._set_filled(True)
+    assert page1.create_mode == "shape"
+    assert page1.shape_type == "ellipse"
+    assert page1.color == "#00ff00"
+    assert page1.width_preset == "thick"
+    assert page1.filled is True
+
+    w, h = page1.width(), page1.height()
+    start = QPoint(int(w * 0.2), int(h * 0.2))
+    end = QPoint(int(w * 0.5), int(h * 0.4))
+    QTest.mousePress(page1, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(page1, end)
+    QTest.mouseRelease(page1, Qt.LeftButton, Qt.NoModifier, end)
+    assert len(dlg.model.elements) == 1
+    assert dlg.model.elements[0]["shape"] == "ellipse" and dlg.model.elements[0]["width"] == 6
+
+    params = dlg.gather_params()
+    output_paths = dlg.run_operation([str(input_path)], params)
+    result = fitz.open(output_paths[0])
+    result_pix = result[0].get_pixmap()
+    result.close()
+    control = fitz.open(str(input_path))
+    control_pix = control[0].get_pixmap()
+    control.close()
+    assert result_pix.samples != control_pix.samples
+
+
+def test_edit_pdf_dialog_draw_and_highlight_modes_place_and_export_both(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    page1 = dlg._page_widgets[0]
+    w, h = page1.width(), page1.height()
+
+    dlg._set_create_mode("draw")
+    start = QPoint(int(w * 0.1), int(h * 0.1))
+    QTest.mousePress(page1, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(page1, QPoint(int(w * 0.2), int(h * 0.2)))
+    end = QPoint(int(w * 0.3), int(h * 0.3))
+    QTest.mouseMove(page1, end)
+    QTest.mouseRelease(page1, Qt.LeftButton, Qt.NoModifier, end)
+
+    dlg._set_create_mode("highlight")
+    start2 = QPoint(int(w * 0.5), int(h * 0.5))
+    end2 = QPoint(int(w * 0.7), int(h * 0.6))
+    QTest.mousePress(page1, Qt.LeftButton, Qt.NoModifier, start2)
+    QTest.mouseMove(page1, end2)
+    QTest.mouseRelease(page1, Qt.LeftButton, Qt.NoModifier, end2)
+
+    assert len(dlg.model.elements) == 2
+    types = {el["type"] for el in dlg.model.elements}
+    assert types == {"stroke", "highlight"}
+
+    params = dlg.gather_params()
+    output_paths = dlg.run_operation([str(input_path)], params)
+    result = fitz.open(output_paths[0])
+    result_pix = result[0].get_pixmap()
+    result.close()
+    control = fitz.open(str(input_path))
+    control_pix = control[0].get_pixmap()
+    control.close()
+    assert result_pix.samples != control_pix.samples
+
+
+def test_edit_pdf_dialog_new_pages_inherit_the_current_shape_style(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path_a = tmp_path / "input_a.pdf"
+    doc.save(str(input_path_a))
+    doc.close()
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path_a)])
+    dlg._set_create_mode("shape")
+    dlg._set_shape_type("line")
+    dlg._set_color("#abcdef")
+    dlg._set_width_preset("thin")
+
+    doc2 = fitz.open()
+    doc2.new_page(width=595, height=842)
+    doc2.new_page(width=595, height=842)
+    input_path_b = tmp_path / "input_b.pdf"
+    doc2.save(str(input_path_b))
+    doc2.close()
+
+    dlg.on_files_changed([str(input_path_b)])
+    for widget in dlg._page_widgets:
+        assert widget.create_mode == "shape"
+        assert widget.shape_type == "line"
+        assert widget.color == "#abcdef"
+        assert widget.width_preset == "thin"
+
+
+def test_edit_pdf_dialog_mode_buttons_are_mutually_exclusive_across_all_five(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    dlg._set_create_mode("highlight")
+    assert dlg.highlight_btn.isChecked() is True
+    assert dlg.new_text_btn.isChecked() is False
+    assert dlg.image_btn.isChecked() is False
+    assert dlg.draw_btn.isChecked() is False
+    assert dlg.shapes_btn.isChecked() is False
