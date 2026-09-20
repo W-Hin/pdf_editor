@@ -5,6 +5,24 @@ All notable changes to PDF Editor. The **web app** is what the Windows installer
 run from source. Both share the same PDF engine in `app/core/`, so a change to the
 engine lands in both.
 
+## 0.15.1 — 2026-09-20
+
+The first release actually published since 0.4.0: the release build had been failing
+on every tag from 0.5.0 to 0.15.0 (see below), so those versions were tagged but never
+built or published. This release carries everything from 0.5.0 through 0.15.0 plus:
+
+- **Fixed (web and desktop):** PDF to Markdown wrote absolute image paths (pointing into
+  a deleted temp folder) into the Markdown on Windows accounts whose username is longer
+  than 8 characters. The images in the zip are now always linked by bare filename. This
+  was also the one test that failed on the release machine and stopped every build.
+- **Fixed (Edit PDF):** editing a text run with a replacement wider than the original now
+  shows at the size the export will draw it (it shrinks to fit, never below half size).
+  The export also gives a clear error, instead of a crash, for malformed text-edit data.
+- **Fixed (desktop Edit PDF):** only the selected element's delete button and resize
+  handles can be clicked (invisible ones used to sit on every element, so a click meant
+  to select could delete or resize), and line widths, arrowheads and new-text sizes on
+  screen now match the page scale of the exported PDF.
+
 ## 0.15.0 — 2026-09-20 (desktop)
 
 The desktop Edit PDF dialog can now **edit existing text in place**, completing the
