@@ -8,7 +8,9 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QTextEdit, QWidget
 
-from app.core.edit_geometry import clamp_move, element_bounds, polyline_near_point, union_bounds
+from app.core.edit_geometry import (
+    clamp_move, element_bounds, polyline_near_point, rect_from_points, rects_intersect, union_bounds,
+)
 from app.core.pdf_ops import text_edit_final_sizes
 from app.ui.widgets import box_to_insets, insets_to_box
 
@@ -25,6 +27,8 @@ _MARKER_WIDTHS = {"thin": 8, "medium": 14, "thick": 24}
 _MARKER_OPACITY = 0.4
 # How close (screen px, beyond a stroke's own half-width) the eraser must pass.
 _ERASER_RADIUS_PX = 8
+# A marquee smaller than this (page fraction, both axes) is a plain click.
+_MIN_MARQUEE_FRACTION = 0.005
 
 
 def closest_base14_family(font_name) -> str:
@@ -254,6 +258,13 @@ class EditElementsModel:
             return {}
         dx, dy = clamp_move(bounds, dx, dy)
         return {m["id"]: self.clamped_translate(m, dx, dy) for m in members}
+
+    def group_changes(self, ids: list[str], dx: float, dy: float, base: list[dict] | None = None) -> dict[str, dict]:
+        """What translate_group WOULD change ({id: coordinate changes}), so a
+        caller can tell a real move from one clamped to nothing."""
+        source = base if base is not None else self.elements
+        members = [e for e in source if e["id"] in ids and self.element_bounds_for(e) is not None]
+        return self._group_changes(members, dx, dy)
 
     def translate_group(self, ids: list[str], dx: float, dy: float, base: list[dict] | None = None) -> None:
         """Live-moves the listed elements by (dx, dy) from their `base` positions
@@ -553,6 +564,9 @@ class EditPageWidget(QWidget):
         self.marker_width_preset = "medium"
         # While the eraser button is held: {"last": point | None, "ids": set}.
         self._erase: dict | None = None
+        # Select tool: a marquee being dragged on empty space, and a group move.
+        self._marquee: dict | None = None
+        self._group_drag: dict | None = None
         self._run_editor: _RunTextEdit | None = None
         self._editing_run: dict | None = None
         self._drag: dict | None = None
@@ -709,6 +723,16 @@ class EditPageWidget(QWidget):
             elif self._create_drag is None:
                 self._create_drag = {"start": point, "current": point, "points": [point]}
             return
+        if self.create_mode == "select" and self.model.selected_ids:
+            group = self._group_rect_px()
+            if group is not None and group.contains(pos):
+                self._group_drag = {
+                    "start": self._point_from_pos(pos),
+                    "ids": list(self.model.selected_ids),
+                    "base": [dict(e) for e in self.model.elements],
+                    "committed": False,
+                }
+                return
         for i in reversed(range(len(elements))):
             el = elements[i]
             # The marker is only DRAWN for the selected element (every type),
@@ -756,7 +780,11 @@ class EditPageWidget(QWidget):
         point = self._point_from_pos(pos)
         if point is None:
             return
-        if self.create_mode == "new_text":
+        if self.create_mode == "select":
+            self.model.clear_selection()
+            self._marquee = {"start": point, "current": point}
+            self.update()
+        elif self.create_mode == "new_text":
             self._open_text_editor_for_new(point)
         elif self.create_mode == "image" and self.on_image_click is not None:
             self.on_image_click(point)
@@ -846,7 +874,59 @@ class EditPageWidget(QWidget):
                 self._erase["ids"].add(el["id"])
         self.update()
 
+    def _group_rect_px(self) -> QRect | None:
+        """The box around this page's group-selected elements (a little padded
+        so a lone horizontal line, whose box has no height, is still hittable)."""
+        members = [el for el in self._elements() if el["id"] in self.model.selected_ids]
+        bounds = union_bounds([b for b in (self.model.element_bounds_for(m) for m in members) if b is not None])
+        if bounds is None:
+            return None
+        w, h = self.width(), self.height()
+        rect = QRect(
+            int(bounds["left"] * w), int(bounds["top"] * h),
+            int((bounds["right"] - bounds["left"]) * w), int((bounds["bottom"] - bounds["top"]) * h),
+        )
+        return rect.adjusted(-6, -6, 6, 6)
+
+    def _move_group_drag(self, point: tuple[float, float]) -> None:
+        drag = self._group_drag
+        dx, dy = point[0] - drag["start"][0], point[1] - drag["start"][1]
+        changes = self.model.group_changes(drag["ids"], dx, dy, drag["base"])
+        current = {el["id"]: el for el in self.model.elements}
+        if all(all(current[i].get(k) == v for k, v in ch.items()) for i, ch in changes.items()):
+            return  # nothing actually moved (yet, or clamped to nothing)
+        if not drag["committed"]:
+            # Lazily, before the first real change, so Undo puts the whole group
+            # back and a plain click on the group pushes no junk undo step.
+            self.model.commit()
+            drag["committed"] = True
+        self.model.translate_group(drag["ids"], dx, dy, drag["base"])
+
+    def _finish_marquee(self) -> None:
+        marquee, self._marquee = self._marquee, None
+        box = rect_from_points(marquee["start"], marquee["current"])
+        self.update()
+        if box["right"] - box["left"] < _MIN_MARQUEE_FRACTION and box["bottom"] - box["top"] < _MIN_MARQUEE_FRACTION:
+            return  # a click on empty space just deselects (done when it began)
+        picked = []
+        for el in self._elements():
+            bounds = self.model.element_bounds_for(el)
+            if bounds is not None and rects_intersect(bounds, box):
+                picked.append(el["id"])
+        self.model.select_many(picked)
+
     def mouseMoveEvent(self, e) -> None:
+        if self._group_drag is not None:
+            point = self._point_from_pos(e.position().toPoint())
+            if point is not None:
+                self._move_group_drag(point)
+            return
+        if self._marquee is not None:
+            point = self._point_from_pos(e.position().toPoint())
+            if point is not None:
+                self._marquee["current"] = point
+                self.update()
+            return
         if self._erase is not None:
             point = self._point_from_pos(e.position().toPoint())
             if point is not None:
@@ -910,6 +990,12 @@ class EditPageWidget(QWidget):
         # can START a gesture may end one, so releasing a second button
         # mid-stroke neither commits nor cancels what is being drawn.
         if e.button() != Qt.LeftButton:
+            return
+        if self._group_drag is not None:
+            self._group_drag = None  # the single undo step was pushed on the first real move
+            return
+        if self._marquee is not None:
+            self._finish_marquee()
             return
         if self._erase is not None:
             ids = list(self._erase["ids"])
@@ -1252,6 +1338,7 @@ class EditPageWidget(QWidget):
             if el["type"] == "stroke" and self.create_mode != "select":
                 continue  # a drawing shows no selection chrome outside the Select tool
             self._paint_chrome(painter, el)
+        self._paint_group_selection(painter)
         self._paint_create_preview(painter)
 
     def _paint_new_text(self, painter: QPainter, el: dict) -> None:
@@ -1382,6 +1469,36 @@ class EditPageWidget(QWidget):
         painter.drawPolygon(QPolygon([
             QPoint(int(x1), int(y1)), QPoint(int(h1x), int(h1y)), QPoint(int(h2x), int(h2y)),
         ]))
+
+    def _paint_group_selection(self, painter: QPainter) -> None:
+        """Outlines each group-selected element, and the marquee being dragged."""
+        accent = QColor(37, 99, 235)
+        fill = QColor(37, 99, 235, 28)
+        w, h = self.width(), self.height()
+        painter.setPen(QPen(accent, 1))
+        painter.setBrush(fill)
+        for el in self._elements():
+            if el["id"] not in self.model.selected_ids:
+                continue
+            bounds = self.model.element_bounds_for(el)
+            if bounds is None:
+                continue
+            # Padded a little so a straight line (a box with no height) still
+            # gets a visible outline.
+            painter.drawRect(QRectF(
+                bounds["left"] * w, bounds["top"] * h,
+                (bounds["right"] - bounds["left"]) * w, (bounds["bottom"] - bounds["top"]) * h,
+            ).adjusted(-3, -3, 3, 3))
+        if self._marquee is not None:
+            box = rect_from_points(self._marquee["start"], self._marquee["current"])
+            pen = QPen(accent, 1)
+            pen.setStyle(Qt.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(fill)
+            painter.drawRect(QRectF(
+                box["left"] * w, box["top"] * h, (box["right"] - box["left"]) * w, (box["bottom"] - box["top"]) * h,
+            ))
+        painter.setBrush(Qt.NoBrush)
 
     def _paint_chrome(self, painter: QPainter, el: dict) -> None:
         if self.model.selected_id != el["id"]:

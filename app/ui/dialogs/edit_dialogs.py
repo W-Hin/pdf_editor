@@ -607,6 +607,10 @@ class EditPdfDialog(ToolDialog):
         layout = QVBoxLayout(container)
 
         mode_row = QHBoxLayout()
+        self.select_btn = QPushButton("Select")
+        self.select_btn.setCheckable(True)
+        self.select_btn.clicked.connect(lambda: self._set_create_mode("select"))
+        mode_row.addWidget(self.select_btn)
         self.new_text_btn = QPushButton("New Text")
         self.new_text_btn.setCheckable(True)
         self.new_text_btn.setChecked(True)
@@ -878,6 +882,7 @@ class EditPdfDialog(ToolDialog):
         self.highlight_btn.setChecked(mode == "highlight")
         self.edit_text_btn.setChecked(mode == "text")
         self.eraser_btn.setChecked(mode == "eraser")
+        self.select_btn.setChecked(mode == "select")
         self._text_options.setVisible(mode == "text")
         self._draw_options.setVisible(mode == "draw")
         self._shapes_options.setVisible(mode == "shape")
@@ -1033,7 +1038,9 @@ class EditPdfDialog(ToolDialog):
         elif action == "paste":
             self.model.paste()
         elif action == "delete":
-            if self.model.selected_id is not None:
+            if self.model.selected_ids:
+                self.model.delete_selected_group()
+            elif self.model.selected_id is not None:
                 self.model.remove(self.model.selected_id)
 
     def _reorder_selected(self, direction: str) -> None:
@@ -1045,6 +1052,16 @@ class EditPdfDialog(ToolDialog):
             Qt.Key_Left: (-1, 0), Qt.Key_Right: (1, 0),
             Qt.Key_Up: (0, -1), Qt.Key_Down: (0, 1),
         }
+        if e.key() == Qt.Key_Escape and not self._any_text_editor_open() and (self.model.selected_ids or self.model.selected_id):
+            self.model.clear_selection()  # Esc deselects, like the web app; it must not close a stand-alone dialog
+            e.accept()
+            return
+        if e.key() in arrow_deltas and not self._any_text_editor_open() and self.model.selected_ids:
+            step = 0.02 if e.modifiers() & Qt.ShiftModifier else 0.004
+            dx, dy = arrow_deltas[e.key()]
+            self.model.nudge_group(dx * step, dy * step)
+            e.accept()
+            return
         if e.key() in arrow_deltas and not self._any_text_editor_open() and self.model.selected_id is not None:
             step = 0.02 if e.modifiers() & Qt.ShiftModifier else 0.004
             dx, dy = arrow_deltas[e.key()]

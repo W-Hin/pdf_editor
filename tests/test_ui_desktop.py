@@ -4920,3 +4920,232 @@ def test_marker_and_dot_export_end_to_end(tmp_path):
     r, g, b = pix.pixel(int(pix.width * 0.5), int(pix.height * 0.5))[:3]
     assert r > 240 and g > 240 and 100 < b < 220  # translucent yellow, page still visible through it
     assert pix.pixel(int(pix.width * 0.5), int(pix.height * 0.8))[0] < 100  # the dot
+
+
+# ---- Edit PDF: Select tool (marquee, group move, delete, nudge) ----
+
+
+def _mixed_row_model():
+    """Five different element types in a row near the top, one far below."""
+    model = EditElementsModel()
+    ids = {
+        "stroke": model.add({"page": 1, "type": "stroke", "points": [{"x": 0.1, "y": 0.1}, {"x": 0.2, "y": 0.2}], "color": "#000000", "width": 3}),
+        "shape": model.add(_shape_element(x0=0.25, y0=0.1, x1=0.35, y1=0.2)),
+        "highlight": model.add(_highlight_element(top=0.1, left=0.4, right=0.5, bottom=0.8)),
+        "image": model.add({"page": 1, "type": "image", "x": 0.55, "y": 0.1, "width": 0.1, "height": 0.1, "file_id": "x.png"}),
+        "new_text": model.add({"page": 1, "type": "new_text", "x": 0.7, "y": 0.1, "width": 0.1, "height": 0.05, "text": "Hi",
+                               "family": "helvetica", "bold": False, "italic": False, "underline": False, "size": 14,
+                               "color": "#000000", "align": "left"}),
+        "far": model.add(_shape_element(x0=0.1, y0=0.6, x1=0.2, y1=0.7)),
+    }
+    model.clear_selection()
+    model._undo_stack.clear()
+    return model, ids
+
+
+def _marquee(widget, a, b):
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, *a))
+    QTest.mouseMove(widget, _px(widget, *b))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, *b))
+
+
+def test_marquee_selects_every_type_it_touches_and_nothing_else():
+    model, ids = _mixed_row_model()
+    widget = _white_page_widget(model, "select")
+    _marquee(widget, (0.05, 0.05), (0.75, 0.3))
+    assert set(model.selected_ids) == {ids["stroke"], ids["shape"], ids["highlight"], ids["image"], ids["new_text"]}
+    assert ids["far"] not in model.selected_ids
+    assert model.selected_id is None
+
+
+def test_marquee_that_only_grazes_an_element_still_selects_it():
+    model, ids = _mixed_row_model()
+    widget = _white_page_widget(model, "select")
+    _marquee(widget, (0.05, 0.05), (0.12, 0.12))  # just the corner of the stroke
+    assert model.selected_ids == [ids["stroke"]]
+
+
+def test_a_new_marquee_replaces_the_old_selection_and_a_click_clears_it():
+    model, ids = _mixed_row_model()
+    widget = _white_page_widget(model, "select")
+    _marquee(widget, (0.05, 0.05), (0.75, 0.3))
+    assert len(model.selected_ids) == 5
+    _marquee(widget, (0.05, 0.55), (0.3, 0.8))
+    assert model.selected_ids == [ids["far"]]
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, 0.9, 0.9))  # empty space, no drag
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, 0.9, 0.9))
+    assert model.selected_ids == [] and model.selected_id is None
+
+
+def test_marquee_ignores_other_pages_elements():
+    model, ids = _mixed_row_model()
+    other = model.add({"page": 2, "type": "stroke", "points": [{"x": 0.1, "y": 0.1}, {"x": 0.2, "y": 0.2}], "color": "#000000", "width": 3})
+    model.clear_selection()
+    widget = _white_page_widget(model, "select")  # page 1's widget
+    _marquee(widget, (0.05, 0.05), (0.75, 0.3))
+    assert other not in model.selected_ids
+
+
+def test_marquee_picks_up_a_text_edit_once_its_run_is_loaded():
+    model = EditElementsModel()
+    run = {"index": 0, "text": "Hello", "bbox": {"top": 0.1, "left": 0.1, "right": 0.6, "bottom": 0.85}, "family": "helvetica",
+           "size": 12, "bold": False, "italic": False, "color": "#000000"}
+    model.set_page_text_info(1, [run], 0, 595.0, 842.0)
+    edit = model.add({"page": 1, "type": "text_edit", "run_index": 0, "segments": []})
+    model.clear_selection()
+    widget = _white_page_widget(model, "select")
+    _marquee(widget, (0.05, 0.05), (0.8, 0.2))
+    assert model.selected_ids == [edit]
+
+
+def _select_group(widget, model):
+    _marquee(widget, (0.05, 0.05), (0.75, 0.3))
+    assert len(model.selected_ids) == 5
+
+
+def test_dragging_the_group_moves_every_member_together_in_one_undo_step():
+    model, ids = _mixed_row_model()
+    widget = _white_page_widget(model, "select")
+    _select_group(widget, model)
+    before = {e["id"]: dict(e) for e in model.elements}
+    # Press inside the group box (on the empty gap between shape and highlight)
+    # and drag: it must move the group, not start a new marquee.
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, 0.37, 0.15))
+    QTest.mouseMove(widget, _px(widget, 0.37, 0.15) + QPoint(20, 30))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, 0.37, 0.15) + QPoint(20, 30))
+    dx, dy = 20 / widget.width(), 30 / widget.height()
+    now = {e["id"]: e for e in model.elements}
+    assert now[ids["stroke"]]["points"][0]["x"] == pytest.approx(0.1 + dx)
+    assert now[ids["shape"]]["y0"] == pytest.approx(0.1 + dy)
+    assert now[ids["image"]]["x"] == pytest.approx(0.55 + dx)
+    assert now[ids["new_text"]]["y"] == pytest.approx(0.1 + dy)
+    assert now[ids["highlight"]]["left"] == pytest.approx(0.4 + dx)
+    assert now[ids["far"]] == before[ids["far"]]  # not in the group
+    assert len(model._undo_stack) == 1
+    model.undo()
+    assert {e["id"]: e for e in model.elements}[ids["shape"]]["y0"] == before[ids["shape"]]["y0"]
+
+
+def test_group_drag_is_clamped_as_a_whole_at_the_page_edge():
+    model, ids = _mixed_row_model()
+    widget = _white_page_widget(model, "select")
+    _select_group(widget, model)
+    start = _px(widget, 0.37, 0.15)
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(widget, QPoint(1, 1))  # far past the top-left corner (not (0,0): QTest reads that as "centre")
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(1, 1))
+    now = {e["id"]: e for e in model.elements}
+    # Leftmost member (the stroke, x=0.1) and topmost (y=0.1) stop at the edge...
+    assert now[ids["stroke"]]["points"][0]["x"] == pytest.approx(0.0)
+    assert min(p["y"] for p in now[ids["stroke"]]["points"]) == pytest.approx(0.0)
+    # ...and the others slid by the SAME amount rather than piling up on it.
+    assert now[ids["shape"]]["x0"] == pytest.approx(0.25 - 0.1)
+    assert now[ids["image"]]["x"] == pytest.approx(0.55 - 0.1)
+
+
+def test_a_plain_click_on_the_group_moves_nothing_and_adds_no_undo_step():
+    model, ids = _mixed_row_model()
+    widget = _white_page_widget(model, "select")
+    _select_group(widget, model)
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, 0.37, 0.15))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, 0.37, 0.15))
+    assert model._undo_stack == []
+    assert len(model.selected_ids) == 5  # still selected
+
+
+def test_a_press_outside_the_group_starts_a_new_marquee_instead_of_moving_it():
+    model, ids = _mixed_row_model()
+    widget = _white_page_widget(model, "select")
+    _select_group(widget, model)
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, 0.9, 0.9))
+    assert widget._marquee is not None and widget._group_drag is None
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, 0.9, 0.9))
+
+
+def test_select_tool_still_selects_and_moves_a_single_stroke():
+    model = EditElementsModel()
+    stroke_id = model.add(_stroke_at(0.5))
+    model.clear_selection()
+    widget = _white_page_widget(model, "select")
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, 0.5, 0.5))
+    QTest.mouseMove(widget, _px(widget, 0.5, 0.5) + QPoint(0, 40))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, 0.5, 0.5) + QPoint(0, 40))
+    assert model.selected_id == stroke_id
+    assert model.elements[0]["points"][0]["y"] == pytest.approx(0.5 + 40 / widget.height())
+
+
+def _dialog_with_group(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    input_path = _single_page_pdf(tmp_path)
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    page = dlg._page_widgets[0]
+    dlg.select_btn.click()
+    for el in (
+        {"page": 1, "type": "stroke", "points": [{"x": 0.1, "y": 0.1}, {"x": 0.2, "y": 0.2}], "color": "#000000", "width": 3},
+        _shape_element(x0=0.3, y0=0.1, x1=0.4, y1=0.2),
+        _highlight_element(top=0.1, left=0.5, right=0.4, bottom=0.8),
+    ):
+        dlg.model.add(el)
+    dlg.model.clear_selection()
+    dlg.model._undo_stack.clear()
+    _marquee(page, (0.05, 0.05), (0.7, 0.3))
+    assert len(dlg.model.selected_ids) == 3
+    return dlg, page, input_path
+
+
+def test_select_button_sets_the_select_mode_and_keeps_only_one_mode_checked():
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([])
+    dlg.select_btn.click()
+    assert dlg.select_btn.isChecked() and not dlg.new_text_btn.isChecked() and not dlg.eraser_btn.isChecked()
+    dlg.draw_btn.click()
+    assert not dlg.select_btn.isChecked()
+
+
+def test_delete_key_deletes_the_whole_group_in_one_undo_step(tmp_path):
+    dlg, page, _ = _dialog_with_group(tmp_path)
+    QTest.keyClick(dlg, Qt.Key_Delete)
+    assert dlg.model.elements == [] and dlg.model.selected_ids == []
+    assert len(dlg.model._undo_stack) == 1
+    dlg.model.undo()
+    assert len(dlg.model.elements) == 3
+
+
+def test_backspace_and_the_toolbar_delete_button_also_delete_the_group(tmp_path):
+    dlg, page, _ = _dialog_with_group(tmp_path)
+    QTest.keyClick(dlg, Qt.Key_Backspace)
+    assert dlg.model.elements == []
+    dlg.model.undo()
+    _marquee(page, (0.05, 0.05), (0.7, 0.3))
+    delete_btn = next(b for b in dlg.findChildren(QPushButton) if b.text() == "Delete")
+    delete_btn.click()
+    assert dlg.model.elements == []
+
+
+def test_arrow_keys_nudge_the_group_and_shift_makes_it_bigger(tmp_path):
+    dlg, page, _ = _dialog_with_group(tmp_path)
+    QTest.keyClick(dlg, Qt.Key_Right)
+    shape = next(e for e in dlg.model.elements if e["type"] == "shape")
+    assert shape["x0"] == pytest.approx(0.3 + 0.004)
+    QTest.keyClick(dlg, Qt.Key_Down, Qt.ShiftModifier)
+    stroke = next(e for e in dlg.model.elements if e["type"] == "stroke")
+    assert stroke["points"][0]["y"] == pytest.approx(0.1 + 0.02)
+    assert len(dlg.model._undo_stack) == 2  # one undo step per keypress
+
+
+def test_escape_clears_the_group_selection(tmp_path):
+    dlg, page, _ = _dialog_with_group(tmp_path)
+    QTest.keyClick(dlg, Qt.Key_Escape)
+    assert dlg.model.selected_ids == [] and len(dlg.model.elements) == 3
+
+
+def test_a_moved_group_exports_cleanly(tmp_path):
+    dlg, page, input_path = _dialog_with_group(tmp_path)
+    QTest.mousePress(page, Qt.LeftButton, Qt.NoModifier, _px(page, 0.25, 0.15))
+    QTest.mouseMove(page, QPoint(1, 1))  # clamp hard against the corner
+    QTest.mouseRelease(page, Qt.LeftButton, Qt.NoModifier, QPoint(1, 1))
+    _assert_exports_cleanly(dlg, input_path)
