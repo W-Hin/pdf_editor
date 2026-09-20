@@ -224,14 +224,17 @@ def test_redact_dialog_each_page_holds_its_own_boxes_independently(tmp_path):
     draw_box(dlg._page_widgets[1])  # page 2 only
 
     params = dlg.gather_params()
-    # Same drag, same page dimensions as the deleted test - the exact expected
-    # fraction values were already empirically verified there and reused here.
+    # The drag's pixel positions map to page fractions of whatever size the page
+    # is shown at (pages now fit the window rather than a fixed 450px thumbnail).
+    page2 = dlg._page_widgets[1]
+    w, h = page2.width(), page2.height()
+    x0, y0, x1, y1 = int(w * 0.1) / w, int(h * 0.05) / h, int(w * 0.6) / w, int(h * 0.15) / h
     assert params["redactions"] == [{
         "page": 2,
-        "top": pytest.approx(0.04888888888888889),
-        "left": pytest.approx(0.09748427672955975),
-        "right": pytest.approx(0.4025157232704403),
-        "bottom": pytest.approx(0.8511111111111112),
+        "top": pytest.approx(y0),
+        "left": pytest.approx(x0),
+        "right": pytest.approx(1 - x1),
+        "bottom": pytest.approx(1 - y1),
     }]
 
     output_paths = dlg.run_operation([str(input_path)], params)
@@ -283,7 +286,9 @@ def test_redact_dialog_page_numbering_survives_a_mid_document_render_failure(tmp
     dlg.on_files_changed([str(input_path)])
 
     assert len(dlg._page_widgets) == 4
-    assert dlg._page_widgets[2] is None  # page 3 (0-indexed slot 2) failed to render
+    # Page 3's picture failed to render: it is kept as a blank page (so the
+    # numbering can never shift), not dropped.
+    assert dlg._page_widgets[2] is not None and not dlg._page_widgets[2].has_pixmap
 
     # Draw a box on page 4's widget (0-indexed slot 3) - it must be reported
     # as page 4, not silently relabeled as page 3 because page 3's slot is
@@ -649,7 +654,9 @@ def test_sign_dialog_page_numbering_survives_a_mid_document_render_failure(tmp_p
     dlg.on_files_changed([str(input_path)])
 
     assert len(dlg._page_widgets) == 4
-    assert dlg._page_widgets[2] is None  # page 3 (0-indexed slot 2) failed to render
+    # Page 3's picture failed to render: it is kept as a blank page (so the
+    # numbering can never shift), not dropped.
+    assert dlg._page_widgets[2] is not None and not dlg._page_widgets[2].has_pixmap
 
     # Place a signature on page 4's widget (0-indexed slot 3) - it must be
     # reported as page 4, not silently relabeled as page 3 because page 3's
@@ -5466,3 +5473,201 @@ def test_a_canvas_tool_puts_back_and_title_on_one_line_and_other_tools_stack_the
     assert window._tool_header.direction() == QBoxLayout.LeftToRight
     window.open_tool("Rotate PDF", RotateDialog)
     assert window._tool_header.direction() == QBoxLayout.TopToBottom
+
+
+# ---- Page tools (Crop, Redact, Sign, PDF Forms, Compare): fit, zoom, lazy pages ----
+
+
+def _signature_png(tmp_path):
+    pixmap = QPixmap(200, 80)
+    pixmap.fill(Qt.blue)
+    path = str(tmp_path / "sig.png")
+    pixmap.save(path, "PNG")
+    return path
+
+
+def _shown_page_tool(kind, tmp_path, pages=1, size=(1300, 800)):
+    """A page tool (crop/redact/sign/forms) shown in a window with a file loaded."""
+    from app.ui.dialogs.edit_dialogs import CropDialog, FillFormDialog, RedactDialog, SignDialog
+
+    dlg = {"crop": CropDialog, "redact": RedactDialog, "sign": SignDialog, "forms": FillFormDialog}[kind]()
+    dlg.resize(*size)
+    dlg.show()
+    _app.processEvents()
+    if kind == "sign":
+        dlg.use_signature_file(_signature_png(tmp_path))
+    dlg.on_files_changed([_tall_pdf(tmp_path, pages)])
+    _settle(dlg)
+    return dlg
+
+
+def _settle(dlg):
+    """Lets the layout finish so the scroll range is real (with the app theme
+    applied it lands a moment after the pages are added)."""
+    import time
+
+    bar = dlg._scroll.verticalScrollBar()
+    for _ in range(40):
+        _app.processEvents()
+        if bar.maximum() > 0:
+            break
+        time.sleep(0.02)
+
+
+PAGE_TOOLS = ["crop", "redact", "sign", "forms"]
+
+
+@pytest.mark.parametrize("kind", PAGE_TOOLS)
+def test_page_tools_show_big_centred_pages_that_fit_the_window(kind, tmp_path):
+    dlg = _shown_page_tool(kind, tmp_path)
+    page = dlg._zoom_pages()[0]
+    assert page.width() == dlg._compute_fit_width() <= 900
+    assert page.width() > 450  # was a fixed 450px-tall thumbnail
+    assert page.height() == pytest.approx(page.width() * 842 / 595, abs=1)
+    assert page.has_pixmap and page.rendered_width == page.width()
+    assert dlg._container_layout.alignment() & Qt.AlignHCenter
+    assert page.geometry().center().x() == pytest.approx(dlg._container.width() / 2, abs=2) if hasattr(dlg, "_container") else True
+
+
+@pytest.mark.parametrize("kind", PAGE_TOOLS)
+def test_page_tools_zoom_with_buttons_wheel_and_shortcuts(kind, tmp_path):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QWheelEvent
+
+    dlg = _shown_page_tool(kind, tmp_path)
+    page = dlg._zoom_pages()[0]
+    base = page.width()
+    dlg.zoom_in_btn.click()
+    assert dlg.zoom_label_btn.text() == "125%" and page.width() == pytest.approx(base * 1.25, abs=1)
+    assert page.rendered_width == page.width()  # redrawn sharp at the new size
+    viewport = dlg._scroll.viewport()
+    event = QWheelEvent(QPointF(50, 50), QPointF(50, 50), QPoint(0, 0), QPoint(0, -120), Qt.NoButton, Qt.ControlModifier, Qt.NoScrollPhase, False)
+    QApplication.sendEvent(viewport, event)
+    assert dlg.zoom_label_btn.text() == "100%"
+    dlg.zoom_out_btn.click()
+    assert page.width() == pytest.approx(base * 0.75, abs=1)
+    dlg.zoom_label_btn.click()
+    assert page.width() == base
+    for _ in range(20):
+        dlg.zoom_in_btn.click()
+    assert dlg.zoom_label_btn.text() == "300%" and not dlg.zoom_in_btn.isEnabled()
+
+
+@pytest.mark.parametrize("kind", PAGE_TOOLS)
+def test_page_tools_draw_only_pages_near_the_view(kind, tmp_path):
+    dlg = _shown_page_tool(kind, tmp_path, pages=25)
+    pages = dlg._zoom_pages()
+    assert len(pages) == 25
+    assert pages[0].has_pixmap and not pages[-1].has_pixmap
+    bar = dlg._scroll.verticalScrollBar()
+    bar.setValue(bar.maximum())
+    dlg._render_pages()
+    assert pages[-1].has_pixmap and not pages[0].has_pixmap
+
+
+@pytest.mark.parametrize("kind", PAGE_TOOLS)
+def test_page_tools_refit_when_the_window_is_resized(kind, tmp_path):
+    dlg = _shown_page_tool(kind, tmp_path, size=(1300, 800))
+    wide = dlg._zoom_pages()[0].width()
+    dlg.resize(700, 800)
+    _app.processEvents()
+    dlg._refit()
+    assert dlg._zoom_pages()[0].width() < wide
+    assert dlg._zoom_pages()[0].width() == dlg._compute_fit_width()
+
+
+def test_redact_boxes_survive_zoom_because_they_are_page_fractions(tmp_path):
+    dlg = _shown_page_tool("redact", tmp_path)
+    page = dlg._page_widgets[0]
+    _drag(page, [_px(page, 0.2, 0.2), _px(page, 0.6, 0.4)])
+    before = [dict(b) for b in page.boxes]
+    dlg.zoom_in_btn.click()
+    assert [dict(b) for b in page.boxes] == before
+    assert dlg.gather_params()["redactions"][0]["page"] == 1
+
+
+def test_crop_mirrors_follow_the_box_at_any_zoom(tmp_path):
+    dlg = _shown_page_tool("crop", tmp_path, pages=3)
+    _drag(dlg.overlay, [_px(dlg.overlay, 0.2, 0.2), _px(dlg.overlay, 0.6, 0.4)])
+    assert all(m.single_box() for m in dlg._mirrors) and len(dlg._mirrors) == 2
+    dlg.zoom_in_btn.click()
+    dlg.zoom_in_btn.click()
+    assert all(m.width() == dlg.overlay.width() for m in dlg._mirrors)
+    assert all(m.single_box() == dlg.overlay.single_box() for m in dlg._mirrors)
+    assert dlg.gather_params()["box"] is not None
+
+
+def test_sign_placements_survive_zoom_and_export(tmp_path):
+    dlg = _shown_page_tool("sign", tmp_path)
+    page = dlg._page_widgets[0]
+    QTest.mouseClick(page, Qt.LeftButton, Qt.NoModifier, _px(page, 0.5, 0.5))
+    assert len(page.placements) == 1
+    before = dict(page.placements[0])
+    dlg.zoom_in_btn.click()
+    assert page.placements[0] == before
+    out = dlg.run_operation([_tall_pdf(tmp_path, 1, "in.pdf")], dlg.gather_params())[0]
+    with fitz.open(out) as doc:
+        assert doc[0].get_images()
+
+
+def test_forms_fields_stay_on_their_spots_when_zoomed_and_keep_their_values(tmp_path):
+    from app.ui.dialogs.edit_dialogs import FillFormDialog
+
+    dlg = FillFormDialog()
+    dlg.resize(1300, 800)
+    dlg.show()
+    _app.processEvents()
+    dlg.on_files_changed([_build_form_fixture(tmp_path)])
+    _app.processEvents()
+    frame = dlg._zoom_pages()[0]
+    key = next(k for k, w in dlg.fields_widget._field_widgets.items() if isinstance(w, QLineEdit))
+    field = dlg.fields_widget._field_widgets[key]
+    field.setText("typed by the user")
+    fx, fy = field.x() / frame.width(), field.y() / frame.height()
+    fw = field.width() / frame.width()
+    dlg.zoom_in_btn.click()
+    dlg.zoom_in_btn.click()
+    assert field.x() / frame.width() == pytest.approx(fx, abs=0.01)
+    assert field.y() / frame.height() == pytest.approx(fy, abs=0.01)
+    assert field.width() / frame.width() == pytest.approx(fw, abs=0.01)
+    assert field.text() == "typed by the user"
+    assert any(v["value"] == "typed by the user" for v in dlg.fields_widget.values())
+
+
+def test_compare_panes_fit_the_window_and_zoom(tmp_path):
+    from app.ui.dialogs.edit_dialogs import CompareDialog
+
+    a = _tall_pdf(tmp_path, 1, "a.pdf")
+    b = _tall_pdf(tmp_path, 1, "b.pdf")
+    dlg = CompareDialog()
+    dlg.resize(1300, 800)
+    dlg.show()
+    _app.processEvents()
+    dlg.on_files_changed([a, b])
+    _app.processEvents()
+    fit = dlg._compute_fit_width()
+    assert dlg.visual_a.width() == fit == dlg.visual_b.width()
+    assert fit > 400  # was a fixed 400x560
+    dlg.zoom_in_btn.click()
+    assert dlg.visual_a.width() == pytest.approx(fit * 1.25, abs=1)
+    dlg.zoom_out_btn.click()
+    dlg.zoom_out_btn.click()
+    assert dlg.visual_a.width() == pytest.approx(fit * 0.75, abs=1)
+    dlg.resize(800, 800)
+    _app.processEvents()
+    dlg._refit()
+    assert dlg.visual_a.width() < fit * 0.75 + 1 or dlg._compute_fit_width() < fit
+
+
+def test_get_page_sizes_reads_every_page_in_one_pass(tmp_path):
+    from app.core.pdf_ops import get_page_sizes
+
+    doc = fitz.open()
+    doc.new_page(width=300, height=400)
+    doc.new_page(width=500, height=200)
+    rotated = doc.new_page(width=300, height=400)
+    rotated.set_rotation(90)
+    path = tmp_path / "mixed.pdf"
+    doc.save(str(path))
+    doc.close()
+    assert get_page_sizes(str(path)) == [(300.0, 400.0), (500.0, 200.0), (400.0, 300.0)]

@@ -1,6 +1,7 @@
-from PySide6.QtCore import QPoint, QRect, Qt, Signal
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import QCheckBox, QComboBox, QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget
+from app.ui.page_zoom import PagePixmapMixin
 
 _MIN_DRAG_FRACTION = 0.02
 _MARKER_SIZE = 14
@@ -19,7 +20,7 @@ def insets_to_box(insets: dict) -> dict:
     return {"x0": insets["left"], "y0": insets["top"], "x1": 1 - insets["right"], "y1": 1 - insets["bottom"]}
 
 
-class RectangleOverlayWidget(QWidget):
+class RectangleOverlayWidget(PagePixmapMixin, QWidget):
     """Displays a page-preview QPixmap with drag-to-draw rectangle(s) on top,
     in page-fraction (0-1) coordinates - mirrors CropSelector.jsx's (multi=False)
     or RedactSelector.jsx's (multi=True) exact interaction model.
@@ -45,7 +46,8 @@ class RectangleOverlayWidget(QWidget):
 
     def set_pixmap(self, pixmap) -> None:
         self.pixmap = pixmap
-        self.setFixedSize(pixmap.size())
+        self.setFixedSize(pixmap.deviceIndependentSize().toSize())
+        self.rendered_width = self.width()
         self.update()
 
     def set_boxes(self, boxes: list[dict]) -> None:
@@ -134,8 +136,7 @@ class RectangleOverlayWidget(QWidget):
 
     def paintEvent(self, e) -> None:
         painter = QPainter(self)
-        if self.pixmap is not None:
-            painter.drawPixmap(0, 0, self.pixmap)
+        self.paint_page_background(painter)
         for box in self.boxes:
             self._paint_box(painter, box, draw_marker=self.multi)
         if self._drag_start is not None and self._drag_current is not None:
@@ -197,7 +198,7 @@ _MAX_HEIGHT_FRACTION = 0.9
 _MIN_PLACEMENT_WIDTH_FRACTION = 0.05
 
 
-class ImagePlacementWidget(QWidget):
+class ImagePlacementWidget(PagePixmapMixin, QWidget):
     """Displays a page-preview QPixmap with a signature image placed at
     zero or more independent positions - mirrors SignCanvas.jsx's own
     click-to-place / drag-to-move / drag-handle-to-resize / click-to-remove
@@ -214,9 +215,12 @@ class ImagePlacementWidget(QWidget):
         self.placements: list[dict] = []
         self._drag: dict | None = None
 
+    PIXMAP_ATTR = "page_pixmap"
+
     def set_page_pixmap(self, pixmap) -> None:
         self.page_pixmap = pixmap
-        self.setFixedSize(pixmap.size())
+        self.setFixedSize(pixmap.deviceIndependentSize().toSize())
+        self.rendered_width = self.width()
         self.update()
 
     def set_signature_pixmap(self, pixmap) -> None:
@@ -321,8 +325,7 @@ class ImagePlacementWidget(QWidget):
 
     def paintEvent(self, e) -> None:
         painter = QPainter(self)
-        if self.page_pixmap is not None:
-            painter.drawPixmap(0, 0, self.page_pixmap)
+        self.paint_page_background(painter)
         for p in self.placements:
             rect = self._placement_rect_px(p)
             if self.signature_pixmap is not None:
@@ -338,6 +341,38 @@ class ImagePlacementWidget(QWidget):
             painter.setPen(QPen(QColor(255, 255, 255), 1))
             painter.setBrush(QColor(40, 100, 220))
             painter.drawRect(handle)
+
+
+class FormPageFrame(PagePixmapMixin, QWidget):
+    """One page of a form: the page picture with the document's field widgets laid
+    over it. The fields are positioned by page fractions, so they follow the frame
+    whenever it is resized (zoom)."""
+
+    def __init__(self, page_number: int, parent=None):
+        super().__init__(parent)
+        self.page_number = page_number
+        self.pixmap = None
+        self._fields: list[tuple[QWidget, dict]] = []
+
+    def add_field(self, widget: QWidget, rect: dict) -> None:
+        self._fields.append((widget, rect))
+        self._place(widget, rect)
+
+    def _place(self, widget: QWidget, rect: dict) -> None:
+        w, h = self.width(), self.height()
+        widget.setGeometry(
+            int(rect["left"] * w), int(rect["top"] * h),
+            int((1 - rect["left"] - rect["right"]) * w), int((1 - rect["top"] - rect["bottom"]) * h),
+        )
+
+    def set_page_size(self, size: QSize) -> None:
+        super().set_page_size(size)
+        for widget, rect in self._fields:
+            self._place(widget, rect)
+
+    def paintEvent(self, e) -> None:
+        painter = QPainter(self)
+        self.paint_page_background(painter)
 
 
 class FormFieldsWidget(QWidget):
@@ -363,31 +398,28 @@ class FormFieldsWidget(QWidget):
         layout.addWidget(self._scroll)
         self._field_widgets: dict[tuple[int, int], QWidget] = {}
         self._fields: list[dict] = []
+        self.frames: list[FormPageFrame] = []
 
-    def set_fields(self, fields: list[dict], page_pixmaps: list) -> None:
+    def set_pages(self, fields: list[dict], page_sizes: list) -> None:
+        """Builds one frame per page (sized, not yet drawn) with the fields on it."""
         while self._container_layout.count():
             item = self._container_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.setParent(None)
                 widget.deleteLater()
         self._field_widgets = {}
         self._fields = fields
+        self.frames = []
 
-        for page_num, pixmap in enumerate(page_pixmaps, start=1):
-            frame = QWidget(self._container)
-            frame.setFixedSize(pixmap.size())
-            background = QLabel(frame)
-            background.setPixmap(pixmap)
-            background.setGeometry(0, 0, pixmap.width(), pixmap.height())
+        for page_num, size in enumerate(page_sizes, start=1):
+            frame = FormPageFrame(page_num, self._container)
+            frame.set_page_size(size)
 
             for field in fields:
                 if field["page"] != page_num:
                     continue
                 rect = field["rect"]
-                x = rect["left"] * pixmap.width()
-                y = rect["top"] * pixmap.height()
-                w = (1 - rect["left"] - rect["right"]) * pixmap.width()
-                h = (1 - rect["top"] - rect["bottom"]) * pixmap.height()
 
                 if field["type"] == "text":
                     field_widget = QLineEdit(frame)
@@ -423,12 +455,19 @@ class FormFieldsWidget(QWidget):
                 else:
                     continue
 
-                field_widget.setGeometry(int(x), int(y), int(w), int(h))
+                frame.add_field(field_widget, rect)
                 field_widget.setToolTip(field["label"])
                 field_widget.show()
                 self._field_widgets[(field["page"], field["index"])] = field_widget
 
-            self._container_layout.addWidget(frame)
+            self._container_layout.addWidget(frame, 0, Qt.AlignHCenter)
+            self.frames.append(frame)
+
+    def set_fields(self, fields: list[dict], page_pixmaps: list) -> None:
+        """Pages given as ready pictures (each frame takes its picture's size)."""
+        self.set_pages(fields, [pm.deviceIndependentSize().toSize() for pm in page_pixmaps])
+        for frame, pixmap in zip(self.frames, page_pixmaps):
+            frame.attach_pixmap(pixmap)
 
     def values(self) -> list[dict]:
         result = []

@@ -300,6 +300,16 @@ def compress_pdf(input_path: str, output_path: str, image_quality: int = 60) -> 
         doc.close()
 
 
+def get_page_sizes(path: str) -> list[tuple[float, float]]:
+    """The DISPLAYED (rotation-applied) size in PDF points of every page, in one
+    pass over the file (calling get_page_size per page would reopen it each time)."""
+    doc = open_pdf(path)
+    try:
+        return [(float(page.rect.width), float(page.rect.height)) for page in doc]
+    finally:
+        doc.close()
+
+
 def render_page_thumbnail(input_path: str, page_number: int, max_size: int = 100) -> bytes:
     doc = open_pdf(input_path)
     try:

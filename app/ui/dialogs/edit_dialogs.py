@@ -2,17 +2,25 @@ import html
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction, QColor, QIcon, QPixmap, QShortcut, QKeySequence
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea, QTextEdit, QSpinBox, QCheckBox, QColorDialog, QFrame, QMenu
 
-from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, get_page_size, get_page_rotation, extract_text_runs, edit_pdf, extract_form_fields, fill_form
+from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, get_page_size, get_page_sizes, get_page_rotation, extract_text_runs, edit_pdf, extract_form_fields, fill_form
 from app.core.compare_pdf import extract_page_texts, diff_page_text, render_page_image, diff_page_visual
 from app.core.errors import PDFError
 from app.ui.dialogs.base import ToolDialog
 from app.ui.edit_canvas import EditElementsModel, EditPageWidget
+from app.ui.page_zoom import PageZoomMixin, PagePixmapMixin
 from app.ui.theme import ACCENT, MUTED_FOREGROUND, icon_pixmap
 from app.ui.widgets import RectangleOverlayWidget, box_to_insets, insets_to_box, SignaturePadWidget, ImagePlacementWidget, FormFieldsWidget, DiffPreviewWidget
+
+
+class _ZoomedPages(PageZoomMixin):
+    """PageZoomMixin, rendering through this module's render_page_thumbnail."""
+
+    def _render_page_bytes(self, page_number: int, long_side: int) -> bytes:
+        return render_page_thumbnail(self._input_path, page_number, max_size=long_side)
 
 
 class RotateDialog(ToolDialog):
@@ -97,7 +105,7 @@ class AddPageNumbersDialog(ToolDialog):
         return [out_path]
 
 
-class CropDialog(ToolDialog):
+class CropDialog(_ZoomedPages, ToolDialog):
     title = "Crop PDF"
     dialog_size = (650, 750)
 
@@ -110,16 +118,31 @@ class CropDialog(ToolDialog):
         instruction.setWordWrap(True)
         layout.addWidget(instruction)
         self.overlay = RectangleOverlayWidget(multi=False)
+        self.overlay.page_number = 1
         self.overlay.box_changed.connect(self._propagate_box_to_mirrors)
 
         self._mirror_scroll = QScrollArea()
+        self._mirror_scroll.setObjectName("pageScroll")
         self._mirror_scroll.setWidgetResizable(True)
         self._mirror_container = QWidget()
+        self._mirror_container.setObjectName("pageCanvas")
         self._mirror_layout = QVBoxLayout(self._mirror_container)
-        self._mirror_layout.addWidget(self.overlay)
+        self._mirror_layout.setContentsMargins(16, 16, 16, 16)
+        self._mirror_layout.setSpacing(16)
+        self._mirror_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self._mirror_layout.addWidget(self.overlay, 0, Qt.AlignHCenter)
         self._mirror_scroll.setWidget(self._mirror_container)
-        layout.addWidget(self._mirror_scroll)
+        layout.addWidget(self._make_zoom_row())
+        layout.addWidget(self._mirror_scroll, 1)
         self._mirrors: list[RectangleOverlayWidget] = []
+        # The names the shared page-zoom machinery works with.
+        self._scroll = self._mirror_scroll
+        self._container_layout = self._mirror_layout
+        self._input_path: str | None = None
+        self._init_page_zoom()
+
+    def _zoom_pages(self) -> list:
+        return [self.overlay, *self._mirrors]
 
     def _propagate_box_to_mirrors(self) -> None:
         box = self.overlay.single_box()
@@ -137,27 +160,22 @@ class CropDialog(ToolDialog):
             if widget is not None:
                 widget.deleteLater()
         self._mirrors = []
+        self._input_path = None
+        self.overlay.release_pixmap()
         if not paths:
             return
         try:
-            count = get_page_count(paths[0])
-            thumb_bytes = render_page_thumbnail(paths[0], 1, max_size=450)
+            sizes = get_page_sizes(paths[0])
         except PDFError:
             return
-        pixmap = QPixmap()
-        pixmap.loadFromData(thumb_bytes)
-        self.overlay.set_pixmap(pixmap)
-        for page_num in range(2, count + 1):
-            try:
-                mirror_thumb = render_page_thumbnail(paths[0], page_num, max_size=450)
-            except PDFError:
-                continue
-            mirror_pixmap = QPixmap()
-            mirror_pixmap.loadFromData(mirror_thumb)
+        self._input_path = paths[0]
+        self._page_pt = {n: size for n, size in enumerate(sizes, start=1)}
+        for page_num in range(2, len(sizes) + 1):
             mirror = RectangleOverlayWidget(multi=False, interactive=False)
-            mirror.set_pixmap(mirror_pixmap)
-            self._mirror_layout.addWidget(mirror)
+            mirror.page_number = page_num
+            self._mirror_layout.addWidget(mirror, 0, Qt.AlignHCenter)
             self._mirrors.append(mirror)
+        self._fit_and_render()
 
     def gather_params(self) -> dict:
         return {"box": self.overlay.single_box()}
@@ -173,7 +191,7 @@ class CropDialog(ToolDialog):
         return [out_path]
 
 
-class RedactDialog(ToolDialog):
+class RedactDialog(_ZoomedPages, ToolDialog):
     title = "Redact PDF"
     dialog_size = (650, 780)
 
@@ -183,12 +201,20 @@ class RedactDialog(ToolDialog):
         instruction.setWordWrap(True)
         layout.addWidget(instruction)
         self._scroll = QScrollArea()
+        self._scroll.setObjectName("pageScroll")
         self._scroll.setWidgetResizable(True)
         self._container = QWidget()
+        self._container.setObjectName("pageCanvas")
         self._container_layout = QVBoxLayout(self._container)
+        self._container_layout.setContentsMargins(16, 16, 16, 16)
+        self._container_layout.setSpacing(16)
+        self._container_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self._scroll.setWidget(self._container)
-        layout.addWidget(self._scroll)
+        layout.addWidget(self._make_zoom_row())
+        layout.addWidget(self._scroll, 1)
         self._page_widgets: list[RectangleOverlayWidget | None] = []
+        self._input_path: str | None = None
+        self._init_page_zoom()
 
     def on_files_changed(self, paths: list[str]) -> None:
         while self._container_layout.count():
@@ -197,24 +223,21 @@ class RedactDialog(ToolDialog):
             if widget is not None:
                 widget.deleteLater()
         self._page_widgets = []
+        self._input_path = None
         if not paths:
             return
         try:
-            count = get_page_count(paths[0])
+            sizes = get_page_sizes(paths[0])
         except PDFError:
             return
-        for page_num in range(1, count + 1):
-            try:
-                thumb_bytes = render_page_thumbnail(paths[0], page_num, max_size=450)
-            except PDFError:
-                self._page_widgets.append(None)
-                continue
-            pixmap = QPixmap()
-            pixmap.loadFromData(thumb_bytes)
+        self._input_path = paths[0]
+        self._page_pt = {n: size for n, size in enumerate(sizes, start=1)}
+        for page_num in range(1, len(sizes) + 1):
             overlay = RectangleOverlayWidget(multi=True)
-            overlay.set_pixmap(pixmap)
-            self._container_layout.addWidget(overlay)
+            overlay.page_number = page_num
+            self._container_layout.addWidget(overlay, 0, Qt.AlignHCenter)
             self._page_widgets.append(overlay)
+        self._fit_and_render()
 
     def gather_params(self) -> dict:
         redactions = []
@@ -231,7 +254,7 @@ class RedactDialog(ToolDialog):
         return [out_path]
 
 
-class SignDialog(ToolDialog):
+class SignDialog(_ZoomedPages, ToolDialog):
     title = "Sign PDF"
     dialog_size = (650, 780)
 
@@ -271,11 +294,17 @@ class SignDialog(ToolDialog):
         instruction.setWordWrap(True)
         placement_layout.addWidget(instruction)
         self._scroll = QScrollArea()
+        self._scroll.setObjectName("pageScroll")
         self._scroll.setWidgetResizable(True)
         self._container = QWidget()
+        self._container.setObjectName("pageCanvas")
         self._container_layout = QVBoxLayout(self._container)
+        self._container_layout.setContentsMargins(16, 16, 16, 16)
+        self._container_layout.setSpacing(16)
+        self._container_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self._scroll.setWidget(self._container)
-        placement_layout.addWidget(self._scroll)
+        placement_layout.addWidget(self._make_zoom_row())
+        placement_layout.addWidget(self._scroll, 1)
         different_btn = QPushButton("Use a different signature")
         different_btn.clicked.connect(self._use_different_signature)
         placement_layout.addWidget(different_btn)
@@ -285,6 +314,7 @@ class SignDialog(ToolDialog):
         self.signature_path: str | None = None
         self._input_path: str | None = None
         self._page_widgets: list[ImagePlacementWidget | None] = []
+        self._init_page_zoom()
 
     def _toggle_draw_pad(self) -> None:
         self.pad_panel.setVisible(not self.pad_panel.isVisible())
@@ -338,23 +368,18 @@ class SignDialog(ToolDialog):
         if self._input_path is None or self.signature_path is None:
             return
         try:
-            count = get_page_count(self._input_path)
+            sizes = get_page_sizes(self._input_path)
         except PDFError:
             return
+        self._page_pt = {n: size for n, size in enumerate(sizes, start=1)}
         sig_pixmap = QPixmap(self.signature_path)
-        for page_num in range(1, count + 1):
-            try:
-                thumb_bytes = render_page_thumbnail(self._input_path, page_num, max_size=450)
-            except PDFError:
-                self._page_widgets.append(None)
-                continue
-            pixmap = QPixmap()
-            pixmap.loadFromData(thumb_bytes)
+        for page_num in range(1, len(sizes) + 1):
             widget = ImagePlacementWidget()
-            widget.set_page_pixmap(pixmap)
+            widget.page_number = page_num
             widget.set_signature_pixmap(sig_pixmap)
-            self._container_layout.addWidget(widget)
+            self._container_layout.addWidget(widget, 0, Qt.AlignHCenter)
             self._page_widgets.append(widget)
+        self._fit_and_render()
 
     def gather_params(self) -> dict:
         placements = []
@@ -380,7 +405,7 @@ class SignDialog(ToolDialog):
         return [out_path]
 
 
-class FillFormDialog(ToolDialog):
+class FillFormDialog(_ZoomedPages, ToolDialog):
     title = "PDF Forms"
     dialog_size = (650, 780)
 
@@ -393,26 +418,38 @@ class FillFormDialog(ToolDialog):
         self.empty_label.setVisible(False)
         layout.addWidget(self.empty_label)
         self.fields_widget = FormFieldsWidget()
-        layout.addWidget(self.fields_widget)
+        layout.addWidget(self._make_zoom_row())
+        layout.addWidget(self.fields_widget, 1)
+        # The names the shared page-zoom machinery works with.
+        self._scroll = self.fields_widget._scroll
+        self._container_layout = self.fields_widget._container_layout
+        self._container_layout.setContentsMargins(16, 16, 16, 16)
+        self._container_layout.setSpacing(16)
+        self._container_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self._scroll.setObjectName("pageScroll")
+        self.fields_widget._container.setObjectName("pageCanvas")
+        self._input_path: str | None = None
+        self._init_page_zoom()
+
+    def _zoom_pages(self) -> list:
+        return list(self.fields_widget.frames)
 
     def on_files_changed(self, paths: list[str]) -> None:
-        self.fields_widget.set_fields([], [])
+        self.fields_widget.set_pages([], [])
         self.empty_label.setVisible(False)
+        self._input_path = None
         if not paths:
             return
         input_path = paths[0]
         try:
             fields = extract_form_fields(input_path)
-            count = get_page_count(input_path)
+            sizes = get_page_sizes(input_path)
         except PDFError:
             return
-        pixmaps = []
-        for page_num in range(1, count + 1):
-            thumb_bytes = render_page_thumbnail(input_path, page_num, max_size=450)
-            pixmap = QPixmap()
-            pixmap.loadFromData(thumb_bytes)
-            pixmaps.append(pixmap)
-        self.fields_widget.set_fields(fields, pixmaps)
+        self._input_path = input_path
+        self._page_pt = {n: size for n, size in enumerate(sizes, start=1)}
+        self.fields_widget.set_pages(fields, [QSize(400, 566)] * len(sizes))
+        self._fit_and_render()
         self.empty_label.setVisible(not self.fields_widget.has_fields())
 
     def gather_params(self) -> dict:
@@ -425,7 +462,7 @@ class FillFormDialog(ToolDialog):
         return [out_path]
 
 
-class CompareDialog(ToolDialog):
+class CompareDialog(_ZoomedPages, ToolDialog):
     title = "Compare PDF"
     dialog_size = (900, 780)
     allow_multiple_files = True
@@ -433,18 +470,23 @@ class CompareDialog(ToolDialog):
     def build_preview(self, container: QWidget) -> None:
         layout = QVBoxLayout(container)
 
+        # Only ever two files, so the list is short; the controls share one row so
+        # the pages below get the room.
+        self.file_list.setMaximumHeight(64)
+        controls = QHBoxLayout()
         clear_btn = QPushButton("Clear files")
         clear_btn.clicked.connect(self._clear_files)
-        layout.addWidget(clear_btn)
-
-        page_row = QHBoxLayout()
-        page_row.addWidget(QLabel("Page:"))
+        controls.addWidget(clear_btn)
+        controls.addSpacing(16)
+        controls.addWidget(QLabel("Page:"))
         self.page_spin = QSpinBox()
         self.page_spin.setMinimum(1)
         self.page_spin.setValue(1)
+        self.page_spin.setFixedWidth(90)
         self.page_spin.valueChanged.connect(self._load_current_page)
-        page_row.addWidget(self.page_spin)
-        layout.addLayout(page_row)
+        controls.addWidget(self.page_spin)
+        controls.addStretch(1)
+        layout.addLayout(controls)
 
         self.status_label_compare = QLabel(
             "Add exactly 2 files to compare (the first is treated as the original, the second as the changed version)."
@@ -454,19 +496,34 @@ class CompareDialog(ToolDialog):
 
         self.text_diff_view = QTextEdit()
         self.text_diff_view.setReadOnly(True)
-        self.text_diff_view.setFixedHeight(150)
+        self.text_diff_view.setFixedHeight(110)
         layout.addWidget(self.text_diff_view)
 
         visual_container = QWidget()
+        visual_container.setObjectName("pageCanvas")
         visual_row = QHBoxLayout(visual_container)
+        visual_row.setContentsMargins(16, 16, 16, 16)
+        visual_row.setSpacing(16)
+        visual_row.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self.visual_a = DiffPreviewWidget()
         self.visual_b = DiffPreviewWidget()
         visual_row.addWidget(self.visual_a)
         visual_row.addWidget(self.visual_b)
         visual_scroll = QScrollArea()
+        visual_scroll.setObjectName("pageScroll")
         visual_scroll.setWidgetResizable(True)
         visual_scroll.setWidget(visual_container)
-        layout.addWidget(visual_scroll)
+        layout.addWidget(self._make_zoom_row())
+        layout.addWidget(visual_scroll, 1)
+        # The names the shared page-zoom machinery works with (this tool overrides
+        # its sizing hooks: it shows ONE page of each document, side by side).
+        self._scroll = visual_scroll
+        self._container_layout = visual_row
+        self._input_path = None
+        self._full_a: QPixmap | None = None
+        self._full_b: QPixmap | None = None
+        self._diff_boxes: list[dict] = []
+        self._init_page_zoom()
 
         self._path_a: str | None = None
         self._path_b: str | None = None
@@ -480,10 +537,31 @@ class CompareDialog(ToolDialog):
         self.on_files_changed([])
 
     def _clear_visual_diff(self) -> None:
+        self._full_a = self._full_b = None
+        self._diff_boxes = []
         self.visual_a.set_pixmap(QPixmap())
         self.visual_a.set_boxes([])
         self.visual_b.set_pixmap(QPixmap())
         self.visual_b.set_boxes([])
+
+    # ---- sizing: the two panes share the window's width, and zoom from there ----
+
+    def _zoom_pages(self) -> list:
+        return [self.visual_a, self.visual_b]
+
+    def _compute_fit_width(self) -> int:
+        return max(200, min(700, (self._scroll.viewport().width() - 64) // 2))
+
+    def _layout_pages(self) -> None:
+        pass  # each pane is sized when its picture is scaled (see _render_pages)
+
+    def _render_pages(self) -> None:
+        if self._full_a is None or self._full_b is None:
+            return
+        width = max(160, int(round(self._fit_width * self._zoom_factor())))
+        for widget, full in ((self.visual_a, self._full_a), (self.visual_b, self._full_b)):
+            widget.set_pixmap(full.scaledToWidth(width, Qt.SmoothTransformation))
+            widget.set_boxes(self._diff_boxes)
 
     def on_files_changed(self, paths: list[str]) -> None:
         self._pages = []
@@ -554,15 +632,12 @@ class CompareDialog(ToolDialog):
             self.status_label_compare.setText("Could not render this page for comparison.")
             self._clear_visual_diff()
             return
-        pixmap_a, pixmap_b = QPixmap(), QPixmap()
-        pixmap_a.loadFromData(image_a)
-        pixmap_b.loadFromData(image_b)
-        display_a = pixmap_a.scaled(400, 560, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        display_b = pixmap_b.scaled(400, 560, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.visual_a.set_pixmap(display_a)
-        self.visual_a.set_boxes(boxes)
-        self.visual_b.set_pixmap(display_b)
-        self.visual_b.set_boxes(boxes)
+        self._full_a, self._full_b = QPixmap(), QPixmap()
+        self._full_a.loadFromData(image_a)
+        self._full_b.loadFromData(image_b)
+        self._diff_boxes = boxes
+        self._fit_width = self._compute_fit_width()
+        self._render_pages()
 
     def gather_params(self) -> dict:
         return {"file_count": self._file_count}
@@ -575,7 +650,7 @@ class CompareDialog(ToolDialog):
         return ([], f"Compared {len(self._pages)} page(s).")
 
 
-class EditPdfDialog(ToolDialog):
+class EditPdfDialog(_ZoomedPages, ToolDialog):
     title = "Edit PDF"
     dialog_size = (900, 800)
 
@@ -592,18 +667,10 @@ class EditPdfDialog(ToolDialog):
     # offer-able from the swatch row too, not just be the starting value.
     _PALETTE = ["#000000", "#ff0000", "#0000ff", "#00aa00", "#ffff00", "#ffd43b", "#ffffff"]
 
-    # Pages are laid out to fit the window (up to this wide) and zoomed from there.
-    _ZOOM_STEPS = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
-    _DEFAULT_ZOOM_INDEX = 2
-    _MAX_FIT_WIDTH = 900
-
     def build_preview(self, container: QWidget) -> None:
         # Toolbar state first: the swatch rows below render their selected
         # state straight from it while they are being built.
         self._page_widgets: list[EditPageWidget] = []
-        self._zoom_index = self._DEFAULT_ZOOM_INDEX
-        self._fit_width = 400
-        self._page_pt: dict[int, tuple[float, float]] = {}
         self._input_path: str | None = None
         self._create_mode = "new_text"
         self._draw_tool = "pen"  # Draw's sub-tool: "pen" | "marker" (freehand highlighter)
@@ -792,18 +859,7 @@ class EditPdfDialog(ToolDialog):
         self._container_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self._scroll.setWidget(self._container)
         layout.addWidget(self._scroll, 1)
-        # Draw only the pages near the viewport (a long document at a big zoom
-        # would otherwise render every page at once), and re-fit on resize.
-        self._render_timer = QTimer(self)
-        self._render_timer.setSingleShot(True)
-        self._render_timer.setInterval(60)
-        self._render_timer.timeout.connect(self._render_pages)
-        self._refit_timer = QTimer(self)
-        self._refit_timer.setSingleShot(True)
-        self._refit_timer.setInterval(120)
-        self._refit_timer.timeout.connect(self._refit)
-        self._scroll.verticalScrollBar().valueChanged.connect(lambda _v: self._render_timer.start())
-        self._scroll.viewport().installEventFilter(self)  # Ctrl+scroll zooms
+        self._init_page_zoom()
 
         self.model = EditElementsModel()
         self.model.on_change.append(self._refresh_toolbar_state)
@@ -1213,109 +1269,10 @@ class EditPdfDialog(ToolDialog):
             self._apply_style_to(widget)
             self._container_layout.addWidget(widget, 0, Qt.AlignHCenter)
             self._page_widgets.append(widget)
-        self._layout_pages()
-        self._render_pages()
+        self._fit_and_render()
 
-    # ---- page layout, zoom and lazy rendering ----
-
-    def _zoom_factor(self) -> float:
-        return self._ZOOM_STEPS[self._zoom_index]
-
-    def _compute_fit_width(self) -> int:
-        """Page width that fits the window (never absurdly wide or narrow)."""
-        available = self._scroll.viewport().width() - 48
-        return max(320, min(self._MAX_FIT_WIDTH, available))
-
-    def _page_display_size(self, page_num: int) -> QSize:
-        width = max(160, int(round(self._fit_width * self._zoom_factor())))
-        w_pt, h_pt = self._page_pt.get(page_num, (0.0, 0.0))
-        height = int(round(width * h_pt / w_pt)) if w_pt > 0 and h_pt > 0 else int(width * 1.414)
-        return QSize(width, max(1, height))
-
-    def _layout_pages(self) -> None:
-        for widget in self._page_widgets:
-            size = self._page_display_size(widget.page_number)
-            if widget.size() != size:
-                widget.set_page_size(size)
-            if widget.rendered_width != size.width():
-                widget.release_pixmap()  # stale zoom: blank until redrawn
-        self._container_layout.activate()
-
-    def _render_page(self, widget: EditPageWidget) -> None:
-        if self._input_path is None:
-            return
-        dpr = self.devicePixelRatioF()
-        long_side = int(round(max(widget.width(), widget.height()) * dpr))
-        try:
-            thumb_bytes = render_page_thumbnail(self._input_path, widget.page_number, max_size=long_side)
-        except PDFError:
-            return  # leaves a blank white page; everything else still works
-        pixmap = QPixmap()
-        pixmap.loadFromData(thumb_bytes)
-        pixmap.setDevicePixelRatio(dpr)
-        widget.attach_pixmap(pixmap)
-
-    def _render_pages(self) -> None:
-        """Draws the pages near the viewport and frees ones far from it."""
-        bar = self._scroll.verticalScrollBar()
-        # Never less than a screenful, so a dialog that has not been laid out yet
-        # (no real viewport height) still draws its first pages.
-        view_height = max(600, self._scroll.viewport().height())
-        top = bar.value() - view_height
-        bottom = bar.value() + 2 * view_height
-        # Page positions worked out from their sizes (they stack in a column),
-        # rather than read from the layout, which may not have settled yet.
-        y = self._container_layout.contentsMargins().top()
-        spacing = self._container_layout.spacing()
-        for widget in self._page_widgets:
-            y0, y1 = y, y + widget.height()
-            y = y1 + spacing
-            if y1 >= top and y0 <= bottom:
-                if widget.rendered_width != widget.width():
-                    self._render_page(widget)
-            elif widget.has_pixmap and (y1 < top - 2 * view_height or y0 > bottom + 2 * view_height):
-                widget.release_pixmap()
-
-    def _refresh_zoom_controls(self) -> None:
-        self.zoom_label_btn.setText(f"{round(self._zoom_factor() * 100)}%")
-        self.zoom_out_btn.setEnabled(self._zoom_index > 0)
-        self.zoom_in_btn.setEnabled(self._zoom_index < len(self._ZOOM_STEPS) - 1)
-
-    def _set_zoom(self, index: int) -> None:
-        index = max(0, min(len(self._ZOOM_STEPS) - 1, index))
-        if index == self._zoom_index:
-            return
+    def _before_zoom(self) -> None:
         self._commit_open_editors()  # an open editor is positioned in pixels
-        bar = self._scroll.verticalScrollBar()
-        position = bar.value() / bar.maximum() if bar.maximum() else 0.0
-        self._zoom_index = index
-        self._refresh_zoom_controls()
-        self._layout_pages()
-        bar.setValue(int(position * bar.maximum()))  # keep roughly the same part of the document in view
-        self._render_pages()
-
-    def _refit(self) -> None:
-        """The window was resized: re-fit the pages to it."""
-        if not self._page_widgets:
-            return
-        fit = self._compute_fit_width()
-        if abs(fit - self._fit_width) >= 16:
-            self._commit_open_editors()
-            self._fit_width = fit
-            self._layout_pages()
-            self._render_pages()
-
-    def resizeEvent(self, e) -> None:
-        super().resizeEvent(e)
-        self._refit_timer.start()
-
-    def eventFilter(self, obj, event) -> bool:
-        if obj is self._scroll.viewport() and event.type() == QEvent.Wheel and event.modifiers() & Qt.ControlModifier:
-            delta = event.angleDelta().y()
-            if delta:
-                self._set_zoom(self._zoom_index + (1 if delta > 0 else -1))
-            return True
-        return super().eventFilter(obj, event)
 
     def gather_params(self) -> dict:
         # Commit a typed draft when Run is clicked without clicking the page.
