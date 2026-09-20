@@ -608,6 +608,44 @@ def _validate_image_element(el: dict, image_paths: dict[str, str]) -> None:
         raise PDFError("The image must fit within the page.")
 
 
+def text_edit_final_sizes(segments: list[dict], original_width: float) -> list[float]:
+    """The size each replacement segment is actually drawn at: when the whole
+    replacement is wider than the original run (measured in each segment's
+    own base-14 font at its own size), every segment is scaled by the same
+    factor - never below _TEXT_EDIT_SHRINK_FACTOR - and no segment goes below
+    _TEXT_EDIT_MIN_SIZE. Single source of truth: _apply_text_edit draws with
+    it and the desktop preview sizes its on-screen text with it, so the two
+    can't drift apart."""
+    resolved = [
+        (seg["text"], _base14_alias(seg["family"], seg["bold"], seg["italic"]), seg["size"])
+        for seg in segments
+    ]
+    total_measured = sum(fitz.get_text_length(text, fontname=fontname, fontsize=size) for text, fontname, size in resolved)
+    scale = 1.0
+    if total_measured > original_width > 0:
+        scale = max(_TEXT_EDIT_SHRINK_FACTOR, original_width / total_measured)
+    return [max(size * scale, _TEXT_EDIT_MIN_SIZE) for _text, _fontname, size in resolved]
+
+
+def _validate_text_edit_segments(el: dict) -> None:
+    """Rejects malformed segments up front with a clean PDFError instead of a
+    raw KeyError/TypeError deep inside the apply step. An unknown `family` is
+    deliberately NOT rejected: _base14_alias falls back to helvetica, and the
+    web app's own TextSegment schema leaves family an unconstrained string."""
+    segments = el["segments"]
+    if not isinstance(segments, list):
+        raise PDFError("Text edit segments must be a list.")
+    for seg in segments:
+        if not isinstance(seg, dict):
+            raise PDFError("Each text edit segment must be an object.")
+        for key, kind in (("text", str), ("family", str), ("bold", bool), ("italic", bool)):
+            if key not in seg or not isinstance(seg[key], kind):
+                raise PDFError(f"Text edit segment '{key}' is missing or the wrong type.")
+        size = seg.get("size")
+        if isinstance(size, bool) or not isinstance(size, (int, float)) or not math.isfinite(size) or size <= 0:
+            raise PDFError("Text edit segment 'size' must be a positive number.")
+
+
 def _apply_text_edit(
     page: fitz.Page, span: dict, segments: list[dict], override_xy: tuple[float, float] | None = None
 ) -> list[tuple]:
@@ -632,11 +670,7 @@ def _apply_text_edit(
         (seg["text"], _base14_alias(seg["family"], seg["bold"], seg["italic"]), seg["size"])
         for seg in segments
     ]
-    total_measured = sum(fitz.get_text_length(text, fontname=fontname, fontsize=size) for text, fontname, size in resolved)
-    original_width = raw_bbox.width
-    scale = 1.0
-    if total_measured > original_width > 0:
-        scale = max(_TEXT_EDIT_SHRINK_FACTOR, original_width / total_measured)
+    final_sizes = text_edit_final_sizes(segments, raw_bbox.width)
     color = fitz.sRGB_to_pdf(span.get("color", 0))
     inserts = []
 
@@ -660,8 +694,7 @@ def _apply_text_edit(
         new_topleft_displayed = fitz.Point(rect.x0 + x_frac * rect.width, rect.y0 + y_frac * rect.height)
         cursor_displayed = new_topleft_displayed + baseline_offset
         rotate = page.rotation % 360
-        for text, fontname, size in resolved:
-            final_size = max(size * scale, _TEXT_EDIT_MIN_SIZE)
+        for (text, fontname, _size), final_size in zip(resolved, final_sizes):
             origin = fitz.Point(cursor_displayed.x, cursor_displayed.y) * dm
             inserts.append((origin, text, fontname, final_size, color, rotate))
             advance = fitz.get_text_length(text, fontname=fontname, fontsize=final_size)
@@ -670,8 +703,7 @@ def _apply_text_edit(
 
     x = raw_bbox.x0
     y = span["origin"][1]
-    for text, fontname, size in resolved:
-        final_size = max(size * scale, _TEXT_EDIT_MIN_SIZE)
+    for (text, fontname, _size), final_size in zip(resolved, final_sizes):
         inserts.append((fitz.Point(x, y), text, fontname, final_size, color, 0))
         x += fitz.get_text_length(text, fontname=fontname, fontsize=final_size)
     return inserts
@@ -889,6 +921,7 @@ def edit_pdf(input_path: str, output_path: str, elements: list[dict], image_path
                 raise PDFError(f"Page {page_num} does not exist in this document ({doc.page_count} pages).")
             el_type = el["type"]
             if el_type == "text_edit":
+                _validate_text_edit_segments(el)
                 if page_num not in run_cache:
                     run_cache[page_num] = _page_text_spans(doc[page_num - 1])
                 spans = run_cache[page_num]

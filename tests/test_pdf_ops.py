@@ -2650,3 +2650,90 @@ def test_get_page_size_rejects_a_missing_page(tmp_path):
     doc.close()
     with pytest.raises(PDFError):
         get_page_size(str(path), 5)
+
+
+def _seg(text="x", family="helvetica", bold=False, italic=False, size=12):
+    return {"text": text, "family": family, "bold": bold, "italic": italic, "size": size}
+
+
+def _one_run_pdf(tmp_path, text="First line of text", size=14):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), text, fontname="helv", fontsize=size)
+    path = tmp_path / "in.pdf"
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+def test_text_edit_final_sizes_leaves_text_that_fits_untouched():
+    from app.core.pdf_ops import text_edit_final_sizes
+    assert text_edit_final_sizes([_seg("Hi", size=12)], original_width=500) == [12]
+
+
+def test_text_edit_final_sizes_shrinks_every_segment_by_the_same_factor():
+    from app.core.pdf_ops import text_edit_final_sizes
+    segs = [_seg("A" * 20, size=20), _seg("B" * 20, size=10, bold=True)]
+    total = sum(fitz.get_text_length(s["text"], fontname=n, fontsize=s["size"])
+                for s, n in zip(segs, ("helv", "hebo")))
+    sizes = text_edit_final_sizes(segs, original_width=total / 2)
+    assert sizes[0] == pytest.approx(10) and sizes[1] == pytest.approx(6)  # x0.5 (the floor), 6pt minimum
+    assert sizes[1] >= 6
+
+
+def test_text_edit_final_sizes_never_shrinks_below_half_or_six_points():
+    from app.core.pdf_ops import text_edit_final_sizes
+    sizes = text_edit_final_sizes([_seg("W" * 200, size=20)], original_width=10)
+    assert sizes == [10.0]  # factor floors at 0.5
+    assert text_edit_final_sizes([_seg("W" * 200, size=8)], original_width=10) == [6]  # 6pt floor beats 0.5
+
+
+def test_text_edit_final_sizes_ignores_a_zero_original_width():
+    from app.core.pdf_ops import text_edit_final_sizes
+    assert text_edit_final_sizes([_seg("Hello", size=12)], original_width=0) == [12]
+
+
+def test_text_edit_final_sizes_matches_what_the_export_actually_draws(tmp_path):
+    from app.core.pdf_ops import text_edit_final_sizes
+    src = _one_run_pdf(tmp_path)
+    run = extract_text_runs(str(src), 1)[0]
+    page_w = 595
+    original_width = (1 - run["bbox"]["left"] - run["bbox"]["right"]) * page_w
+    segs = [_seg("A much longer replacement than the original line held", size=14)]
+    expected = text_edit_final_sizes(segs, original_width)[0]
+    out = tmp_path / "out.pdf"
+    edit_pdf(str(src), str(out), [{"page": 1, "type": "text_edit", "run_index": 0, "segments": segs}], {})
+    doc = fitz.open(str(out))
+    spans = [s for b in doc[0].get_text("dict")["blocks"] for l in b.get("lines", []) for s in l["spans"]]
+    doc.close()
+    assert spans[0]["size"] == pytest.approx(expected, abs=0.1)
+    assert expected < 14  # it really did shrink
+
+
+def test_edit_pdf_rejects_malformed_text_edit_segments_with_a_clean_error(tmp_path):
+    src = _one_run_pdf(tmp_path)
+    bad = [
+        "not a list",
+        [123],
+        [{"text": "x", "family": "helvetica", "bold": False, "italic": False}],            # no size
+        [{"text": "x", "family": "helvetica", "italic": False, "size": 12}],               # no bold
+        [{"family": "helvetica", "bold": False, "italic": False, "size": 12}],             # no text
+        [_seg("x", size=0)],
+        [_seg("x", size=-3)],
+        [_seg("x", size="12")],
+        [_seg("x", size=True)],
+        [_seg("x", size=float("nan"))],
+        [{"text": 5, "family": "helvetica", "bold": False, "italic": False, "size": 12}],
+        [{"text": "x", "family": None, "bold": False, "italic": False, "size": 12}],
+        [{"text": "x", "family": "helvetica", "bold": "yes", "italic": False, "size": 12}],
+    ]
+    for segments in bad:
+        with pytest.raises(PDFError):
+            edit_pdf(str(src), str(tmp_path / "o.pdf"), [{"page": 1, "type": "text_edit", "run_index": 0, "segments": segments}], {})
+
+
+def test_edit_pdf_still_accepts_valid_segments_an_unknown_family_and_an_empty_list(tmp_path):
+    src = _one_run_pdf(tmp_path)
+    for segments in ([_seg("ok")], [_seg("ok", family="Comic Sans")], [_seg("")], []):
+        edit_pdf(str(src), str(tmp_path / "o.pdf"),
+                 [{"page": 1, "type": "text_edit", "run_index": 0, "segments": segments}], {})
