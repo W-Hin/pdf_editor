@@ -3978,3 +3978,51 @@ def test_a_shrunk_preview_is_actually_painted_smaller(tmp_path, monkeypatch):
     dark_rows = [y for y in range(600) if any(img.pixelColor(x, y).lightness() < 128 for x in range(0, 400, 2))]
     assert dark_rows, "the replacement text should have been painted"
     assert (max(dark_rows) - min(dark_rows)) <= 9
+
+
+def _typed_elements():
+    return [
+        ("new_text", {"page": 1, "type": "new_text", "x": 0.3, "y": 0.3, "width": 0.3, "height": 0.1, "text": "Hi",
+                      "family": "helvetica", "bold": False, "italic": False, "underline": False, "size": 14,
+                      "color": "#000000", "align": "left"}),
+        ("image", {"page": 1, "type": "image", "x": 0.3, "y": 0.3, "width": 0.3, "height": 0.2, "file_id": "x.png"}),
+        ("shape", _shape_element(x0=0.3, y0=0.3, x1=0.6, y1=0.5)),
+        ("stroke", _stroke_element(points=[{"x": 0.3, "y": 0.3}, {"x": 0.6, "y": 0.5}])),
+        ("highlight", _highlight_element(top=0.3, left=0.3, right=0.4, bottom=0.5)),
+    ]
+
+
+@pytest.mark.parametrize("kind,element", _typed_elements(), ids=[k for k, _ in _typed_elements()])
+def test_an_unselected_elements_invisible_marker_area_does_not_delete_it(kind, element):
+    model = EditElementsModel()
+    model.add(element)
+    model.select(None)
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    marker = widget._marker_rect(model.elements[0])
+    QTest.mouseClick(widget, Qt.LeftButton, Qt.NoModifier, marker.center())
+    assert len(model.elements) == 1  # not deleted
+    assert model.selected_id == model.elements[0]["id"]  # the click selected it instead
+
+
+@pytest.mark.parametrize("kind,element", _typed_elements(), ids=[k for k, _ in _typed_elements()])
+def test_a_selected_elements_marker_still_deletes_it(kind, element):
+    model = EditElementsModel()
+    el_id = model.add(element)  # add() selects
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    marker = widget._marker_rect(model.elements[0])
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, marker.center())
+    assert model.elements == []
+
+
+def test_clicking_an_unselected_elements_marker_area_then_clicking_again_deletes_it():
+    model = EditElementsModel()
+    model.add(_shape_element(x0=0.3, y0=0.3, x1=0.6, y1=0.5))
+    model.select(None)
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    marker = widget._marker_rect(model.elements[0])
+    QTest.mouseClick(widget, Qt.LeftButton, Qt.NoModifier, marker.center())   # selects
+    QTest.mouseClick(widget, Qt.LeftButton, Qt.NoModifier, marker.center())   # now the visible marker is hit
+    assert model.elements == []

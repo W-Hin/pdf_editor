@@ -593,9 +593,10 @@ class EditPageWidget(QWidget):
         elements = self._elements()
         for i in reversed(range(len(elements))):
             el = elements[i]
-            # A text_edit's marker is only drawn (so only live) while it is
-            # selected; otherwise it is an invisible hotspot on the run.
-            if el["type"] == "text_edit" and self.model.selected_id != el["id"]:
+            # The marker is only DRAWN for the selected element (every type),
+            # so it must only be clickable then; otherwise it is an invisible
+            # delete hotspot.
+            if self.model.selected_id != el["id"]:
                 continue
             if self._marker_rect(el).contains(pos):
                 self.model.remove(el["id"])
