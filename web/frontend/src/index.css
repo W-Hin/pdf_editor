@@ -1664,3 +1664,37 @@ h1 {
   color: var(--color-muted-foreground);
   font-size: 13px;
 }
+
+.edit-pdf-canvas__stage--crosshair {
+  cursor: crosshair;
+}
+
+/* Drawing and erasing tools work over existing elements, so everything on the
+   stage lets the pointer through to it. */
+.edit-pdf-canvas__stage--passthrough * {
+  pointer-events: none !important;
+}
+
+.edit-pdf-canvas__stroke--inert {
+  pointer-events: none;
+}
+
+.edit-pdf-canvas__marquee {
+  position: absolute;
+  border: 1px dashed var(--color-accent);
+  background: rgba(59, 130, 246, 0.12);
+  pointer-events: none;
+}
+
+.edit-pdf-canvas__multi-outline {
+  position: absolute;
+  border: 1px solid var(--color-accent);
+  background: rgba(59, 130, 246, 0.08);
+  pointer-events: none;
+}
+
+.edit-pdf-canvas__group-overlay {
+  position: absolute;
+  cursor: move;
+  z-index: 5;
+}

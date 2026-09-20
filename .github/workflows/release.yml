@@ -75,6 +75,12 @@ jobs:
       - name: Run the test suite
         run: pytest -q
 
+      - name: Test the frontend
+        working-directory: web/frontend
+        run: |
+          npm ci
+          npm test
+
       - name: Build the frontend
         working-directory: web/frontend
         run: |

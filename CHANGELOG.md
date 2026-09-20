@@ -5,6 +5,25 @@ All notable changes to PDF Editor. The **web app** is what the Windows installer
 run from source. Both share the same PDF engine in `app/core/`, so a change to the
 engine lands in both.
 
+## 0.16.0 — 2026-09-21
+
+Edit PDF (web app) drawing overhaul, plus the fixes made since 0.15.2.
+
+- **Fixed:** a short pen stroke or a plain click now registers (a click leaves a dot)
+  instead of being thrown away.
+- **Fixed:** starting a drawing on top of an existing line now draws; drawings can no
+  longer be grabbed by accident. They are only selectable with the new Select tool.
+- **New: Eraser** — drag across a hand-drawn line or highlight to erase it. One Undo
+  restores everything a sweep erased.
+- **New: freehand highlighter** — Draw now has Pen and Highlighter; the highlighter is a
+  wide, translucent, round-ended marker in four colours and three widths.
+- **New: Select tool** — drag across empty space to select any mix of drawings,
+  highlights, shapes, boxes, images and text. Delete removes them, dragging moves them
+  together, arrow keys nudge them, Esc deselects.
+- Desktop Edit PDF: white and custom colours, and the Delete key (from the previous
+  unreleased work).
+- Browsers no longer show a stale copy of the app after an upgrade.
+
 ## 0.15.2 — 2026-09-20
 
 The installed app now actually starts. Every installer built since 0.5.0 crashed on launch

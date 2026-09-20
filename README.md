@@ -146,6 +146,11 @@ directly on the page:
   and send-to-back.
 - Press **Run** to write `<name>_edited.pdf`.
 
+In the web app, Edit PDF also has a **Select** tool (drag across empty space to pick
+several items, then Delete or drag them), an **Eraser** for hand-drawn lines, and a
+freehand **Highlighter** under Draw. Drawings are only selectable with the Select tool,
+so drawing over an existing line always draws.
+
 A prebuilt Windows executable can be made with PyInstaller (see
 `docs/superpowers/plans/2026-09-01-pdf-editor-v1.md` for the exact build command) — rebuild
 it after any change to `app/`, since an older build won't have newer tools — and

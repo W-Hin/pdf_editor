@@ -730,7 +730,8 @@ def _apply_stroke(page: fitz.Page, el: dict) -> None:
         fitz.Point(rect.x0 + pt["x"] * rect.width, rect.y0 + pt["y"] * rect.height) * page.derotation_matrix
         for pt in el["points"]
     ]
-    if len(raw_points) == 1:
+    single_point = len(raw_points) == 1
+    if single_point:
         p = raw_points[0]
         raw_points = [p, fitz.Point(p.x + 0.1, p.y + 0.1)]
     # Draw into the content stream (not add_ink_annot) so strokes participate
@@ -741,18 +742,15 @@ def _apply_stroke(page: fitz.Page, el: dict) -> None:
     shape = page.new_shape()
     shape.draw_polyline(raw_points)
     opacity = el.get("opacity")
-    if opacity is None or opacity >= 1:
-        shape.finish(color=_hex_to_rgb(el["color"]), width=el["width"])
-    else:
+    finish_args = {"color": _hex_to_rgb(el["color"]), "width": el["width"]}
+    if opacity is not None and opacity < 1:
         # Freehand highlighter: translucent, round-capped so a dot or the
         # ends of a swipe look like a marker rather than a cut-off bar.
-        shape.finish(
-            color=_hex_to_rgb(el["color"]),
-            width=el["width"],
-            stroke_opacity=opacity,
-            lineCap=1,
-            lineJoin=1,
-        )
+        finish_args.update(stroke_opacity=opacity, lineCap=1, lineJoin=1)
+    elif single_point:
+        # A click with no drag is a dot; a round cap gives it a body.
+        finish_args.update(lineCap=1, lineJoin=1)
+    shape.finish(**finish_args)
     shape.commit()
 
 

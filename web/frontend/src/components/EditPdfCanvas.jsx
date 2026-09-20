@@ -15,17 +15,29 @@ import {
   X,
   ArrowUUpLeft,
   ArrowUUpRight,
+  Cursor,
+  Eraser,
 } from "@phosphor-icons/react";
 import { downloadUrl, fetchTextRuns, uploadFile } from "../api";
+import {
+  clampMove,
+  elementBounds,
+  polylineNearPoint,
+  rectFromPoints,
+  rectsIntersect,
+  unionBounds,
+} from "../editGeometry";
 import PageScrollViewer, { DEFAULT_MAX_SIZE as PAGE_THUMBNAIL_MAX_SIZE } from "./PageScrollViewer";
 
 const MODES = [
+  { id: "select", label: "Select", icon: Cursor },
   { id: "text", label: "Edit Text", icon: CursorText },
   { id: "draw", label: "Draw", icon: PencilSimple },
   { id: "shapes", label: "Shapes", icon: Rectangle },
   { id: "highlight", label: "Highlight", icon: Highlighter },
   { id: "image", label: "Insert Image", icon: ImageSquare },
   { id: "new_text", label: "Add Text", icon: TextAa },
+  { id: "eraser", label: "Eraser", icon: Eraser },
 ];
 
 const FAMILY_OPTIONS = ["helvetica", "times", "courier"];
@@ -239,9 +251,22 @@ const MARKUP_COLORS = ["#1f2937", "#e03131", "#f08c00", "#2f9e44", "#1971c2", "#
 const STROKE_WIDTHS = { thin: 1, medium: 3, thick: 6 };
 
 // Smallest drag (as a fraction of the page) that counts as a real gesture
-// rather than a click with a pixel of jitter. Shared by draw/shapes/highlight
-// so a stray click never commits a degenerate element the backend then rejects.
+// rather than a click with a pixel of jitter. Used by shapes/highlight so a
+// stray click never commits a degenerate element the backend then rejects.
+// Draw is exempt: even a click makes a dot.
 const MIN_DRAG_FRACTION = 0.02;
+
+// Freehand highlighter: a translucent, wide, round-capped stroke.
+const MARKER_COLORS = ["#ffd43b", "#69db7c", "#66d9e8", "#ff8787"];
+const MARKER_WIDTHS = { thin: 8, medium: 14, thick: 24 };
+const MARKER_OPACITY = 0.4;
+
+// How close (in screen pixels, beyond the line's own half-width) the eraser
+// has to pass to a stroke to erase it.
+const ERASER_RADIUS_PX = 8;
+
+// A marquee smaller than this (as a page fraction) is a click, not a drag.
+const MIN_MARQUEE_FRACTION = 0.005;
 
 // Nudge step sizes, as fractions of the page (element coordinates are
 // stored as 0-1 fractions, not pixel counts). Reasoned against
@@ -283,6 +308,16 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   const [drawColor, setDrawColor] = useState(MARKUP_COLORS[0]);
   const [drawWidth, setDrawWidth] = useState("medium");
   const [activeStroke, setActiveStroke] = useState(null); // { page, points } | null
+  const [drawTool, setDrawTool] = useState("pen"); // "pen" | "marker"
+  const [markerColor, setMarkerColor] = useState(MARKER_COLORS[0]);
+  const [markerWidth, setMarkerWidth] = useState("medium");
+  const [pageSizes, setPageSizes] = useState({}); // { [pageNumber]: { w, h } } in PDF points
+  const [multiIds, setMultiIds] = useState([]); // ids picked by the Select marquee
+  const [marquee, setMarquee] = useState(null); // { page, start, current } | null
+  const [erasingIds, setErasingIds] = useState([]); // strokes swept by the eraser, not yet committed
+  const erasingRef = useRef(null); // { last } while the eraser button is held
+  const suppressStageClickRef = useRef(false);
+  const groupDragRef = useRef(null);
   const [shapeType, setShapeType] = useState("rectangle");
   const [shapeColor, setShapeColor] = useState(MARKUP_COLORS[0]);
   const [shapeWidth, setShapeWidth] = useState("medium");
@@ -340,6 +375,16 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     }
   }, [activeMode]);
 
+  // A selection made in one tool has no meaning in another (strokes, for one,
+  // are only selectable with the Select tool), so switching tools drops it.
+  useEffect(() => {
+    setSelectedId(null);
+    setMultiIds([]);
+    setMarquee(null);
+    setErasingIds([]);
+    erasingRef.current = null;
+  }, [activeMode]);
+
   // Phase-"style" close-on-outside-click. Attached only while phase ===
   // "style" (phase "type" keeps using onBlur/handleRunEditorBlur below,
   // since its only focusable children are the <input> itself and
@@ -385,6 +430,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               page: pageNumber,
               runs: data.runs.map((r) => ({ ...r, page: pageNumber })),
               rotation: data.rotation,
+              size: data.width_pt && data.height_pt ? { w: data.width_pt, h: data.height_pt } : null,
             }))
             .catch((err) => {
               console.error(`Failed to load text runs for page ${pageNumber}:`, err);
@@ -395,6 +441,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
       if (!cancelled) {
         setRuns(perPage.flatMap((p) => p.runs));
         setPageRotations(Object.fromEntries(perPage.map((p) => [p.page, p.rotation])));
+        setPageSizes(Object.fromEntries(perPage.filter((p) => p.size).map((p) => [p.page, p.size])));
       }
     }
     loadRuns();
@@ -464,6 +511,28 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     function handleKeyDown(e) {
       if (textDraft || runEditor || isTypingTarget(document.activeElement)) return;
       const ctrl = e.ctrlKey || e.metaKey;
+      if (!ctrl && multiIds.length > 0) {
+        const members = elements.filter((item) => multiIds.includes(item.id));
+        if (e.key === "Escape") {
+          setMultiIds([]);
+          return;
+        }
+        if (e.key === "Delete" || e.key === "Backspace") {
+          e.preventDefault();
+          commitElements(elements.filter((item) => !multiIds.includes(item.id)));
+          setMultiIds([]);
+          return;
+        }
+        if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
+          e.preventDefault();
+          const step = e.shiftKey ? NUDGE_BIG_STEP : NUDGE_SMALL_STEP;
+          const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+          const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+          const moved = moveGroup(members, dx, dy);
+          if (moved) commitElements(elements.map((item) => moved.get(item.id) ?? item));
+          return;
+        }
+      }
       if (!ctrl) {
         if (e.key === "Escape") {
           setSelectedId(null);
@@ -528,7 +597,7 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [elements, selectedId, textDraft, runEditor, runs, pageRotations]);
+  }, [elements, selectedId, multiIds, textDraft, runEditor, runs, pageRotations]);
 
   if (!fileId || !pageCount) return null;
 
@@ -641,9 +710,16 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   }
 
   function handleStageClick() {
+    // A marquee drag ends in a click on the stage; it must not undo the
+    // selection that drag just made.
+    if (suppressStageClickRef.current) {
+      suppressStageClickRef.current = false;
+      return;
+    }
     // Spec: clicking empty canvas deselects. Clicks that landed on an element
     // stop propagating before they reach here.
     setSelectedId(null);
+    setMultiIds([]);
   }
 
   function pointFromEvent(pageRef, e) {
@@ -670,27 +746,182 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   function handleDrawMouseUp() {
     // Clear FIRST, unconditionally. handleDrawMouseMove is gated only on
     // activeStroke being non-null, not on a button actually being held, so
-    // leaving a 1-point stroke armed after a plain click makes a line follow
-    // the cursor and commit a phantom stroke on the next mouseup/mouseleave.
+    // leaving a stroke armed makes a line follow the cursor and commit a
+    // phantom stroke on the next mouseup/mouseleave.
     const stroke = activeStroke;
     setActiveStroke(null);
-    if (!stroke || stroke.points.length < 2) return;
-    // A point count is not a size: a click with a pixel of jitter still yields
-    // two points. Measure the actual extent instead, as Highlight mode does.
-    const xs = stroke.points.map((p) => p.x);
-    const ys = stroke.points.map((p) => p.y);
-    if (
-      Math.max(...xs) - Math.min(...xs) < MIN_DRAG_FRACTION &&
-      Math.max(...ys) - Math.min(...ys) < MIN_DRAG_FRACTION
-    ) {
-      return;
-    }
-    const next = [
+    // Any press-and-release makes a mark, however short: a lone point is a dot.
+    if (!stroke || stroke.points.length < 1) return;
+    const marker = drawTool === "marker";
+    commitElements([
       ...elements,
-      { id: newElementId(), type: "stroke", page: stroke.page, points: stroke.points, color: drawColor, width: STROKE_WIDTHS[drawWidth] },
-    ];
-    commitElements(next);
+      {
+        id: newElementId(),
+        type: "stroke",
+        page: stroke.page,
+        points: stroke.points,
+        color: marker ? markerColor : drawColor,
+        width: marker ? MARKER_WIDTHS[markerWidth] : STROKE_WIDTHS[drawWidth],
+        ...(marker ? { opacity: MARKER_OPACITY } : {}),
+      },
+    ]);
   }
+
+  // On-screen thickness (CSS px) of a stroke. Pen widths keep their long-
+  // standing rough scale; the marker is drawn to true page scale so the
+  // translucent band covers the same area on screen as in the export.
+  function strokeScreenWidth(width, opacity, page, pageRef) {
+    const size = pageSizes[page];
+    const cssWidth = pageRef?.current?.getBoundingClientRect().width;
+    if (opacity != null && size?.w && cssWidth) return (width * cssWidth) / size.w;
+    return width / 3;
+  }
+
+  function eraseAt(pageNumber, pageRef, e) {
+    const point = pointFromEvent(pageRef, e);
+    if (!point) return;
+    const rect = pageRef.current.getBoundingClientRect();
+    // A fast drag delivers sparse mouse events, so test the whole segment
+    // since the last event, not just its endpoint, or the eraser would skip
+    // over thin lines.
+    const from = erasingRef.current?.last ?? point;
+    erasingRef.current = { last: point };
+    const lengthPx = Math.hypot((point.x - from.x) * rect.width, (point.y - from.y) * rect.height);
+    const steps = Math.max(1, Math.ceil(lengthPx / 4));
+    const samples = Array.from({ length: steps + 1 }, (_, i) => ({
+      x: from.x + ((point.x - from.x) * i) / steps,
+      y: from.y + ((point.y - from.y) * i) / steps,
+    }));
+    const hits = elements
+      .filter((el) => el.type === "stroke" && el.page === pageNumber && !erasingIds.includes(el.id))
+      .filter((el) => {
+        const radius = ERASER_RADIUS_PX + strokeScreenWidth(el.width, el.opacity, el.page, pageRef) / 2;
+        return samples.some((sample) => polylineNearPoint(el.points, sample, radius, rect.width, rect.height));
+      })
+      .map((el) => el.id);
+    if (hits.length > 0) setErasingIds((prev) => [...new Set([...prev, ...hits])]);
+  }
+
+  function handleEraserMouseDown(pageNumber, pageRef, e) {
+    erasingRef.current = { last: null };
+    eraseAt(pageNumber, pageRef, e);
+  }
+
+  function handleEraserMouseMove(pageNumber, pageRef, e) {
+    if (erasingRef.current) eraseAt(pageNumber, pageRef, e);
+  }
+
+  function handleEraserMouseUp() {
+    if (!erasingRef.current) return;
+    erasingRef.current = null;
+    // One history entry per sweep, so a single Undo restores everything.
+    if (erasingIds.length > 0) commitElements(elements.filter((el) => !erasingIds.includes(el.id)));
+    setErasingIds([]);
+  }
+
+  // The box a member occupies for selection and group moves, or null when it
+  // can't be measured yet (a text edit whose run hasn't loaded).
+  function boundsOf(el) {
+    if (el.type === "text_edit") {
+      const run = runs.find((r) => r.page === el.page && r.index === el.run_index);
+      return run ? elementBounds(el, textEditBoxRect(run, el, pageRotations)) : null;
+    }
+    return elementBounds(el);
+  }
+
+  // moveElement needs a text_edit's box size, which is never stored on it.
+  function moveTargetFor(el) {
+    if (el.type !== "text_edit") return el;
+    const run = runs.find((r) => r.page === el.page && r.index === el.run_index);
+    if (!run) return null;
+    const box = textEditBoxRect(run, el, pageRotations);
+    return { ...el, x: box.left, y: box.top, width: box.width, height: box.height };
+  }
+
+  // Moves every member by the same (dx, dy), clamped so the group as a whole
+  // stays on the page. Returns Map(id -> moved element), or null if nothing
+  // is movable.
+  function moveGroup(members, dx, dy) {
+    const targets = members
+      .map((el) => ({ el, target: moveTargetFor(el), bounds: boundsOf(el) }))
+      .filter((m) => m.target && m.bounds);
+    if (targets.length === 0) return null;
+    const clamped = clampMove(unionBounds(targets.map((m) => m.bounds)), dx, dy);
+    return new Map(targets.map((m) => [m.el.id, moveElement(m.target, clamped.dx, clamped.dy)]));
+  }
+
+  function handleSelectMouseDown(pageNumber, pageRef, e) {
+    // Only empty page space starts a marquee; elements handle their own presses.
+    if (e.target !== e.currentTarget) return;
+    suppressStageClickRef.current = false;
+    const point = pointFromEvent(pageRef, e);
+    if (!point) return;
+    setSelectedId(null);
+    setMultiIds([]);
+    setMarquee({ page: pageNumber, start: point, current: point });
+  }
+
+  function handleSelectMouseMove(pageRef, e) {
+    if (!marquee) return;
+    const point = pointFromEvent(pageRef, e);
+    if (point) setMarquee((m) => m && { ...m, current: point });
+  }
+
+  function handleSelectMouseUp() {
+    if (!marquee) return;
+    const box = rectFromPoints(marquee.start, marquee.current);
+    setMarquee(null);
+    if (box.right - box.left < MIN_MARQUEE_FRACTION && box.bottom - box.top < MIN_MARQUEE_FRACTION) return;
+    const picked = elements
+      .filter((el) => {
+        if (el.page !== marquee.page) return false;
+        const bounds = boundsOf(el);
+        return bounds && rectsIntersect(bounds, box);
+      })
+      .map((el) => el.id);
+    setMultiIds(picked);
+    suppressStageClickRef.current = true;
+  }
+
+  function startGroupDrag(pageRef, e) {
+    e.stopPropagation();
+    const point = pointFromEvent(pageRef, e);
+    if (!point) return;
+    groupDragRef.current = {
+      start: point,
+      pageRef,
+      members: elements.filter((el) => multiIds.includes(el.id)),
+      snapshot: elements,
+      result: null,
+    };
+    window.addEventListener("mousemove", handleGroupDragMove);
+    window.addEventListener("mouseup", handleGroupDragEnd);
+    window.addEventListener("blur", handleGroupDragEnd);
+  }
+
+  function handleGroupDragMove(e) {
+    const drag = groupDragRef.current;
+    if (!drag) return;
+    const point = pointFromEvent(drag.pageRef, e);
+    if (!point) return;
+    const moved = moveGroup(drag.members, point.x - drag.start.x, point.y - drag.start.y);
+    if (!moved) return;
+    drag.result = moved;
+    setElements(drag.snapshot.map((el) => moved.get(el.id) ?? el));
+  }
+
+  function handleGroupDragEnd() {
+    window.removeEventListener("mousemove", handleGroupDragMove);
+    window.removeEventListener("mouseup", handleGroupDragEnd);
+    window.removeEventListener("blur", handleGroupDragEnd);
+    const drag = groupDragRef.current;
+    groupDragRef.current = null;
+    if (!drag?.result) return;
+    historyRef.current = { undoStack: [...historyRef.current.undoStack, drag.snapshot], redoStack: [] };
+    setHistoryVersion((v) => v + 1);
+    onChange(drag.snapshot.map((el) => drag.result.get(el.id) ?? el));
+  }
+
   function handleShapeMouseDown(pageNumber, pageRef, e) {
     const point = pointFromEvent(pageRef, e);
     if (!point) return;
@@ -1004,20 +1235,26 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
   function handleStageMouseDown(pageNumber, pageRef, e) {
     if (activeMode === "draw") return handleDrawMouseDown(pageNumber, pageRef, e);
+    if (activeMode === "select") return handleSelectMouseDown(pageNumber, pageRef, e);
+    if (activeMode === "eraser") return handleEraserMouseDown(pageNumber, pageRef, e);
     if (activeMode === "shapes") return handleShapeMouseDown(pageNumber, pageRef, e);
     if (activeMode === "highlight") return handleHighlightMouseDown(pageNumber, pageRef, e);
     if (activeMode === "image") return handleImageStageClick(pageNumber, pageRef, e);
     if (activeMode === "new_text") return handleNewTextStageClick(pageNumber, pageRef, e);
   }
 
-  function handleStageMouseMove(pageRef, e) {
+  function handleStageMouseMove(pageNumber, pageRef, e) {
     if (activeMode === "draw") return handleDrawMouseMove(pageRef, e);
+    if (activeMode === "select") return handleSelectMouseMove(pageRef, e);
+    if (activeMode === "eraser") return handleEraserMouseMove(pageNumber, pageRef, e);
     if (activeMode === "shapes") return handleShapeMouseMove(pageRef, e);
     if (activeMode === "highlight") return handleHighlightMouseMove(pageRef, e);
   }
 
   function handleStageMouseUp(e) {
     if (activeMode === "draw") return handleDrawMouseUp(e);
+    if (activeMode === "select") return handleSelectMouseUp();
+    if (activeMode === "eraser") return handleEraserMouseUp();
     if (activeMode === "shapes") return handleShapeMouseUp(e);
     if (activeMode === "highlight") return handleHighlightMouseUp(e);
   }
@@ -1200,39 +1437,56 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
     const top = Math.min(...ys);
     const width = Math.max(...xs) - left;
     const height = Math.max(...ys) - top;
+    // Strokes are only selectable with the Select tool, so a press on one in
+    // any other tool is never swallowed.
+    const selectable = activeMode === "select";
+    const points = el.points.length === 1 ? [el.points[0], el.points[0]] : el.points;
+    const strokeClass = !selectable
+      ? "edit-pdf-canvas__stroke edit-pdf-canvas__stroke--inert"
+      : el.id === selectedId
+        ? "edit-pdf-canvas__stroke edit-pdf-canvas__stroke--selected"
+        : "edit-pdf-canvas__stroke";
     return (
       <>
         <svg className="edit-pdf-canvas__strokes" viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position: "absolute", inset: 0 }}>
-          <g onClick={(e) => selectElement(el.id, e)}>
+          <g onClick={selectable ? (e) => selectElement(el.id, e) : undefined}>
             <polyline
-              points={el.points.map((p) => `${p.x * 100},${p.y * 100}`).join(" ")}
+              points={points.map((p) => `${p.x * 100},${p.y * 100}`).join(" ")}
               fill="none"
               stroke={el.color}
-              strokeWidth={el.width / 3}
+              strokeWidth={strokeScreenWidth(el.width, el.opacity, el.page, pageRef)}
+              strokeOpacity={el.opacity ?? 1}
+              strokeLinecap={el.opacity != null || el.points.length === 1 ? "round" : "butt"}
+              strokeLinejoin={el.opacity != null || el.points.length === 1 ? "round" : "miter"}
               vectorEffect="non-scaling-stroke"
-              className={el.id === selectedId ? "edit-pdf-canvas__stroke edit-pdf-canvas__stroke--selected" : "edit-pdf-canvas__stroke"}
+              className={strokeClass}
             />
           </g>
         </svg>
-        <div
-          className="edit-pdf-canvas__hit-overlay"
-          style={{ left: `${left * 100}%`, top: `${top * 100}%`, width: `${width * 100}%`, height: `${height * 100}%` }}
-          onMouseDown={(e) => {
-            setSelectedId(el.id);
-            startElementDrag(pageRef, el, "move", e);
-          }}
-          onClick={(e) => e.stopPropagation()}
-        />
-        <button
-          type="button"
-          className="edit-pdf-canvas__element-remove"
-          style={{ left: `${left * 100}%`, top: `${top * 100}%` }}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => removeElement(el.id)}
-          aria-label="Remove this stroke"
-        >
-          <X size={12} weight="bold" />
-        </button>
+        {selectable && (
+          <>
+            <div
+              className="edit-pdf-canvas__hit-overlay"
+              style={{ left: `${left * 100}%`, top: `${top * 100}%`, width: `${width * 100}%`, height: `${height * 100}%` }}
+              onMouseDown={(e) => {
+                setMultiIds([]);
+                setSelectedId(el.id);
+                startElementDrag(pageRef, el, "move", e);
+              }}
+              onClick={(e) => e.stopPropagation()}
+            />
+            <button
+              type="button"
+              className="edit-pdf-canvas__element-remove"
+              style={{ left: `${left * 100}%`, top: `${top * 100}%` }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => removeElement(el.id)}
+              aria-label="Remove this stroke"
+            >
+              <X size={12} weight="bold" />
+            </button>
+          </>
+        )}
       </>
     );
   }
@@ -1813,18 +2067,34 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
   }
 
   function renderPageOverlay(pageNumber, pageRef) {
+    // Drawing and erasing must work anywhere on the page, including over
+    // existing elements, so those tools make everything else click-through.
+    const stageClassName = ["draw", "eraser"].includes(activeMode)
+      ? "edit-pdf-canvas__stage edit-pdf-canvas__stage--passthrough edit-pdf-canvas__stage--crosshair"
+      : activeMode === "select"
+        ? "edit-pdf-canvas__stage edit-pdf-canvas__stage--crosshair"
+        : "edit-pdf-canvas__stage";
+    const multiMembers = elements.filter((el) => el.page === pageNumber && multiIds.includes(el.id) && boundsOf(el));
+    const multiBoxes = multiMembers.map((el) => boundsOf(el));
+    const groupBox = unionBounds(multiBoxes);
+    const percentBox = (b) => ({
+      left: `${b.left * 100}%`,
+      top: `${b.top * 100}%`,
+      width: `${(b.right - b.left) * 100}%`,
+      height: `${(b.bottom - b.top) * 100}%`,
+    });
     return (
       <div
-        className="edit-pdf-canvas__stage"
+        className={stageClassName}
         onMouseDown={(e) => handleStageMouseDown(pageNumber, pageRef, e)}
-        onMouseMove={(e) => handleStageMouseMove(pageRef, e)}
+        onMouseMove={(e) => handleStageMouseMove(pageNumber, pageRef, e)}
         onMouseUp={handleStageMouseUp}
         onMouseLeave={handleStageMouseUp}
         onClick={handleStageClick}
       >
         {elements
           .filter((el) => {
-            if (el.page !== pageNumber || el.id === textDraft?.id) return false;
+            if (el.page !== pageNumber || el.id === textDraft?.id || erasingIds.includes(el.id)) return false;
             if (el.type === "text_edit" && runEditor && runEditor.page === el.page && runEditor.runIndex === el.run_index) {
               return false;
             }
@@ -1841,11 +2111,32 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
             <polyline
               points={activeStroke.points.map((p) => `${p.x * 100},${p.y * 100}`).join(" ")}
               fill="none"
-              stroke={drawColor}
-              strokeWidth={STROKE_WIDTHS[drawWidth] / 3}
+              stroke={drawTool === "marker" ? markerColor : drawColor}
+              strokeWidth={
+                drawTool === "marker"
+                  ? strokeScreenWidth(MARKER_WIDTHS[markerWidth], MARKER_OPACITY, activeStroke.page, pageRef)
+                  : STROKE_WIDTHS[drawWidth] / 3
+              }
+              strokeOpacity={drawTool === "marker" ? MARKER_OPACITY : 1}
+              strokeLinecap={drawTool === "marker" || activeStroke.points.length === 1 ? "round" : "butt"}
+              strokeLinejoin="round"
               vectorEffect="non-scaling-stroke"
             />
           </svg>
+        )}
+        {marquee && marquee.page === pageNumber && (
+          <div className="edit-pdf-canvas__marquee" style={percentBox(rectFromPoints(marquee.start, marquee.current))} />
+        )}
+        {multiBoxes.map((box, i) => (
+          <div key={multiMembers[i].id} className="edit-pdf-canvas__multi-outline" style={percentBox(box)} />
+        ))}
+        {activeMode === "select" && groupBox && (
+          <div
+            className="edit-pdf-canvas__group-overlay"
+            style={percentBox(groupBox)}
+            onMouseDown={(e) => startGroupDrag(pageRef, e)}
+            onClick={(e) => e.stopPropagation()}
+          />
         )}
         {shapeDragPage === pageNumber && shapeDragStart && shapeDragCurrent && (
           <svg className="edit-pdf-canvas__shapes" viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position: "absolute", inset: 0 }}>
@@ -1926,6 +2217,32 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
       {activeMode === "draw" && (
         <div className="edit-pdf-canvas__style-bar">
+          {["pen", "marker"].map((tool) => (
+            <button
+              key={tool}
+              type="button"
+              className={tool === drawTool ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+              onClick={() => setDrawTool(tool)}
+            >
+              {tool === "pen" ? "Pen" : "Highlighter"}
+            </button>
+          ))}
+          {drawTool === "marker" ? (
+            <>
+              {renderColorOptions(MARKER_COLORS, markerColor, setMarkerColor)}
+              {Object.keys(MARKER_WIDTHS).map((w) => (
+                <button
+                  key={w}
+                  type="button"
+                  className={w === markerWidth ? "edit-pdf-canvas__width-button edit-pdf-canvas__width-button--active" : "edit-pdf-canvas__width-button"}
+                  onClick={() => setMarkerWidth(w)}
+                >
+                  {w}
+                </button>
+              ))}
+            </>
+          ) : (
+            <>
           {renderColorOptions(
             MARKUP_COLORS,
             selectedElementForStyle?.type === "stroke" ? selectedElementForStyle.color : drawColor,
@@ -1949,6 +2266,20 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
               {w}
             </button>
           ))}
+            </>
+          )}
+        </div>
+      )}
+
+      {activeMode === "select" && (
+        <div className="edit-pdf-canvas__style-bar">
+          <span>Drag across empty space to select several items. Delete removes them; drag them to move them.</span>
+        </div>
+      )}
+
+      {activeMode === "eraser" && (
+        <div className="edit-pdf-canvas__style-bar">
+          <span>Drag across a hand-drawn line or highlight to erase it.</span>
         </div>
       )}
 

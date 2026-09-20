@@ -1379,6 +1379,18 @@ def test_edit_pdf_stroke_single_point_with_opacity_draws_a_round_dot(tmp_path):
     assert pix.pixel(pix.width // 2, pix.height // 2)[0] < 200
 
 
+def test_edit_pdf_pen_dot_is_visible(tmp_path):
+    pix = _stroke_fixture(
+        tmp_path,
+        {
+            "type": "stroke", "page": 1,
+            "points": [{"x": 0.5, "y": 0.5}],
+            "color": "#000000", "width": 12,
+        },
+    )
+    assert pix.pixel(pix.width // 2, pix.height // 2)[0] < 100
+
+
 def test_edit_pdf_stroke_rejects_bad_opacity(tmp_path):
     for bad in (0, -0.1, 1.5, True, "x"):
         with pytest.raises(PDFError, match="opacity"):
