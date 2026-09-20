@@ -5,6 +5,19 @@ All notable changes to PDF Editor. The **web app** is what the Windows installer
 run from source. Both share the same PDF engine in `app/core/`, so a change to the
 engine lands in both.
 
+## 0.15.2 — 2026-09-20
+
+The installed app now actually starts. Every installer built since 0.5.0 crashed on launch
+(a terminal window opened and closed at once). None of those were published until 0.15.1,
+and 0.15.1's installer had the same crash. This release bundles the files the packaged app
+was missing, and every tool was run against the packaged app to confirm it works.
+
+- **Fixed:** the app crashed at startup because a layout-model file used by PDF to Markdown
+  was missing from the installer.
+- **Fixed:** OCR and PDF to PDF/A failed in the installer with "No OCR engine selected"
+  (the OCR engine plug-ins weren't bundled).
+- The launcher now supports background worker processes in the packaged app.
+
 ## 0.15.1 — 2026-09-20
 
 The first release actually published since 0.4.0: the release build had been failing

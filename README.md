@@ -92,7 +92,10 @@ it stops the server. To stop it manually, press `Ctrl+C` in that terminal.
 ```bash
 venv/Scripts/pyinstaller --name PDFEditorWeb --onedir --console \
   --collect-all uvicorn --collect-all fastapi --collect-all starlette \
-  --add-data "web/frontend/dist;frontend/dist" -y web/launch.py
+  --collect-data pymupdf --collect-data pymupdf4llm \
+  --collect-all ocrmypdf --copy-metadata ocrmypdf \
+  --add-data "web/frontend/dist;frontend/dist" --add-data "VERSION;." \
+  --add-data "ocr_binaries;ocr_binaries" -y web/launch.py
 ```
 
 This produces `dist/PDFEditorWeb/PDFEditorWeb.exe`. Run it directly, or create a

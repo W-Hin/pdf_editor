@@ -1,3 +1,4 @@
+import multiprocessing
 import threading
 import time
 import webbrowser
@@ -28,4 +29,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Required for a packaged (PyInstaller) exe on Windows that uses
+    # multiprocessing (OCR via ocrmypdf can start worker processes): without
+    # it each worker the exe spawns re-runs this whole launcher - a second
+    # web server - instead of doing its job. A no-op when run from source.
+    multiprocessing.freeze_support()
     main()

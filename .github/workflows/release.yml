@@ -85,6 +85,8 @@ jobs:
         run: >
           pyinstaller --name PDFEditorWeb --onedir --console
           --collect-all uvicorn --collect-all fastapi --collect-all starlette
+          --collect-data pymupdf --collect-data pymupdf4llm
+          --collect-all ocrmypdf --copy-metadata ocrmypdf
           --add-data "web/frontend/dist;frontend/dist"
           --add-data "VERSION;."
           --add-data "ocr_binaries;ocr_binaries"
