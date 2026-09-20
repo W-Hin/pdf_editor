@@ -4254,3 +4254,166 @@ def test_text_edit_preview_size_equals_the_exported_span_size_in_the_ratio_branc
     assert spans, "the replacement should be in the export"
     assert preview == pytest.approx(spans[0]["size"], abs=0.1)
     assert preview == pytest.approx(sizes[0], abs=0.1)
+
+
+# ---- desktop Edit PDF: white swatch, "More..." colour picker, Delete/Backspace ----
+
+def _draw_shape_on(dlg, page_widget):
+    w, h = page_widget.width(), page_widget.height()
+    start, end = QPoint(int(w * 0.2), int(h * 0.2)), QPoint(int(w * 0.5), int(h * 0.4))
+    QTest.mousePress(page_widget, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(page_widget, end)
+    QTest.mouseRelease(page_widget, Qt.LeftButton, Qt.NoModifier, end)
+
+
+def _stub_picker(monkeypatch, dlg, result):
+    calls = []
+
+    def fake(initial):
+        calls.append(initial)
+        return result
+    monkeypatch.setattr(dlg, "_get_color_dialog", fake)
+    return calls
+
+
+def test_edit_pdf_dialog_white_is_in_the_palette_and_a_white_shape_exports(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+    dlg, src = _dialog_with_text(tmp_path)
+    assert "#ffffff" in EditPdfDialog._PALETTE
+    dlg._set_create_mode("shape")
+    white = next(b for c, b in dlg._swatch_buttons["shape"] if c == "#ffffff")
+    white.click()
+    assert dlg._tool_colors["shape"] == "#ffffff"
+    assert "border: 3px solid #1971c2" in white.styleSheet()
+    dlg._set_tool_color("shape", "#ff0000")
+    assert "1px solid #888" in white.styleSheet()
+    white.click()
+    _draw_shape_on(dlg, dlg._page_widgets[0])
+    assert dlg.model.elements[0]["color"] == "#ffffff"
+    out = dlg.run_operation([str(src)], dlg.gather_params())
+    assert out and os.path.exists(out[0])
+
+
+def test_edit_pdf_dialog_each_tool_row_has_its_own_more_button():
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+    dlg = EditPdfDialog()
+    assert set(dlg._more_buttons) == {"draw", "shape", "highlight"}
+    assert len({id(b) for b in dlg._more_buttons.values()}) == 3
+
+
+def test_edit_pdf_dialog_more_button_sets_only_its_tools_custom_colour(tmp_path, monkeypatch):
+    from PySide6.QtGui import QColor
+    dlg, src = _dialog_with_text(tmp_path)
+    calls = _stub_picker(monkeypatch, dlg, QColor("#12ABef"))
+    dlg._set_create_mode("shape")
+    dlg._more_buttons["shape"].click()
+    assert calls == ["#ff0000"]  # initial = the tool's current colour
+    assert dlg._tool_colors == {"draw": "#ff0000", "shape": "#12abef", "highlight": "#ffd43b"}
+    more = dlg._more_buttons["shape"]
+    assert "border: 3px solid #1971c2" in more.styleSheet() and "#12abef" in more.styleSheet()
+    assert "3px" not in dlg._more_buttons["draw"].styleSheet()
+    assert all("3px" not in b.styleSheet() for _, b in dlg._swatch_buttons["shape"])
+    _draw_shape_on(dlg, dlg._page_widgets[0])
+    assert dlg.model.elements[0]["color"] == "#12abef"
+    out = dlg.run_operation([str(src)], dlg.gather_params())
+    assert out and os.path.exists(out[0])
+    # picking a palette colour again de-selects the More button
+    dlg._set_tool_color("shape", "#000000")
+    assert "3px" not in more.styleSheet()
+
+
+def test_edit_pdf_dialog_cancelled_or_invalid_colour_pick_changes_nothing(tmp_path, monkeypatch):
+    from PySide6.QtGui import QColor
+    dlg, src = _dialog_with_text(tmp_path)
+    before = dict(dlg._tool_colors)
+    for bad in (QColor(), None):  # QColorDialog.getColor returns an invalid QColor on cancel
+        _stub_picker(monkeypatch, dlg, bad)
+        for tool in ("draw", "shape", "highlight"):
+            dlg._more_buttons[tool].click()
+    assert dlg._tool_colors == before
+    assert all("3px" not in b.styleSheet() for b in dlg._more_buttons.values())
+
+
+def _dlg_with_selected(tmp_path, kind):
+    dlg, src = _dialog_with_text(tmp_path)
+    base = {"page": 1}
+    if kind == "shape":
+        el = _shape_element()
+    elif kind == "stroke":
+        el = _stroke_element()
+    elif kind == "highlight":
+        el = _highlight_element()
+    elif kind == "new_text":
+        el = {"page": 1, "type": "new_text", "x": 0.3, "y": 0.3, "width": 0.1, "height": 0.05,
+              "text": "Hi", "family": "helvetica", "bold": False, "italic": False,
+              "underline": False, "size": 14, "color": "#000000", "align": "left"}
+    elif kind == "image":
+        el = {"page": 1, "type": "image", "file_id": "x.png", "x": 0.2, "y": 0.2, "width": 0.2, "height": 0.1}
+    else:
+        el = _text_edit_element()
+    dlg.model.add(el)
+    dlg.model.select(dlg.model.elements[-1]["id"])
+    return dlg
+
+
+@pytest.mark.parametrize("key", [Qt.Key_Delete, Qt.Key_Backspace])
+@pytest.mark.parametrize("kind", ["shape", "stroke", "highlight", "new_text", "image", "text_edit"])
+def test_edit_pdf_dialog_delete_and_backspace_keys_delete_the_selected_element(tmp_path, kind, key):
+    dlg = _dlg_with_selected(tmp_path, kind)
+    extra = dlg.model.add(_shape_element(x0=0.6, y0=0.6, x1=0.8, y1=0.8))
+    dlg.model.select(dlg.model.elements[0]["id"])
+    target_id = dlg.model.elements[0]["id"]
+    undo_depth = len(dlg.model._undo_stack)
+    QTest.keyClick(dlg, key)
+    assert [e["id"] for e in dlg.model.elements] == [extra]
+    assert len(dlg.model._undo_stack) == undo_depth + 1
+    dlg.model.undo()
+    assert target_id in [e["id"] for e in dlg.model.elements]
+
+
+def test_edit_pdf_dialog_delete_key_with_nothing_selected_does_nothing(tmp_path):
+    dlg, src = _dialog_with_text(tmp_path)
+    dlg.model.add(_shape_element())
+    dlg.model.select(None)
+    depth = len(dlg.model._undo_stack)
+    QTest.keyClick(dlg, Qt.Key_Delete)
+    QTest.keyClick(dlg, Qt.Key_Backspace)
+    assert len(dlg.model.elements) == 1 and len(dlg.model._undo_stack) == depth
+
+
+def test_edit_pdf_dialog_delete_key_is_left_to_an_open_new_text_editor(tmp_path):
+    dlg = _dlg_with_selected(tmp_path, "shape")
+    dlg._page_widgets[0]._open_text_editor_for_new((0.6, 0.6))
+    assert dlg._page_widgets[0]._text_editor is not None
+    depth = len(dlg.model._undo_stack)
+    QTest.keyClick(dlg, Qt.Key_Delete)
+    QTest.keyClick(dlg, Qt.Key_Backspace)
+    assert len(dlg.model.elements) == 1 and len(dlg.model._undo_stack) == depth
+
+
+def test_edit_pdf_dialog_delete_key_is_left_to_an_open_run_editor(tmp_path):
+    dlg = _dlg_with_selected(tmp_path, "shape")
+    dlg._set_create_mode("text")
+    _dclick_run(dlg._page_widgets[0], 0)
+    assert dlg._page_widgets[0]._run_editor is not None
+    dlg.model.select(dlg.model.elements[0]["id"])
+    QTest.keyClick(dlg, Qt.Key_Delete)
+    QTest.keyClick(dlg, Qt.Key_Backspace)
+    assert len(dlg.model.elements) == 1
+
+
+def test_edit_pdf_dialog_delete_key_works_after_clicking_a_toolbar_button(tmp_path):
+    dlg = _dlg_with_selected(tmp_path, "shape")
+    dlg.new_text_btn.click()
+    dlg.model.select(dlg.model.elements[0]["id"])
+    QTest.keyClick(dlg, Qt.Key_Delete)
+    assert dlg.model.elements == []
+
+
+def test_edit_pdf_dialog_does_not_register_delete_or_backspace_as_shortcuts():
+    from PySide6.QtGui import QShortcut
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+    dlg = EditPdfDialog()
+    keys = {s.key().toString() for s in dlg.findChildren(QShortcut)}
+    assert "Delete" not in keys and "Backspace" not in keys
+    assert {"Ctrl+Z", "Ctrl+Y", "Ctrl+C", "Ctrl+X", "Ctrl+V"} <= keys

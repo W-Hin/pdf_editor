@@ -3,8 +3,8 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap, QShortcut, QKeySequence
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea, QTextEdit, QSpinBox, QCheckBox
+from PySide6.QtGui import QColor, QPixmap, QShortcut, QKeySequence
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea, QTextEdit, QSpinBox, QCheckBox, QColorDialog
 
 from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, get_page_size, get_page_rotation, extract_text_runs, edit_pdf, extract_form_fields, fill_form
 from app.core.compare_pdf import extract_page_texts, diff_page_text, render_page_image, diff_page_visual
@@ -589,7 +589,7 @@ class EditPdfDialog(ToolDialog):
     _TOOL_WIDTH_DEFAULTS = {"draw": "medium", "shape": "medium"}
     # The amber is the web's own default highlight colour, so it must be
     # offer-able from the swatch row too, not just be the starting value.
-    _PALETTE = ["#000000", "#ff0000", "#0000ff", "#00aa00", "#ffff00", "#ffd43b"]
+    _PALETTE = ["#000000", "#ff0000", "#0000ff", "#00aa00", "#ffff00", "#ffd43b", "#ffffff"]
 
     def build_preview(self, container: QWidget) -> None:
         # Toolbar state first: the swatch rows below render their selected
@@ -601,6 +601,7 @@ class EditPdfDialog(ToolDialog):
         self._tool_colors = dict(self._TOOL_COLOR_DEFAULTS)
         self._tool_widths = dict(self._TOOL_WIDTH_DEFAULTS)
         self._swatch_buttons: dict[str, list[tuple[str, QPushButton]]] = {}
+        self._more_buttons: dict[str, QPushButton] = {}
 
         layout = QVBoxLayout(container)
 
@@ -741,7 +742,6 @@ class EditPdfDialog(ToolDialog):
         for keys, action in (
             ("Ctrl+Z", "undo"), ("Ctrl+Y", "redo"),
             ("Ctrl+C", "copy"), ("Ctrl+X", "cut"), ("Ctrl+V", "paste"),
-            ("Delete", "delete"), ("Backspace", "delete"),
         ):
             shortcut = QShortcut(QKeySequence(keys), self)
             shortcut.activated.connect(lambda a=action: self._handle_shortcut(a))
@@ -758,8 +758,24 @@ class EditPdfDialog(ToolDialog):
             row.addWidget(btn)
             buttons.append((hex_color, btn))
         self._swatch_buttons[tool] = buttons
+        more = QPushButton("More...")
+        more.setFixedHeight(20)
+        more.setToolTip("Pick any colour")
+        more.clicked.connect(lambda _=False, t=tool: self._pick_custom_color(t))
+        row.addWidget(more)
+        self._more_buttons[tool] = more
         self._refresh_swatch_row(tool)
         return row
+
+    def _get_color_dialog(self, initial: str):
+        """The one place the modal colour dialog opens (tests replace it)."""
+        return QColorDialog.getColor(QColor(initial), self, "Choose colour")
+
+    def _pick_custom_color(self, tool: str) -> None:
+        picked = self._get_color_dialog(self._tool_colors[tool])
+        if picked is None or not isinstance(picked, QColor) or not picked.isValid():
+            return
+        self._set_tool_color(tool, picked.name(QColor.HexRgb).lower())
 
     def _refresh_swatch_row(self, tool: str) -> None:
         """A swatch is a bare coloured square, so its BORDER is the only
@@ -769,6 +785,15 @@ class EditPdfDialog(ToolDialog):
             selected = hex_color == self._tool_colors[tool]
             border = "3px solid #1971c2" if selected else "1px solid #888"
             btn.setStyleSheet(f"background-color: {hex_color}; border: {border};")
+        more = self._more_buttons.get(tool)
+        if more is not None:
+            current = self._tool_colors[tool]
+            if current in self._PALETTE:
+                more.setStyleSheet("border: 1px solid #888;")
+            else:
+                # Custom colour: the More button is the selected one and wears it.
+                text = "#000000" if QColor(current).lightness() > 128 else "#ffffff"
+                more.setStyleSheet(f"background-color: {current}; color: {text}; border: 3px solid #1971c2;")
 
     def _widget_create_mode(self) -> str:
         """"draw" is this toolbar's label for the stroke tool -
@@ -977,6 +1002,11 @@ class EditPdfDialog(ToolDialog):
             step = 0.02 if e.modifiers() & Qt.ShiftModifier else 0.004
             dx, dy = arrow_deltas[e.key()]
             self.model.nudge(self.model.selected_id, dx * step, dy * step)
+            e.accept()
+            return
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and not self._any_text_editor_open():
+            self._handle_shortcut("delete")
+            e.accept()
             return
         super().keyPressEvent(e)
 
