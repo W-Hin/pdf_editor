@@ -4597,3 +4597,108 @@ def test_recent_files_link_is_refused_while_a_tool_is_running(monkeypatch):
     monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: shown.append(a))
     window._recent_link.click()
     assert shown and window._stack.currentWidget() is window._tool_page
+
+
+# ---- EditElementsModel: group selection and group operations ----
+
+
+def _group_model():
+    model = EditElementsModel()
+    ids = {
+        "stroke": model.add({"page": 1, "type": "stroke", "points": [{"x": 0.1, "y": 0.1}, {"x": 0.2, "y": 0.2}], "color": "#000000", "width": 3}),
+        "shape": model.add({"page": 1, "type": "shape", "shape": "rectangle", "x0": 0.4, "y0": 0.4, "x1": 0.5, "y1": 0.5, "color": "#ff0000", "width": 3, "filled": False}),
+        "image": model.add({"page": 1, "type": "image", "x": 0.6, "y": 0.1, "width": 0.2, "height": 0.1, "file_path": "x.png"}),
+        "highlight": model.add({"page": 1, "type": "highlight", "top": 0.7, "right": 0.5, "bottom": 0.2, "left": 0.3, "color": "#ffd43b"}),
+    }
+    model._undo_stack.clear()
+    return model, ids
+
+
+def test_select_many_sets_the_group_and_clears_the_single_selection():
+    model, ids = _group_model()
+    model.select(ids["shape"])
+    model.select_many([ids["stroke"], ids["image"]])
+    assert model.selected_ids == [ids["stroke"], ids["image"]]
+    assert model.selected_id is None
+    model.select(ids["shape"])  # picking one element drops the group
+    assert model.selected_ids == []
+    model.select_many([ids["stroke"]])
+    model.clear_selection()
+    assert model.selected_ids == [] and model.selected_id is None
+
+
+def test_delete_selected_group_is_one_undo_step():
+    model, ids = _group_model()
+    model.select_many([ids["stroke"], ids["shape"], ids["highlight"]])
+    model.delete_selected_group()
+    assert [e["id"] for e in model.elements] == [ids["image"]]
+    assert model.selected_ids == []
+    model.undo()
+    assert len(model.elements) == 4
+    model.redo()
+    assert len(model.elements) == 1
+
+
+def test_nudge_group_moves_every_type_together_in_one_undo_step():
+    model, ids = _group_model()
+    model.select_many(list(ids.values()))
+    model.nudge_group(0.02, 0.03)
+    by_id = {e["id"]: e for e in model.elements}
+    assert by_id[ids["stroke"]]["points"][0]["x"] == pytest.approx(0.12)
+    assert by_id[ids["stroke"]]["points"][0]["y"] == pytest.approx(0.13)
+    assert by_id[ids["shape"]]["x0"] == pytest.approx(0.42)
+    assert by_id[ids["image"]]["y"] == pytest.approx(0.13)
+    assert by_id[ids["highlight"]]["left"] == pytest.approx(0.32)
+    assert by_id[ids["highlight"]]["top"] == pytest.approx(0.73)
+    model.undo()
+    assert {e["id"]: e for e in model.elements}[ids["shape"]]["x0"] == 0.4
+
+
+def test_group_move_is_clamped_as_a_whole_not_per_element():
+    model, ids = _group_model()
+    model.select_many([ids["stroke"], ids["shape"]])
+    # The stroke starts at x=0.1, so a -0.5 move can only go -0.1 for the group;
+    # the shape must slide by the SAME amount, not be squashed against the edge.
+    model.nudge_group(-0.5, 0)
+    by_id = {e["id"]: e for e in model.elements}
+    assert by_id[ids["stroke"]]["points"][0]["x"] == pytest.approx(0.0)
+    assert by_id[ids["shape"]]["x0"] == pytest.approx(0.3)
+    assert by_id[ids["shape"]]["x1"] == pytest.approx(0.4)
+
+
+def test_translate_group_is_live_from_the_snapshot_and_commits_nothing():
+    model, ids = _group_model()
+    base = [dict(e) for e in model.elements]
+    model.translate_group([ids["shape"], ids["image"]], 0.1, 0.0, base=base)
+    model.translate_group([ids["shape"], ids["image"]], 0.2, 0.0, base=base)  # from the snapshot, not cumulative
+    by_id = {e["id"]: e for e in model.elements}
+    assert by_id[ids["shape"]]["x0"] == pytest.approx(0.6)
+    assert by_id[ids["image"]]["x"] == pytest.approx(0.8)
+    assert model._undo_stack == []
+    assert by_id[ids["stroke"]]["points"][0]["x"] == 0.1  # not in the group: untouched
+
+
+def test_group_operations_skip_a_text_edit_whose_run_has_not_loaded():
+    model, ids = _group_model()
+    orphan = model.add({"page": 1, "type": "text_edit", "run_index": 7, "segments": []})
+    model._undo_stack.clear()
+    model.select_many([ids["shape"], orphan])
+    model.nudge_group(0.05, 0)  # must not raise
+    by_id = {e["id"]: e for e in model.elements}
+    assert by_id[ids["shape"]]["x0"] == pytest.approx(0.45)
+    assert "x" not in by_id[orphan]
+
+
+def test_undo_drops_group_members_that_no_longer_exist():
+    model, ids = _group_model()
+    extra = model.add({"page": 1, "type": "shape", "shape": "line", "x0": 0.1, "y0": 0.9, "x1": 0.2, "y1": 0.9, "color": "#000000", "width": 1, "filled": False})
+    model.select_many([ids["stroke"], extra])
+    model.undo()  # undoes the add of `extra`
+    assert model.selected_ids == [ids["stroke"]]
+
+
+def test_removing_an_element_drops_it_from_the_group():
+    model, ids = _group_model()
+    model.select_many([ids["stroke"], ids["shape"]])
+    model.remove(ids["shape"])
+    assert model.selected_ids == [ids["stroke"]]

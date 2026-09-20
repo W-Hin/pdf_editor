@@ -8,6 +8,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QTextEdit, QWidget
 
+from app.core.edit_geometry import clamp_move, element_bounds, union_bounds
 from app.core.pdf_ops import text_edit_final_sizes
 from app.ui.widgets import box_to_insets, insets_to_box
 
@@ -123,6 +124,9 @@ class EditElementsModel:
     def __init__(self):
         self.elements: list[dict] = []
         self.selected_id: str | None = None
+        # The Select tool's marquee/group selection. Independent of selected_id:
+        # picking one element clears it, and picking a group clears selected_id.
+        self.selected_ids: list[str] = []
         self._undo_stack: list[list[dict]] = []
         self._redo_stack: list[list[dict]] = []
         self._clipboard: dict | None = None
@@ -185,10 +189,76 @@ class EditElementsModel:
         self.elements = [e for e in self.elements if e["id"] != element_id]
         if self.selected_id == element_id:
             self.selected_id = None
+        if element_id in self.selected_ids:
+            self.selected_ids = [i for i in self.selected_ids if i != element_id]
         self._notify()
 
     def select(self, element_id: str | None) -> None:
         self.selected_id = element_id
+        if element_id is not None:
+            self.selected_ids = []
+        self._notify()
+
+    def select_many(self, ids: list[str]) -> None:
+        self.selected_ids = list(ids)
+        self.selected_id = None
+        self._notify()
+
+    def clear_selection(self) -> None:
+        self.selected_id = None
+        self.selected_ids = []
+        self._notify()
+
+    def element_bounds_for(self, el: dict) -> dict | None:
+        """Bounds in page fractions, or None for a text_edit whose run hasn't
+        loaded (so it can be neither hit by a marquee nor moved)."""
+        box = self.text_edit_box(el) if el["type"] == "text_edit" else None
+        return element_bounds(el, box)
+
+    def _group_members(self, ids: list[str]) -> list[dict]:
+        return [e for e in self.elements if e["id"] in ids and self.element_bounds_for(e) is not None]
+
+    def delete_selected_group(self) -> None:
+        """Removes every element of the group selection as ONE undo step."""
+        if not self.selected_ids:
+            return
+        ids = set(self.selected_ids)
+        self.commit()
+        self.elements = [e for e in self.elements if e["id"] not in ids]
+        self.selected_ids = []
+        self._notify()
+
+    def _group_changes(self, members: list[dict], dx: float, dy: float) -> dict[str, dict]:
+        """{id: coordinate changes} moving every member by the same delta, first
+        clamped so the group as a whole stays on the page."""
+        bounds = union_bounds([self.element_bounds_for(m) for m in members])
+        if bounds is None:
+            return {}
+        dx, dy = clamp_move(bounds, dx, dy)
+        return {m["id"]: self.clamped_translate(m, dx, dy) for m in members}
+
+    def translate_group(self, ids: list[str], dx: float, dy: float, base: list[dict] | None = None) -> None:
+        """Live-moves the listed elements by (dx, dy) from their `base` positions
+        (the pre-gesture snapshot; the current elements if omitted) with NO undo
+        step - the caller commits once, before the first change, like a drag."""
+        source = base if base is not None else self.elements
+        members = [e for e in source if e["id"] in ids and self.element_bounds_for(e) is not None]
+        changes = self._group_changes(members, dx, dy)
+        for el in self.elements:
+            if el["id"] in changes:
+                el.update(changes[el["id"]])
+        self._notify()
+
+    def nudge_group(self, dx: float, dy: float) -> None:
+        """One keypress moves the whole group selection: one undo step."""
+        members = self._group_members(self.selected_ids)
+        changes = self._group_changes(members, dx, dy)
+        if not changes:
+            return
+        self.commit()
+        for el in self.elements:
+            if el["id"] in changes:
+                el.update(changes[el["id"]])
         self._notify()
 
     def elements_for_page(self, page: int) -> list[dict]:
@@ -241,6 +311,7 @@ class EditElementsModel:
             return
         self._redo_stack.append(self._snapshot())
         self.elements = self._undo_stack.pop()
+        self._drop_stale_selection()
         self._notify()
 
     def redo(self) -> None:
@@ -248,7 +319,12 @@ class EditElementsModel:
             return
         self._undo_stack.append(self._snapshot())
         self.elements = self._redo_stack.pop()
+        self._drop_stale_selection()
         self._notify()
+
+    def _drop_stale_selection(self) -> None:
+        alive = {e["id"] for e in self.elements}
+        self.selected_ids = [i for i in self.selected_ids if i in alive]
 
     def _shift_for_paste(self, el: dict) -> dict:
         """Per-type paste-offset math, mirroring the web app's own shift()
