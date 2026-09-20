@@ -8,19 +8,22 @@ check for newer releases, which fails silently if you're offline.
 There are two ways to use it:
 
 - **Web app** (recommended) — a local browser-based app with a clickable page-thumbnail
-  grid and a Recent Files history. This is the primary, actively developed version.
-- **Desktop app** — the original PySide6 desktop version. Still fully working, kept as
-  a fallback.
+  grid and a Recent Files history. This is what the Windows installer packages.
+- **Desktop app** — a native PySide6 window. It now has **every tool the web app has**
+  (all 26), including the full Edit PDF editor. It is run from source (see below); the
+  installer does not include it.
 
 Both share the same underlying PDF engine (`app/core/`), so results are identical
-either way — they just differ in the UI.
+either way — they just differ in the UI. See [CHANGELOG.md](CHANGELOG.md) for what
+changed in each release.
 
 ## Features
 
 - **Organize** — Merge, Split, Remove pages, Extract pages, Reorder pages
-- **Edit** — Rotate, Add watermark, Add page numbers, Crop, Redact, Edit PDF
-  (in-place text/image editing, draw, shapes, highlights), Sign, Fill PDF forms,
-  Compare two PDFs
+- **Edit** — Rotate, Add watermark, Add page numbers, Crop, Redact, Sign, Fill PDF
+  forms, Compare two PDFs, and **Edit PDF**: add text and images, draw freehand, draw
+  shapes and arrows, highlight, and edit or restyle existing text in place — with undo /
+  redo, copy / paste and arrow-key nudging
 - **Optimize** — Compress, Repair a damaged file, Protect with a password, Unlock
   a password-protected file, OCR (adds a searchable text layer to scanned pages,
   with optional PDF/A conversion for long-term archiving)
@@ -31,8 +34,8 @@ either way — they just differ in the UI.
 
 Download and run the installer from the
 [latest release](https://github.com/W-Hin/pdf_editor/releases/latest) —
-`PDFEditorSetup.exe`. It installs to your user folder (no admin rights needed),
-adds a Start Menu entry, and optionally a Desktop shortcut. No Python, no Node,
+`PDFEditorSetup.exe`. It installs the **web app** to your user folder (no admin rights
+needed), adds a Start Menu entry, and optionally a Desktop shortcut. No Python, no Node,
 nothing else to install. The app checks for newer releases on launch and shows a
 banner if one's available — updating just means running the newer installer.
 
@@ -121,11 +124,29 @@ original input files. That folder is also where the Recent Files history
 venv/Scripts/python -m app.main
 ```
 
-This opens the PySide6 desktop window directly — no browser, no server. A prebuilt
-Windows executable also exists at `dist/PDFEditor/PDFEditor.exe` (rebuild it with
-PyInstaller if you've changed `app/` — see `docs/superpowers/plans/2026-09-01-pdf-editor-v1.md`
-for the exact build command), and `scripts/create_desktop_shortcut.py` can create a
-Desktop shortcut pointing at it.
+This opens the PySide6 desktop window directly — no browser, no server. Tools are
+grouped Organize / Edit / Optimize / Convert on the home window, matching the web app.
+
+**Edit PDF** works on all pages at once (scroll through them). Pick a mode, then work
+directly on the page:
+
+- **New Text** — click to place a box and type. **Insert Image** — click, pick a picture.
+- **Draw**, **Shapes** (rectangle / ellipse / line / arrow, optionally filled) and
+  **Highlight** — drag on the page; each tool has its own colour (and width) row.
+- **Edit Text** — double-click an existing line of text to edit it in place. Select part
+  of it and use the family / size / **B** / *I* controls to restyle just that part;
+  **Revert** restores the original.
+- Click any element to select it, then drag to move, use the corner handle to resize
+  (where it applies), or the small red button to delete. Arrow keys nudge (hold Shift for
+  bigger steps); Ctrl+Z / Ctrl+Y undo and redo; Ctrl+C / Ctrl+X / Ctrl+V copy, cut and
+  paste (edited text can't be copied). The toolbar buttons do the same, plus bring-to-front
+  and send-to-back.
+- Press **Run** to write `<name>_edited.pdf`.
+
+A prebuilt Windows executable can be made with PyInstaller (see
+`docs/superpowers/plans/2026-09-01-pdf-editor-v1.md` for the exact build command) — rebuild
+it after any change to `app/`, since an older build won't have newer tools — and
+`scripts/create_desktop_shortcut.py` can create a Desktop shortcut pointing at it.
 
 ## Running tests
 
