@@ -8,6 +8,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QTextEdit, QWidget
 
+from app.core.pdf_ops import text_edit_final_sizes
 from app.ui.widgets import box_to_insets, insets_to_box
 
 _PASTE_OFFSET = 0.03
@@ -1087,6 +1088,23 @@ class EditPageWidget(QWidget):
         align_flag = {"left": Qt.AlignLeft, "center": Qt.AlignHCenter, "right": Qt.AlignRight}[el["align"]]
         painter.drawText(rect, align_flag | Qt.AlignTop | Qt.TextWordWrap, el["text"])
 
+    def _text_edit_preview_segments(self, el: dict, run: dict) -> list[dict]:
+        """The segments as the EXPORT will draw them: over-wide replacement
+        text is shrunk to fit the original run's width by the core's own
+        text_edit_final_sizes (never below half size / 6pt). Only the
+        preview uses these sizes - the stored element is never touched.
+        Falls back to the stored sizes when the page's size is unknown."""
+        info = self.model.page_info.get(el["page"])
+        if not info or not info["width_pt"] or not el["segments"]:
+            return el["segments"]
+        b = run["bbox"]
+        displayed_w = (1 - b["left"] - b["right"]) * info["width_pt"]
+        displayed_h = (1 - b["top"] - b["bottom"]) * info["height_pt"]
+        # raw and displayed axes are swapped on a 90/270 page
+        original_width = displayed_h if info["rotation"] in (90, 270) else displayed_w
+        sizes = text_edit_final_sizes(el["segments"], original_width)
+        return [{**seg, "size": size} for seg, size in zip(el["segments"], sizes)]
+
     def _paint_text_edit(self, painter: QPainter, el: dict) -> None:
         run = self.model.find_run(el["page"], el["run_index"])
         if run is None:
@@ -1097,7 +1115,7 @@ class EditPageWidget(QWidget):
         if self._editing_run is not None and self._editing_run["run"]["index"] == el["run_index"]:
             return  # the live editor overlay is showing this run's text
         rect = self._element_rect_px(el)
-        doc = build_segments_document(el["segments"], self.px_per_pt)
+        doc = build_segments_document(self._text_edit_preview_segments(el, run), self.px_per_pt)
         painter.save()
         painter.translate(rect.x(), rect.y())
         painter.setPen(QColor("#1f2937"))

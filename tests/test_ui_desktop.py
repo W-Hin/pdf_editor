@@ -3896,3 +3896,65 @@ def test_revert_restores_the_run_editors_default_font():
     widget.revert_run_editor()
     run = model.find_run(1, 0)
     assert widget._run_editor.document().defaultFont().pixelSize() == max(1, round(run["size"] * widget.px_per_pt))
+
+
+def test_preview_segments_shrink_an_over_wide_replacement_like_the_export():
+    from app.core.pdf_ops import text_edit_final_sizes
+    model, widget = _text_widget(runs=[_run(0, text="Hi", top=0.1, left=0.1, right=0.8, bottom=0.85, size=14.0)])
+    segs = [{"text": "A replacement far wider than the tiny original run", "family": "helvetica",
+             "bold": False, "italic": False, "size": 14.0}]
+    el_id = model.add({"page": 1, "type": "text_edit", "run_index": 0, "segments": segs})
+    el = next(e for e in model.elements if e["id"] == el_id)
+    run = model.find_run(1, 0)
+    preview = widget._text_edit_preview_segments(el, run)
+    original_width = (1 - 0.1 - 0.8) * 595  # displayed width == raw width at rotation 0
+    assert preview[0]["size"] == pytest.approx(text_edit_final_sizes(segs, original_width)[0])
+    assert preview[0]["size"] < 14
+    assert el["segments"][0]["size"] == 14.0          # the stored element is untouched
+    assert preview[0]["text"] == segs[0]["text"]
+
+
+def test_preview_segments_are_unchanged_when_the_text_fits():
+    model, widget = _text_widget(runs=[_run(0, text="Hello world", top=0.1, left=0.1, right=0.1, bottom=0.85)])
+    segs = [{"text": "Hi", "family": "helvetica", "bold": False, "italic": False, "size": 12.0}]
+    assert widget._text_edit_preview_segments({"page": 1, "type": "text_edit", "run_index": 0, "segments": segs},
+                                              model.find_run(1, 0)) == segs
+
+
+def test_preview_segments_use_the_displayed_height_as_the_original_width_on_a_rotated_page():
+    from app.core.pdf_ops import text_edit_final_sizes
+    # 90-degree page: displayed 842 x 595; the run is tall and narrow (sideways text)
+    model = EditElementsModel()
+    model.set_page_text_info(1, [_run(0, top=0.1, left=0.5, right=0.45, bottom=0.2)], rotation=90, width_pt=842, height_pt=595)
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 300))
+    segs = [{"text": "W" * 40, "family": "helvetica", "bold": False, "italic": False, "size": 14.0}]
+    run = model.find_run(1, 0)
+    displayed_h_pt = (1 - 0.1 - 0.2) * 595
+    preview = widget._text_edit_preview_segments({"page": 1, "type": "text_edit", "run_index": 0, "segments": segs}, run)
+    assert preview[0]["size"] == pytest.approx(text_edit_final_sizes(segs, displayed_h_pt)[0])
+
+
+def test_preview_segments_fall_back_to_the_stored_sizes_without_page_info():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    segs = [{"text": "abc", "family": "helvetica", "bold": False, "italic": False, "size": 12.0}]
+    assert widget._text_edit_preview_segments({"page": 1, "type": "text_edit", "run_index": 0, "segments": segs},
+                                              _run(0)) == segs
+
+
+def test_a_shrunk_preview_is_actually_painted_smaller(tmp_path):
+    model, widget = _text_widget(runs=[_run(0, text="Hi", top=0.1, left=0.1, right=0.8, bottom=0.85, size=14.0)])
+    widget.px_per_pt = 400 / 595
+    pm = QPixmap(400, 600)
+    pm.fill(Qt.white)
+    widget.set_page_pixmap(pm)
+    long_segs = [{"text": "W" * 60, "family": "helvetica", "bold": False, "italic": False, "size": 30.0}]
+    model.add({"page": 1, "type": "text_edit", "run_index": 0, "segments": long_segs})
+    model.select(None)
+    img = widget.grab().toImage()
+    # the dark text must fit in a band no taller than the SHRUNK size allows (<= 0.5 x 30pt x px_per_pt + slack)
+    dark_rows = [y for y in range(600) if any(img.pixelColor(x, y).lightness() < 128 for x in range(0, 400, 2))]
+    assert dark_rows, "the replacement text should have been painted"
+    assert (max(dark_rows) - min(dark_rows)) <= 30 * 0.5 * (400 / 595) * 1.6 + 4
