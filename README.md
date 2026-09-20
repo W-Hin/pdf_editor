@@ -7,11 +7,14 @@ check for newer releases, which fails silently if you're offline.
 
 There are two ways to use it:
 
-- **Web app** (recommended) — a local browser-based app with a clickable page-thumbnail
-  grid and a Recent Files history. This is what the Windows installer packages.
-- **Desktop app** — a native PySide6 window. It now has **every tool the web app has**
-  (all 26), including the full Edit PDF editor. It is run from source (see below); the
-  installer does not include it.
+- **Web app** — a local browser-based app with a clickable page-thumbnail grid and a
+  Recent Files history. Installer: `PDFEditorSetup.exe`.
+- **Desktop app** ("PDF Editor (Desktop)") — a native PySide6 window with **every tool
+  the web app has** (all 26), including the full Edit PDF editor, made to look like the
+  web app. Installer: `PDFEditorDesktopSetup.exe`.
+
+Every release on the Releases page has both installers; pick whichever you prefer. They
+can be installed side by side.
 
 Both share the same underlying PDF engine (`app/core/`), so results are identical
 either way — they just differ in the UI. See [CHANGELOG.md](CHANGELOG.md) for what
@@ -127,15 +130,28 @@ original input files. That folder is also where the Recent Files history
 venv/Scripts/python -m app.main
 ```
 
-This opens the PySide6 desktop window directly — no browser, no server. Tools are
-grouped Organize / Edit / Optimize / Convert on the home window, matching the web app.
+This opens the PySide6 desktop window directly — no browser, no server (or install it
+with `PDFEditorDesktopSetup.exe`). Tools are grouped Organize / Edit / Optimize / Convert
+on the home screen, matching the web app, and open inside the same window with a Back
+link. **Recent Files** (top-right) lists every file the tools have produced, kept in a
+small local SQLite database (`%LOCALAPPDATA%\PDFEditor\history.db`); it stores only
+names and paths, never the PDFs themselves, and Remove only forgets an entry.
 
 **Edit PDF** works on all pages at once (scroll through them). Pick a mode, then work
 directly on the page:
 
-- **New Text** — click to place a box and type. **Insert Image** — click, pick a picture.
-- **Draw**, **Shapes** (rectangle / ellipse / line / arrow, optionally filled) and
-  **Highlight** — drag on the page; each tool has its own colour (and width) row.
+- The toolbar is one row: **Select, Edit Text, Draw, Shapes, Highlight, Insert Image,
+  Add Text, Eraser**, then undo/redo, Arrange (bring to front / send to back), clipboard
+  buttons and the active tool's options. It scrolls sideways in a narrow window.
+- **Add Text** — click to place a box and type. **Insert Image** — click, pick a picture.
+- **Draw** has a Pen and a freehand **Highlighter**; **Shapes** (rectangle / ellipse /
+  line / arrow, optionally filled) and **Highlight** — drag on the page; each tool has
+  its own colour (and width) row. Even a click leaves a dot, and drawing over an existing
+  line draws instead of selecting it.
+- **Eraser** — drag across a hand-drawn line or highlight to erase it (one Undo restores
+  the whole sweep). **Select** — drag across empty space to pick several items of any
+  kind; Delete removes them, dragging moves them together, arrows nudge them, Esc
+  deselects. Drawings are only selectable with the Select tool.
 - **Edit Text** — double-click an existing line of text to edit it in place. Select part
   of it and use the family / size / **B** / *I* controls to restyle just that part;
   **Revert** restores the original.
@@ -146,15 +162,12 @@ directly on the page:
   and send-to-back.
 - Press **Run** to write `<name>_edited.pdf`.
 
-In the web app, Edit PDF also has a **Select** tool (drag across empty space to pick
-several items, then Delete or drag them), an **Eraser** for hand-drawn lines, and a
-freehand **Highlighter** under Draw. Drawings are only selectable with the Select tool,
-so drawing over an existing line always draws.
+The web app's Edit PDF works the same way, with the same one-row toolbar.
 
-A prebuilt Windows executable can be made with PyInstaller (see
-`docs/superpowers/plans/2026-09-01-pdf-editor-v1.md` for the exact build command) — rebuild
-it after any change to `app/`, since an older build won't have newer tools — and
-`scripts/create_desktop_shortcut.py` can create a Desktop shortcut pointing at it.
+The release workflow (`.github/workflows/release.yml`) builds both installers and runs
+the packaged desktop app's self-test (`PDFEditorDesktop.exe --smoke <report>`: main window,
+PDF to Markdown, OCR) before publishing. `scripts/create_desktop_shortcut.py` can create a
+Desktop shortcut for a from-source run.
 
 ## Running tests
 

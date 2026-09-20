@@ -47,6 +47,29 @@ def _checks(work: Path, report: Path) -> list[tuple[str, object]]:
         # Kept beside the report so a build can be looked at, not just trusted.
         win.grab().save(str(report.with_suffix(".png")))
 
+    def edit_pdf_tool():
+        from PySide6.QtWidgets import QApplication
+
+        from app.main import build_main_window
+        from app.ui.dialogs.edit_dialogs import EditPdfDialog
+        from app.ui.theme import apply_theme
+
+        apply_theme(QApplication.instance())
+        win = build_main_window()
+        win.open_tool("Edit PDF", EditPdfDialog)  # builds the toolbar (icons) inside the window
+        tool = win._current_tool
+        tool.on_files_changed([str(text_pdf)])
+        assert tool._page_widgets, "Edit PDF showed no pages"
+        assert tool.undo_btn is not None and tool.select_btn is not None
+
+    def history():
+        from app.core import history
+
+        db = work / "history.db"
+        history.add_entry(str(text_pdf), "Smoke test", page_count=1, db_path=db)
+        entries = history.list_entries(db_path=db)
+        assert len(entries) == 1 and entries[0]["exists"]
+
     def rotate():
         out = work / "rotated.pdf"
         rotate_pages(str(text_pdf), str(out), 90)
@@ -64,7 +87,7 @@ def _checks(work: Path, report: Path) -> list[tuple[str, object]]:
         with pymupdf.open(str(out)) as d:
             assert "fox" in d[0].get_text().lower(), "OCR produced no text"
 
-    return [("main window", window), ("rotate", rotate), ("pdf to markdown", markdown), ("ocr", ocr)]
+    return [("main window", window), ("edit pdf tool", edit_pdf_tool), ("recent files database", history), ("rotate", rotate), ("pdf to markdown", markdown), ("ocr", ocr)]
 
 
 def run_smoke(report_path: str) -> int:

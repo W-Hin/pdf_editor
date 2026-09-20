@@ -1,9 +1,30 @@
 # Changelog
 
-All notable changes to PDF Editor. The **web app** is what the Windows installer
-(`PDFEditorSetup.exe`) packages; the **desktop app** (PySide6, `python -m app.main`) is
-run from source. Both share the same PDF engine in `app/core/`, so a change to the
-engine lands in both.
+All notable changes to PDF Editor. The **web app** is packaged by `PDFEditorSetup.exe`
+and the **desktop app** (PySide6) by `PDFEditorDesktopSetup.exe` (also runnable from
+source with `python -m app.main`). Both share the same PDF engine in `app/core/`, so a
+change to the engine lands in both.
+
+## 0.17.0 — 2026-09-21
+
+The desktop app now matches the web app: same look, same tools inside the window, same
+Edit PDF features. Both apps get a one-row Edit PDF toolbar.
+
+- **Desktop app looks like the web app:** the same palette, Inter font and icons, a
+  card grid home screen, and tools that open inside the main window with a Back link
+  instead of pop-up windows.
+- **Desktop Recent Files:** every file a tool produces is listed (newest first, with a
+  thumbnail, Open, Show in folder and Remove), backed by a local SQLite database. Only
+  names and paths are stored, never the PDFs.
+- **Desktop Edit PDF, now equal to the web:** a click or short line leaves a dot instead
+  of vanishing; drawing over an existing line draws instead of selecting it; a **Select**
+  tool (drag across items, then Delete, drag or nudge them together); an **Eraser**; and
+  a freehand **Highlighter** under Draw.
+- **One-row Edit PDF toolbar (web and desktop):** modes, undo/redo, Arrange and the active
+  tool's options share one row, in the same order on both. Only the active mode shows its
+  name. The row scrolls sideways instead of wrapping in a narrow window.
+- Fixed: Undo/Redo and Paste in the desktop toolbar now enable and disable correctly, and
+  Bold/Italic buttons show when they are on.
 
 ## 0.16.1 — 2026-09-21
 
