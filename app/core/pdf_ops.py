@@ -582,6 +582,10 @@ def _validate_stroke(el: dict) -> None:
         if not (0 <= pt["x"] <= 1) or not (0 <= pt["y"] <= 1):
             raise PDFError("Stroke points must be within the page.")
     _hex_to_rgb(el["color"])  # raises PDFError up front on a malformed hex
+    opacity = el.get("opacity")
+    if opacity is not None:
+        if isinstance(opacity, bool) or not isinstance(opacity, (int, float)) or not (0 < opacity <= 1):
+            raise PDFError("Stroke opacity must be greater than 0 and at most 1.")
 
 
 def _validate_shape(el: dict) -> None:
@@ -736,7 +740,19 @@ def _apply_stroke(page: fitz.Page, el: dict) -> None:
     # for strokes.
     shape = page.new_shape()
     shape.draw_polyline(raw_points)
-    shape.finish(color=_hex_to_rgb(el["color"]), width=el["width"])
+    opacity = el.get("opacity")
+    if opacity is None or opacity >= 1:
+        shape.finish(color=_hex_to_rgb(el["color"]), width=el["width"])
+    else:
+        # Freehand highlighter: translucent, round-capped so a dot or the
+        # ends of a swipe look like a marker rather than a cut-off bar.
+        shape.finish(
+            color=_hex_to_rgb(el["color"]),
+            width=el["width"],
+            stroke_opacity=opacity,
+            lineCap=1,
+            lineJoin=1,
+        )
     shape.commit()
 
 

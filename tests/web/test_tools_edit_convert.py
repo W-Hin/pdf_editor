@@ -301,6 +301,7 @@ def test_get_text_runs_returns_runs():
     assert len(body["runs"]) == 1
     assert body["runs"][0]["text"] == "Page 1"
     assert body["rotation"] == 0
+    assert body["width_pt"] > 0 and body["height_pt"] > 0
 
 
 def test_get_text_runs_unknown_file_id_returns_404():

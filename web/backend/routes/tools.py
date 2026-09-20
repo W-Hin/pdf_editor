@@ -454,6 +454,7 @@ class StrokeElement(BaseModel):
     points: list[StrokePoint]
     color: str
     width: float
+    opacity: float | None = None
 
 
 class ShapeElement(BaseModel):

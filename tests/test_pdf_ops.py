@@ -1338,6 +1338,60 @@ def test_edit_pdf_stroke_draws_into_content_stream(tmp_path):
     assert found_red, "stroke did not render into the content stream at its displayed position"
 
 
+def _stroke_fixture(tmp_path, stroke):
+    doc = fitz.open()
+    doc.new_page(width=200, height=200)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+    output_path = tmp_path / "output.pdf"
+    edit_pdf(str(input_path), str(output_path), [stroke], {})
+    result = fitz.open(str(output_path))
+    pix = result[0].get_pixmap()
+    result.close()
+    return pix
+
+
+def test_edit_pdf_stroke_with_opacity_is_translucent(tmp_path):
+    pix = _stroke_fixture(
+        tmp_path,
+        {
+            "type": "stroke", "page": 1,
+            "points": [{"x": 0.1, "y": 0.5}, {"x": 0.9, "y": 0.5}],
+            "color": "#ffff00", "width": 20, "opacity": 0.4,
+        },
+    )
+    r, g, b = pix.pixel(pix.width // 2, pix.height // 2)[:3]
+    # 40% yellow over white: red/green stay high, blue drops but not to 0.
+    assert r > 240 and g > 240
+    assert 100 < b < 200
+
+
+def test_edit_pdf_stroke_single_point_with_opacity_draws_a_round_dot(tmp_path):
+    pix = _stroke_fixture(
+        tmp_path,
+        {
+            "type": "stroke", "page": 1,
+            "points": [{"x": 0.5, "y": 0.5}],
+            "color": "#000000", "width": 20, "opacity": 0.5,
+        },
+    )
+    assert pix.pixel(pix.width // 2, pix.height // 2)[0] < 200
+
+
+def test_edit_pdf_stroke_rejects_bad_opacity(tmp_path):
+    for bad in (0, -0.1, 1.5, True, "x"):
+        with pytest.raises(PDFError, match="opacity"):
+            _stroke_fixture(
+                tmp_path,
+                {
+                    "type": "stroke", "page": 1,
+                    "points": [{"x": 0.1, "y": 0.1}],
+                    "color": "#000000", "width": 3, "opacity": bad,
+                },
+            )
+
+
 def test_edit_pdf_stroke_respects_zorder_against_shape(tmp_path):
     # Regression test for the z-order bug: strokes used to be drawn as ink
     # annotations, which PDF viewers always paint above page content
