@@ -2532,6 +2532,45 @@ def test_pdf_to_markdown_zip_contains_markdown_and_extracted_image(tmp_path):
         assert "A paragraph of body text follows here." in md_text
 
 
+def test_pdf_to_markdown_zip_rewrites_image_paths_when_the_temp_dir_has_two_spellings(tmp_path, monkeypatch):
+    # On a Windows account with a username longer than 8 characters (e.g. a
+    # GitHub runner: C:/Users/RUNNER~1 vs C:/Users/runneradmin) tempfile
+    # returns a different spelling of the SAME folder than pymupdf4llm reports
+    # in the markdown. Reproduce that on any machine by making tempfile hand
+    # back an un-normalised spelling of a real directory.
+    import contextlib
+
+    real_dir = tmp_path / "images_real"
+    real_dir.mkdir()
+    odd_spelling = str(real_dir / ".." / "images_real")
+
+    @contextlib.contextmanager
+    def fake_temporary_directory():
+        yield odd_spelling
+
+    import app.core.pdf_ops as pdf_ops_module
+    monkeypatch.setattr(pdf_ops_module.tempfile, "TemporaryDirectory", fake_temporary_directory)
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    img_pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 40), False)
+    img_pix.set_rect(img_pix.irect, (255, 0, 0))
+    page.insert_image(fitz.Rect(72, 400, 172, 500), pixmap=img_pix)
+    input_path = tmp_path / "input.pdf"
+    doc.save(str(input_path))
+    doc.close()
+
+    output_path = tmp_path / "output.zip"
+    pdf_to_markdown_zip(str(input_path), str(output_path))
+
+    with zipfile.ZipFile(output_path) as zf:
+        md_text = zf.read("document.md").decode("utf-8")
+        image_names = [n for n in zf.namelist() if n.lower().endswith(".png")]
+    assert image_names
+    assert f"]({image_names[0]})" in md_text
+    assert "images_real" not in md_text  # no absolute path into the temp folder survives
+
+
 def test_pdf_to_markdown_zip_rewrites_image_paths_as_relative(tmp_path):
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)

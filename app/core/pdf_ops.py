@@ -1,4 +1,5 @@
 import math
+import os
 import tempfile
 import zipfile
 from pathlib import Path
@@ -320,7 +321,16 @@ def render_page_thumbnail(input_path: str, page_number: int, max_size: int = 100
 
 
 def pdf_to_markdown_zip(input_path: str, output_path: str) -> None:
-    with tempfile.TemporaryDirectory() as image_dir:
+    with tempfile.TemporaryDirectory() as raw_image_dir:
+        # Canonical (long-name) spelling of the temp folder. pymupdf4llm
+        # writes image references using the RESOLVED path, but on a Windows
+        # account whose username is longer than 8 characters tempfile hands
+        # out the short 8.3 spelling (C:/Users/RUNNER~1/...) - so stripping
+        # the un-resolved prefix below silently matched nothing and the zip's
+        # markdown shipped absolute paths into a deleted temp folder. Passing
+        # the resolved path to BOTH pymupdf4llm and the prefix strip makes
+        # them agree by construction.
+        image_dir = os.path.realpath(raw_image_dir)
         # KNOWN LIMITATION (investigated and confirmed unfixable this
         # session): a page auto-rotated by this app's own OCR feature
         # (app/core/ocr.py's ocr_pdf, which always passes rotate_pages=True)
