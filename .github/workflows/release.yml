@@ -98,6 +98,26 @@ jobs:
           --add-data "ocr_binaries;ocr_binaries"
           -y web/launch.py
 
+      - name: Build the desktop exe (PyInstaller)
+        run: >
+          pyinstaller --name PDFEditorDesktop --onedir --windowed
+          --collect-data pymupdf --collect-data pymupdf4llm
+          --collect-all ocrmypdf --copy-metadata ocrmypdf
+          --add-data "VERSION;."
+          --add-data "ocr_binaries;ocr_binaries"
+          -y app/main.py
+
+      # A missing bundled file only shows up when the packaged app runs, and it
+      # once shipped installers that crashed on launch. Run the real exe before
+      # anything is published; a failure here stops the release.
+      - name: Smoke-test the packaged desktop exe
+        shell: pwsh
+        run: |
+          $report = "$env:RUNNER_TEMP\desktop_smoke.txt"
+          $p = Start-Process -FilePath "dist\PDFEditorDesktop\PDFEditorDesktop.exe" -ArgumentList "--smoke", $report -Wait -PassThru
+          if (Test-Path $report) { Get-Content $report }
+          if ($p.ExitCode -ne 0) { throw "Desktop smoke test failed (exit $($p.ExitCode))." }
+
       - name: Build the installer (Inno Setup)
         shell: pwsh
         run: |
@@ -110,9 +130,16 @@ jobs:
             throw "ISCC.exe still not found at $iscc after the choco install attempt."
           }
           & $iscc "/DMyAppVersion=${{ steps.version.outputs.version }}" installer.iss
+          & $iscc "/DMyAppVersion=${{ steps.version.outputs.version }}" installer_desktop.iss
 
       - name: Publish the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: installer_output/PDFEditorSetup.exe
+          files: |
+            installer_output/PDFEditorSetup.exe
+            installer_output/PDFEditorDesktopSetup.exe
+          body: |
+            Two installers, pick one (they can be installed side by side):
+            - **PDFEditorSetup.exe** — the web app. Opens in your browser.
+            - **PDFEditorDesktopSetup.exe** — the desktop app (PDF Editor (Desktop)). Opens in its own window.
           generate_release_notes: true

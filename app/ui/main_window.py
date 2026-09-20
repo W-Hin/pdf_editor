@@ -6,7 +6,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PDF Editor")
+        self.setWindowTitle("PDF Editor (Desktop)")
         self.resize(700, 500)
 
         central = QWidget()

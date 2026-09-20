@@ -1,3 +1,5 @@
+import multiprocessing
+import os
 import sys
 
 from PySide6.QtWidgets import QApplication
@@ -10,8 +12,7 @@ from app.ui.dialogs.optimize_dialogs import CompressDialog, RepairDialog, Protec
 from app.ui.dialogs.convert_dialogs import ToImagesDialog, ToWordDialog, PdfToMarkdownDialog, PdfToPptxDialog, PdfToXlsxDialog, ImagesToPdfDialog
 
 
-def main() -> int:
-    app = QApplication(sys.argv)
+def build_main_window() -> MainWindow:
     window = MainWindow()
     window.add_tool("Organize", "Merge PDF", MergeDialog)
     window.add_tool("Organize", "Split PDF", SplitDialog)
@@ -39,9 +40,26 @@ def main() -> int:
     window.add_tool("Convert", "PDF to PowerPoint", PdfToPptxDialog)
     window.add_tool("Convert", "PDF to Excel", PdfToXlsxDialog)
     window.add_tool("Convert", "Images to PDF", ImagesToPdfDialog)
+    return window
+
+
+def main() -> int:
+    app = QApplication(sys.argv)
+    window = build_main_window()
     window.show()
     return app.exec()
 
 
 if __name__ == "__main__":
+    # Needed for the packaged exe: OCR starts worker processes, and without this
+    # each one re-runs this whole program (a second window) instead of its job.
+    multiprocessing.freeze_support()
+    if len(sys.argv) >= 3 and sys.argv[1] == "--smoke":
+        from app.smoke import run_smoke
+
+        # Headless: a build machine may have no display. Qt must also exist
+        # before the smoke test builds the window.
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        _app = QApplication(sys.argv)
+        sys.exit(run_smoke(sys.argv[2]))
     sys.exit(main())
