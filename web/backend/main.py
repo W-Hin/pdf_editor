@@ -33,16 +33,32 @@ if hasattr(sys, "_MEIPASS"):
 else:
     _base_dir = Path(__file__).resolve().parent.parent
 _frontend_dist = _base_dir / "frontend" / "dist"
-if _frontend_dist.exists():
+
+
+def mount_frontend(fastapi_app: FastAPI, dist_dir: Path) -> None:
+    """Serves the built React frontend (a no-op if it hasn't been built).
+
+    index.html is sent with `Cache-Control: no-cache` (the browser must
+    revalidate it on every load). Its script/style files have content-hashed
+    names, so they can be cached freely - but without this header a browser
+    keeps an old index.html for days (it heuristically caches a page with no
+    caching headers), and after an upgrade keeps showing the OLD app - the
+    old tool list, missing new tools - against the NEW server.
+    """
+    if not dist_dir.exists():
+        return
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
 
-    app.mount(
-        "/assets", StaticFiles(directory=str(_frontend_dist / "assets")), name="frontend-assets"
+    fastapi_app.mount(
+        "/assets", StaticFiles(directory=str(dist_dir / "assets")), name="frontend-assets"
     )
 
-    @app.get("/{full_path:path}")
+    @fastapi_app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
         if full_path == "api" or full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not Found")
-        return FileResponse(str(_frontend_dist / "index.html"))
+        return FileResponse(str(dist_dir / "index.html"), headers={"Cache-Control": "no-cache"})
+
+
+mount_frontend(app, _frontend_dist)
