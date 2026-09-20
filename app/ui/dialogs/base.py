@@ -47,7 +47,9 @@ class ToolDialog(QDialog):
         # Same as the web app: one wide "Choose a PDF file..." bar, then the
         # chosen file(s) listed beneath it.
         kind = "PDF " if self.file_filter.startswith("PDF") else ""
-        pick_btn = QPushButton(f"Choose {kind}files…" if self.allow_multiple_files else f"Choose a {kind}file…")
+        self._pick_default_text = f"Choose {kind}files…" if self.allow_multiple_files else f"Choose a {kind}file…"
+        pick_btn = QPushButton(self._pick_default_text)
+        self._pick_btn = pick_btn
         pick_btn.setObjectName("dropButton")
         pick_btn.setIcon(icon("upload-simple", MUTED_FOREGROUND, 18))
         pick_btn.setCursor(Qt.PointingHandCursor)
@@ -157,8 +159,21 @@ class ToolDialog(QDialog):
         return [self.file_list.item(i).text() for i in range(self.file_list.count())]
 
     def _sync_file_list_visibility(self, *_args) -> None:
-        # An empty list box is just a blank rectangle; only show it once it has files.
-        self.file_list.setVisible(self.file_list.count() > 0)
+        # A list of one file is just noise: a single-file tool shows the name on the
+        # (now slim) choose bar instead, and only a multi-file tool lists its files.
+        count = self.file_list.count()
+        single = not self.allow_multiple_files
+        self.file_list.setVisible(count > 0 and not single)
+        chosen = single and count == 1
+        if chosen:
+            name = Path(self.file_list.item(0).text()).name
+            self._pick_btn.setText(f"{name}   \u00b7   Change file")
+        else:
+            self._pick_btn.setText(self._pick_default_text)
+        self._pick_btn.setIcon(icon("file-pdf" if chosen else "upload-simple", MUTED_FOREGROUND, 18))
+        self._pick_btn.setProperty("compact", chosen)
+        self._pick_btn.style().unpolish(self._pick_btn)
+        self._pick_btn.style().polish(self._pick_btn)
 
     def _pick_files(self) -> None:
         if not self.allow_multiple_files:

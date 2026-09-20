@@ -87,6 +87,11 @@ QFrame#toolbarDivider { background: @BORDER@; border: none; }
 QMenu { background: @CARD@; border: 1px solid @BORDER@; border-radius: 6px; padding: 4px; }
 QMenu::item { padding: 6px 18px; border-radius: 4px; }
 QMenu::item:selected { background: @MUTED@; color: @FOREGROUND@; }
+QPushButton#dropButton[compact="true"] {
+    padding: 8px 16px; border-radius: 8px; color: @FOREGROUND@;
+}
+QScrollArea#pageScroll, #pageCanvas { background: #e9eef5; border-radius: 8px; }
+QScrollArea#pageScroll > QWidget > QWidget { background: #e9eef5; }
 QPushButton#backButton {
     border: none; background: transparent; color: @MUTED_FOREGROUND@;
     padding: 4px 0; text-align: left;

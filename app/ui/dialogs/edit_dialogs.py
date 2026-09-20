@@ -2,7 +2,7 @@ import html
 import os
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QIcon, QPixmap, QShortcut, QKeySequence
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea, QTextEdit, QSpinBox, QCheckBox, QColorDialog, QFrame, QMenu
 
@@ -592,10 +592,19 @@ class EditPdfDialog(ToolDialog):
     # offer-able from the swatch row too, not just be the starting value.
     _PALETTE = ["#000000", "#ff0000", "#0000ff", "#00aa00", "#ffff00", "#ffd43b", "#ffffff"]
 
+    # Pages are laid out to fit the window (up to this wide) and zoomed from there.
+    _ZOOM_STEPS = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
+    _DEFAULT_ZOOM_INDEX = 2
+    _MAX_FIT_WIDTH = 900
+
     def build_preview(self, container: QWidget) -> None:
         # Toolbar state first: the swatch rows below render their selected
         # state straight from it while they are being built.
         self._page_widgets: list[EditPageWidget] = []
+        self._zoom_index = self._DEFAULT_ZOOM_INDEX
+        self._fit_width = 400
+        self._page_pt: dict[int, tuple[float, float]] = {}
+        self._input_path: str | None = None
         self._create_mode = "new_text"
         self._draw_tool = "pen"  # Draw's sub-tool: "pen" | "marker" (freehand highlighter)
         self._shape_type = "rectangle"
@@ -617,6 +626,7 @@ class EditPdfDialog(ToolDialog):
         bar = QHBoxLayout(self._toolbar_widget)
         bar.setContentsMargins(0, 0, 0, 0)
         bar.setSpacing(6)
+        bar.addStretch(1)  # centres the toolbar; collapses (and the row scrolls) when it is too wide
         self._toolbar_scroll = QScrollArea()
         self._toolbar_scroll.setWidget(self._toolbar_widget)
         self._toolbar_scroll.setWidgetResizable(True)
@@ -757,23 +767,53 @@ class EditPdfDialog(ToolDialog):
         self._highlight_options.setVisible(False)
         self._text_options.setVisible(False)
 
+        bar.addWidget(self._divider())
+        self.zoom_out_btn = self._toolbar_icon("magnifying-glass-minus", "Zoom out", "Zoom out (Ctrl+-, or Ctrl+scroll)", lambda: self._set_zoom(self._zoom_index - 1))
+        self.zoom_label_btn = QPushButton("100%")
+        self.zoom_label_btn.setObjectName("toolbarIcon")
+        self.zoom_label_btn.setMinimumWidth(58)
+        self.zoom_label_btn.setToolTip("Reset to 100% (Ctrl+0)")
+        self.zoom_label_btn.setAccessibleName("Zoom level")
+        self.zoom_label_btn.setFocusPolicy(Qt.NoFocus)
+        self.zoom_label_btn.clicked.connect(lambda: self._set_zoom(self._DEFAULT_ZOOM_INDEX))
+        self.zoom_in_btn = self._toolbar_icon("magnifying-glass-plus", "Zoom in", "Zoom in (Ctrl++, or Ctrl+scroll)", lambda: self._set_zoom(self._zoom_index + 1))
+        for btn in (self.zoom_out_btn, self.zoom_label_btn, self.zoom_in_btn):
+            bar.addWidget(btn)
         bar.addStretch(1)
 
         self._scroll = QScrollArea()
+        self._scroll.setObjectName("pageScroll")
         self._scroll.setWidgetResizable(True)
         self._container = QWidget()
+        self._container.setObjectName("pageCanvas")
         self._container_layout = QVBoxLayout(self._container)
+        self._container_layout.setContentsMargins(16, 16, 16, 16)
+        self._container_layout.setSpacing(16)
+        self._container_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self._scroll.setWidget(self._container)
-        layout.addWidget(self._scroll)
+        layout.addWidget(self._scroll, 1)
+        # Draw only the pages near the viewport (a long document at a big zoom
+        # would otherwise render every page at once), and re-fit on resize.
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.setInterval(60)
+        self._render_timer.timeout.connect(self._render_pages)
+        self._refit_timer = QTimer(self)
+        self._refit_timer.setSingleShot(True)
+        self._refit_timer.setInterval(120)
+        self._refit_timer.timeout.connect(self._refit)
+        self._scroll.verticalScrollBar().valueChanged.connect(lambda _v: self._render_timer.start())
+        self._scroll.viewport().installEventFilter(self)  # Ctrl+scroll zooms
 
         self.model = EditElementsModel()
         self.model.on_change.append(self._refresh_toolbar_state)
         self._refresh_toolbar_state()
-        self._input_path: str | None = None
+        self._refresh_zoom_controls()
 
         for keys, action in (
             ("Ctrl+Z", "undo"), ("Ctrl+Y", "redo"),
             ("Ctrl+C", "copy"), ("Ctrl+X", "cut"), ("Ctrl+V", "paste"),
+            ("Ctrl+=", "zoom_in"), ("Ctrl++", "zoom_in"), ("Ctrl+-", "zoom_out"), ("Ctrl+0", "zoom_reset"),
         ):
             shortcut = QShortcut(QKeySequence(keys), self)
             shortcut.activated.connect(lambda a=action: self._handle_shortcut(a))
@@ -1074,6 +1114,9 @@ class EditPdfDialog(ToolDialog):
         return any(w._text_editor is not None or w._run_editor is not None for w in self._page_widgets)
 
     def _handle_shortcut(self, action: str) -> None:
+        if action in ("zoom_in", "zoom_out", "zoom_reset"):
+            self._set_zoom({"zoom_in": self._zoom_index + 1, "zoom_out": self._zoom_index - 1, "zoom_reset": self._DEFAULT_ZOOM_INDEX}[action])
+            return
         if self._any_text_editor_open():
             return
         if action == "undo":
@@ -1144,19 +1187,16 @@ class EditPdfDialog(ToolDialog):
             count = get_page_count(self._input_path)
         except PDFError:
             return
+        self._fit_width = self._compute_fit_width()
+        self._page_pt = {}
         for page_num in range(1, count + 1):
-            try:
-                thumb_bytes = render_page_thumbnail(self._input_path, page_num, max_size=450)
-            except PDFError:
-                continue
-            pixmap = QPixmap()
-            pixmap.loadFromData(thumb_bytes)
             try:
                 runs = extract_text_runs(self._input_path, page_num)
                 width_pt, height_pt = get_page_size(self._input_path, page_num)
                 rotation = get_page_rotation(self._input_path, page_num)
             except PDFError:
                 runs, width_pt, height_pt, rotation = [], 0.0, 0.0, 0
+            self._page_pt[page_num] = (width_pt, height_pt)
             self.model.set_page_text_info(page_num, runs, rotation, width_pt, height_pt)
             widget = EditPageWidget(self.model, page_num)
             widget.run_editor_cursor_moved.connect(self._sync_text_style_row)
@@ -1171,12 +1211,111 @@ class EditPdfDialog(ToolDialog):
             # text mode.
             widget.create_mode = self._widget_create_mode()
             self._apply_style_to(widget)
-            # addWidget (reparenting) BEFORE set_page_pixmap: keeps the
-            # widget a real child of a shown container from the moment it
-            # exists, rather than sitting unparented in between.
-            self._container_layout.addWidget(widget)
-            widget.set_page_pixmap(pixmap)
+            self._container_layout.addWidget(widget, 0, Qt.AlignHCenter)
             self._page_widgets.append(widget)
+        self._layout_pages()
+        self._render_pages()
+
+    # ---- page layout, zoom and lazy rendering ----
+
+    def _zoom_factor(self) -> float:
+        return self._ZOOM_STEPS[self._zoom_index]
+
+    def _compute_fit_width(self) -> int:
+        """Page width that fits the window (never absurdly wide or narrow)."""
+        available = self._scroll.viewport().width() - 48
+        return max(320, min(self._MAX_FIT_WIDTH, available))
+
+    def _page_display_size(self, page_num: int) -> QSize:
+        width = max(160, int(round(self._fit_width * self._zoom_factor())))
+        w_pt, h_pt = self._page_pt.get(page_num, (0.0, 0.0))
+        height = int(round(width * h_pt / w_pt)) if w_pt > 0 and h_pt > 0 else int(width * 1.414)
+        return QSize(width, max(1, height))
+
+    def _layout_pages(self) -> None:
+        for widget in self._page_widgets:
+            size = self._page_display_size(widget.page_number)
+            if widget.size() != size:
+                widget.set_page_size(size)
+            if widget.rendered_width != size.width():
+                widget.release_pixmap()  # stale zoom: blank until redrawn
+        self._container_layout.activate()
+
+    def _render_page(self, widget: EditPageWidget) -> None:
+        if self._input_path is None:
+            return
+        dpr = self.devicePixelRatioF()
+        long_side = int(round(max(widget.width(), widget.height()) * dpr))
+        try:
+            thumb_bytes = render_page_thumbnail(self._input_path, widget.page_number, max_size=long_side)
+        except PDFError:
+            return  # leaves a blank white page; everything else still works
+        pixmap = QPixmap()
+        pixmap.loadFromData(thumb_bytes)
+        pixmap.setDevicePixelRatio(dpr)
+        widget.attach_pixmap(pixmap)
+
+    def _render_pages(self) -> None:
+        """Draws the pages near the viewport and frees ones far from it."""
+        bar = self._scroll.verticalScrollBar()
+        # Never less than a screenful, so a dialog that has not been laid out yet
+        # (no real viewport height) still draws its first pages.
+        view_height = max(600, self._scroll.viewport().height())
+        top = bar.value() - view_height
+        bottom = bar.value() + 2 * view_height
+        # Page positions worked out from their sizes (they stack in a column),
+        # rather than read from the layout, which may not have settled yet.
+        y = self._container_layout.contentsMargins().top()
+        spacing = self._container_layout.spacing()
+        for widget in self._page_widgets:
+            y0, y1 = y, y + widget.height()
+            y = y1 + spacing
+            if y1 >= top and y0 <= bottom:
+                if widget.rendered_width != widget.width():
+                    self._render_page(widget)
+            elif widget.has_pixmap and (y1 < top - 2 * view_height or y0 > bottom + 2 * view_height):
+                widget.release_pixmap()
+
+    def _refresh_zoom_controls(self) -> None:
+        self.zoom_label_btn.setText(f"{round(self._zoom_factor() * 100)}%")
+        self.zoom_out_btn.setEnabled(self._zoom_index > 0)
+        self.zoom_in_btn.setEnabled(self._zoom_index < len(self._ZOOM_STEPS) - 1)
+
+    def _set_zoom(self, index: int) -> None:
+        index = max(0, min(len(self._ZOOM_STEPS) - 1, index))
+        if index == self._zoom_index:
+            return
+        self._commit_open_editors()  # an open editor is positioned in pixels
+        bar = self._scroll.verticalScrollBar()
+        position = bar.value() / bar.maximum() if bar.maximum() else 0.0
+        self._zoom_index = index
+        self._refresh_zoom_controls()
+        self._layout_pages()
+        bar.setValue(int(position * bar.maximum()))  # keep roughly the same part of the document in view
+        self._render_pages()
+
+    def _refit(self) -> None:
+        """The window was resized: re-fit the pages to it."""
+        if not self._page_widgets:
+            return
+        fit = self._compute_fit_width()
+        if abs(fit - self._fit_width) >= 16:
+            self._commit_open_editors()
+            self._fit_width = fit
+            self._layout_pages()
+            self._render_pages()
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self._refit_timer.start()
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self._scroll.viewport() and event.type() == QEvent.Wheel and event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta:
+                self._set_zoom(self._zoom_index + (1 if delta > 0 else -1))
+            return True
+        return super().eventFilter(obj, event)
 
     def gather_params(self) -> dict:
         # Commit a typed draft when Run is clicked without clicking the page.

@@ -1,7 +1,7 @@
 import math
 import uuid
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QPolygon,
     QTextCharFormat, QTextCursor, QTextDocument, QTextFormat,
@@ -571,6 +571,10 @@ class EditPageWidget(QWidget):
         # only one editor is ever open across the whole dialog.
         self.commit_other_editors = None
         self.image_cache: dict = {}
+        self.rendered_width = 0
+        # Clicking the page must give it the keyboard, or Delete / arrows / Esc
+        # would go to whatever else had focus (they bubble up to the dialog).
+        self.setFocusPolicy(Qt.ClickFocus)
         self.shape_type = "rectangle"
         self.color = "#ff0000"
         self.width_preset = "medium"
@@ -594,13 +598,37 @@ class EditPageWidget(QWidget):
         self._editing_element_id: str | None = None
         self.model.on_change.append(self.update)
 
-    def set_page_pixmap(self, pixmap) -> None:
-        self.page_pixmap = pixmap
-        self.setFixedSize(pixmap.size())
+    def set_page_size(self, size: QSize) -> None:
+        """Sizes the page (logical px) without needing its picture yet, so a big
+        document can be laid out at once and its pages drawn only as they come
+        into view. Element coordinates are fractions, so they follow any size."""
+        self.setFixedSize(size)
         info = self.model.page_info.get(self.page_number)
         if info and info["width_pt"]:
-            self.px_per_pt = pixmap.width() / info["width_pt"]
+            self.px_per_pt = size.width() / info["width_pt"]
         self.update()
+
+    def attach_pixmap(self, pixmap) -> None:
+        """Shows a rendered picture at the page's current size (no resize)."""
+        self.page_pixmap = pixmap
+        self.rendered_width = self.width()
+        self.update()
+
+    def release_pixmap(self) -> None:
+        """Drops the picture (a far-off page's memory, or one rendered at a stale
+        zoom); the page keeps its size and shows blank white until redrawn."""
+        self.page_pixmap = None
+        self.rendered_width = 0
+        self.update()
+
+    @property
+    def has_pixmap(self) -> bool:
+        return self.page_pixmap is not None
+
+    def set_page_pixmap(self, pixmap) -> None:
+        self.page_pixmap = pixmap
+        self.set_page_size(pixmap.deviceIndependentSize().toSize())
+        self.rendered_width = self.width()
 
     def _elements(self) -> list[dict]:
         return self.model.elements_for_page(self.page_number)
@@ -718,6 +746,7 @@ class EditPageWidget(QWidget):
         # threw away everything drawn so far.
         if e.button() != Qt.LeftButton:
             return
+        self.setFocus()
         # THE commit path for an open text draft in the real running app:
         # clicking anywhere else on the page finishes whatever is being
         # typed, before any hit-testing runs (so the click itself then
@@ -1332,7 +1361,10 @@ class EditPageWidget(QWidget):
     def paintEvent(self, e) -> None:
         painter = QPainter(self)
         if self.page_pixmap is not None:
-            painter.drawPixmap(0, 0, self.page_pixmap)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            painter.drawPixmap(self.rect(), self.page_pixmap)
+        else:
+            painter.fillRect(self.rect(), Qt.white)  # not drawn yet: a blank page, elements still shown
         elements = self._elements()
         if self._erase is not None:
             elements = [el for el in elements if el["id"] not in self._erase["ids"]]  # fade out while sweeping

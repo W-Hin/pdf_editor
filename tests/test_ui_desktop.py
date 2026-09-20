@@ -1914,19 +1914,20 @@ def test_edit_pdf_dialog_image_lands_on_its_own_page_after_a_render_failure(tmp_
 
     dlg = EditPdfDialog()
     dlg.on_files_changed([str(input_path)])
-    # Page 1 was skipped, so _page_widgets no longer lines up 1:1 with page
-    # numbers: slot 0 is page 2, slot 1 is page 3.
-    assert [w.page_number for w in dlg._page_widgets] == [2, 3]
+    # A page whose picture can't be drawn is kept (blank white) rather than
+    # dropped, so it can still be edited and the pages stay in order.
+    assert [w.page_number for w in dlg._page_widgets] == [1, 2, 3]
+    assert not dlg._page_widgets[0].has_pixmap and dlg._page_widgets[1].has_pixmap
 
-    page2 = dlg._page_widgets[0]
+    page2 = dlg._page_widgets[1]
     page2.create_mode = "image"
     click = QPoint(int(page2.width() * 0.5), int(page2.height() * 0.5))
     QTest.mousePress(page2, Qt.LeftButton, Qt.NoModifier, click)
     QTest.mouseRelease(page2, Qt.LeftButton, Qt.NoModifier, click)
 
     assert len(dlg.model.elements) == 1
-    # The old page-number indexing would have reached _page_widgets[1] here
-    # and silently placed the image on page 3.
+    # The image lands on the page that was clicked (the callback closes over
+    # the widget itself, not an index into the list).
     assert dlg.model.elements[0]["page"] == 2
 
 
@@ -5278,3 +5279,190 @@ def test_toolbar_icon_buttons_do_not_take_keyboard_focus():
     dlg = _toolbar_dialog()
     for btn in (dlg.undo_btn, dlg.redo_btn, dlg.copy_btn, dlg.cut_btn, dlg.paste_btn, dlg.delete_btn):
         assert btn.focusPolicy() == Qt.NoFocus and btn.toolTip() and btn.accessibleName()
+
+
+# ---- Edit PDF: page fit, zoom, lazy rendering, slim file bar ----
+
+
+def _tall_pdf(tmp_path, pages, name="tall.pdf"):
+    doc = fitz.open()
+    for _ in range(pages):
+        doc.new_page(width=595, height=842)
+    path = tmp_path / name
+    doc.save(str(path))
+    doc.close()
+    return str(path)
+
+
+def _shown_edit_dialog(tmp_path, pages=1, size=(1300, 800)):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    dlg = EditPdfDialog()
+    dlg.resize(*size)
+    dlg.show()
+    _app.processEvents()
+    dlg.on_files_changed([_tall_pdf(tmp_path, pages)])
+    _app.processEvents()
+    return dlg
+
+
+def test_pages_fit_the_window_width_and_are_centred(tmp_path):
+    dlg = _shown_edit_dialog(tmp_path)
+    page = dlg._page_widgets[0]
+    assert page.width() == dlg._compute_fit_width() <= 900
+    assert page.width() > 450  # much bigger than the old fixed 450px-tall thumbnails
+    assert page.height() == pytest.approx(page.width() * 842 / 595, abs=1)
+    assert dlg._container_layout.alignment() & Qt.AlignHCenter
+    centre = page.geometry().center().x()
+    assert centre == pytest.approx(dlg._container.width() / 2, abs=2)
+
+
+def test_the_page_is_drawn_at_the_size_it_is_shown(tmp_path):
+    dlg = _shown_edit_dialog(tmp_path)
+    page = dlg._page_widgets[0]
+    assert page.has_pixmap and page.rendered_width == page.width()
+    assert page.px_per_pt == pytest.approx(page.width() / 595)
+
+
+def test_zoom_steps_resize_pages_and_keep_elements_where_they_are(tmp_path):
+    dlg = _shown_edit_dialog(tmp_path)
+    page = dlg._page_widgets[0]
+    base_width = page.width()
+    shape = dlg.model.add(_shape_element(x0=0.2, y0=0.2, x1=0.5, y1=0.4))
+    before = dict(dlg.model.elements[0])
+    dlg.zoom_in_btn.click()
+    assert dlg.zoom_label_btn.text() == "125%"
+    assert page.width() == pytest.approx(base_width * 1.25, abs=1)
+    assert page.rendered_width == page.width()  # redrawn sharp at the new size
+    assert dlg.model.elements[0] == before  # fractions: nothing moved
+    dlg.zoom_out_btn.click()
+    dlg.zoom_out_btn.click()
+    assert dlg.zoom_label_btn.text() == "75%"
+    assert page.width() == pytest.approx(base_width * 0.75, abs=1)
+    dlg.zoom_label_btn.click()
+    assert dlg.zoom_label_btn.text() == "100%" and page.width() == base_width
+
+
+def test_zoom_stops_at_both_ends(tmp_path):
+    dlg = _shown_edit_dialog(tmp_path)
+    for _ in range(20):
+        dlg.zoom_out_btn.click()
+    assert dlg.zoom_label_btn.text() == "50%" and not dlg.zoom_out_btn.isEnabled() and dlg.zoom_in_btn.isEnabled()
+    for _ in range(20):
+        dlg.zoom_in_btn.click()
+    assert dlg.zoom_label_btn.text() == "300%" and not dlg.zoom_in_btn.isEnabled() and dlg.zoom_out_btn.isEnabled()
+
+
+def test_ctrl_scroll_and_shortcuts_zoom(tmp_path):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QWheelEvent
+
+    dlg = _shown_edit_dialog(tmp_path)
+    viewport = dlg._scroll.viewport()
+
+    def wheel(dy, mods):
+        event = QWheelEvent(QPointF(50, 50), QPointF(50, 50), QPoint(0, 0), QPoint(0, dy), Qt.NoButton, mods, Qt.NoScrollPhase, False)
+        QApplication.sendEvent(viewport, event)
+
+    wheel(120, Qt.ControlModifier)
+    assert dlg.zoom_label_btn.text() == "125%"
+    wheel(-120, Qt.ControlModifier)
+    wheel(-120, Qt.ControlModifier)
+    assert dlg.zoom_label_btn.text() == "75%"
+    wheel(120, Qt.NoModifier)  # a plain scroll must not zoom
+    assert dlg.zoom_label_btn.text() == "75%"
+    dlg._handle_shortcut("zoom_reset")
+    assert dlg.zoom_label_btn.text() == "100%"
+    dlg._handle_shortcut("zoom_in")
+    dlg._handle_shortcut("zoom_in")
+    assert dlg.zoom_label_btn.text() == "150%"
+    dlg._handle_shortcut("zoom_out")
+    assert dlg.zoom_label_btn.text() == "125%"
+
+
+def test_zoom_keeps_working_and_committing_while_a_text_editor_is_open(tmp_path):
+    dlg = _shown_edit_dialog(tmp_path)
+    page = dlg._page_widgets[0]
+    page.create_mode = "new_text"
+    click = QPoint(int(page.width() * 0.3), int(page.height() * 0.3))
+    QTest.mousePress(page, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.mouseRelease(page, Qt.LeftButton, Qt.NoModifier, click)
+    QTest.keyClicks(page._text_editor, "Hello")
+    dlg._set_zoom(3)  # an open editor is positioned in pixels, so zoom must commit it first
+    assert page._text_editor is None
+    assert [e["text"] for e in dlg.model.elements if e["type"] == "new_text"] == ["Hello"]
+
+
+def test_only_pages_near_the_viewport_are_drawn_and_far_ones_are_freed(tmp_path):
+    dlg = _shown_edit_dialog(tmp_path, pages=25)
+    first, last = dlg._page_widgets[0], dlg._page_widgets[-1]
+    assert first.has_pixmap and not last.has_pixmap
+    bar = dlg._scroll.verticalScrollBar()
+    bar.setValue(bar.maximum())
+    dlg._render_pages()
+    assert last.has_pixmap and not first.has_pixmap  # scrolled away: memory handed back
+    assert sum(1 for w in dlg._page_widgets if w.has_pixmap) < 10
+
+
+def test_an_undrawn_page_is_blank_white_but_still_shows_its_elements(tmp_path):
+    dlg = _shown_edit_dialog(tmp_path, pages=25)
+    last = dlg._page_widgets[-1]
+    assert not last.has_pixmap
+    dlg.model.add({"page": 25, "type": "shape", "shape": "rectangle", "x0": 0.2, "y0": 0.2, "x1": 0.6, "y1": 0.6,
+                   "color": "#ff0000", "width": 3, "filled": True})
+    image = last.grab().toImage()
+    assert QColor(image.pixel(5, 5)).name() == "#ffffff"
+    assert QColor(image.pixel(int(last.width() * 0.4), int(last.height() * 0.4))).red() > 200
+    assert QColor(image.pixel(int(last.width() * 0.4), int(last.height() * 0.4))).green() < 80
+
+
+def test_resizing_the_window_refits_the_pages(tmp_path):
+    dlg = _shown_edit_dialog(tmp_path, size=(1300, 800))
+    wide = dlg._page_widgets[0].width()
+    dlg.resize(700, 800)
+    _app.processEvents()
+    dlg._refit()  # (the resize timer would do this a moment later)
+    assert dlg._page_widgets[0].width() < wide
+    assert dlg._page_widgets[0].width() == dlg._compute_fit_width()
+
+
+def test_clicking_a_page_gives_it_the_keyboard():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    assert widget.focusPolicy() == Qt.ClickFocus  # so Delete / arrows / Esc reach the dialog
+
+
+def test_single_file_tools_show_the_file_name_on_a_slim_bar_not_in_a_list(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    dlg = EditPdfDialog()
+    default_text = dlg._pick_btn.text()
+    path = _tall_pdf(tmp_path, 1, "my report.pdf")
+    dlg.file_list.addItem(path)
+    assert dlg.file_list.isHidden()
+    assert "my report.pdf" in dlg._pick_btn.text() and "Change file" in dlg._pick_btn.text()
+    assert dlg._pick_btn.property("compact") is True
+    dlg.file_list.clear()
+    assert dlg._pick_btn.text() == default_text and dlg._pick_btn.property("compact") is False
+
+
+def test_multi_file_tools_still_list_their_files(tmp_path):
+    from app.ui.dialogs.organize_dialogs import MergeDialog
+
+    dlg = MergeDialog()
+    dlg.file_list.addItem(_tall_pdf(tmp_path, 1, "a.pdf"))
+    dlg.file_list.addItem(_tall_pdf(tmp_path, 1, "b.pdf"))
+    assert not dlg.file_list.isHidden()
+    assert dlg._pick_btn.property("compact") is False
+
+
+def test_a_canvas_tool_puts_back_and_title_on_one_line_and_other_tools_stack_them():
+    from PySide6.QtWidgets import QBoxLayout
+
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    window = _themed_main_window()
+    window.open_tool("Edit PDF", EditPdfDialog)
+    assert window._tool_header.direction() == QBoxLayout.LeftToRight
+    window.open_tool("Rotate PDF", RotateDialog)
+    assert window._tool_header.direction() == QBoxLayout.TopToBottom

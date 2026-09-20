@@ -1,5 +1,6 @@
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (
+    QBoxLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -151,13 +152,20 @@ class MainWindow(QMainWindow):
         self._tool_page = QWidget()
         self._tool_page.setObjectName("page")
         tool_layout = QVBoxLayout(self._tool_page)
+        self._tool_layout = tool_layout
         tool_layout.setContentsMargins(32, 24, 32, 24)
         tool_layout.setSpacing(12)
+        # Back link over the title, like the web app - or side by side for a
+        # tool that wants every pixel of height (see open_tool).
+        self._tool_header = QBoxLayout(QBoxLayout.TopToBottom)
+        self._tool_header.setSpacing(12)
+        tool_layout.addLayout(self._tool_header)
         self._back_button = self._make_back_button()
-        tool_layout.addWidget(self._back_button, 0, Qt.AlignLeft)
+        self._tool_header.addWidget(self._back_button, 0, Qt.AlignLeft | Qt.AlignVCenter)
         self._tool_title = QLabel()
         self._tool_title.setObjectName("pageTitle")
-        tool_layout.addWidget(self._tool_title)
+        self._tool_header.addWidget(self._tool_title, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        self._tool_header.addStretch(1)
         self._tool_holder = QVBoxLayout()
         self._tool_holder.setContentsMargins(0, 0, 0, 0)
         tool_layout.addLayout(self._tool_holder, 1)
@@ -207,6 +215,10 @@ class MainWindow(QMainWindow):
         tool.embed()
         self._current_tool = tool
         self._tool_title.setText(label)
+        compact = tool.fills_page
+        self._tool_header.setDirection(QBoxLayout.LeftToRight if compact else QBoxLayout.TopToBottom)
+        self._tool_header.setSpacing(20 if compact else 12)
+        self._tool_layout.setContentsMargins(*((24, 12, 24, 12) if compact else (32, 24, 32, 24)))
         if tool.fills_page:
             self._tool_holder.addWidget(tool, 1)
         else:
