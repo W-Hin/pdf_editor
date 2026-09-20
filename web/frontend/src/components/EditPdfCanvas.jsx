@@ -2175,45 +2175,58 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
   return (
     <div className="edit-pdf-canvas">
+      {/* ONE toolbar row: modes, undo/redo, arrange, then the active mode's own
+          options. It scrolls sideways when the window is narrow instead of
+          wrapping onto more rows and taking the page's room. */}
+      <div className="edit-pdf-canvas__toolbar" role="toolbar" aria-label="Edit PDF tools">
       <div className="edit-pdf-canvas__modes">
         {MODES.map((mode) => (
           <button
             key={mode.id}
             type="button"
+            title={mode.label}
+            aria-label={mode.label}
+            aria-pressed={activeMode === mode.id}
             className={activeMode === mode.id ? "edit-pdf-canvas__mode-button edit-pdf-canvas__mode-button--active" : "edit-pdf-canvas__mode-button"}
             onClick={() => setActiveMode(mode.id)}
           >
             <mode.icon size={16} weight="regular" />
-            {mode.label}
+            {activeMode === mode.id && mode.label}
           </button>
         ))}
       </div>
 
+      <span className="edit-pdf-canvas__divider" aria-hidden="true" />
+
       <div className="edit-pdf-canvas__history-bar">
-        <button type="button" onClick={undo} disabled={historyRef.current.undoStack.length === 0}>
+        <button type="button" title="Undo (Ctrl+Z)" aria-label="Undo" onClick={undo} disabled={historyRef.current.undoStack.length === 0}>
           <ArrowUUpLeft size={16} weight="regular" />
-          Undo
         </button>
-        <button type="button" onClick={redo} disabled={historyRef.current.redoStack.length === 0}>
+        <button type="button" title="Redo (Ctrl+Y)" aria-label="Redo" onClick={redo} disabled={historyRef.current.redoStack.length === 0}>
           <ArrowUUpRight size={16} weight="regular" />
-          Redo
         </button>
       </div>
 
-      <div className="edit-pdf-canvas__zorder-bar">
-        <button type="button" onClick={() => reorderSelected("back")} disabled={!selectedId}>
-          Send to back
-        </button>
-        <button type="button" onClick={() => reorderSelected("backward")} disabled={!selectedId}>
-          Backward
-        </button>
-        <button type="button" onClick={() => reorderSelected("forward")} disabled={!selectedId}>
-          Forward
-        </button>
-        <button type="button" onClick={() => reorderSelected("front")} disabled={!selectedId}>
-          Bring to front
-        </button>
-      </div>
+      <select
+        className="edit-pdf-canvas__arrange"
+        aria-label="Arrange"
+        title="Bring the selected item forward or send it back"
+        value=""
+        disabled={!selectedId}
+        onChange={(e) => {
+          if (e.target.value) reorderSelected(e.target.value);
+        }}
+      >
+        <option value="" disabled>
+          Arrange
+        </option>
+        <option value="front">Bring to front</option>
+        <option value="forward">Forward</option>
+        <option value="backward">Backward</option>
+        <option value="back">Send to back</option>
+      </select>
+
+      <span className="edit-pdf-canvas__divider" aria-hidden="true" />
 
       {activeMode === "draw" && (
         <div className="edit-pdf-canvas__style-bar">
@@ -2273,13 +2286,13 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
 
       {activeMode === "select" && (
         <div className="edit-pdf-canvas__style-bar">
-          <span>Drag across empty space to select several items. Delete removes them; drag them to move them.</span>
+          <span className="edit-pdf-canvas__hint">Drag to select. Del removes, drag moves.</span>
         </div>
       )}
 
       {activeMode === "eraser" && (
         <div className="edit-pdf-canvas__style-bar">
-          <span>Drag across a hand-drawn line or highlight to erase it.</span>
+          <span className="edit-pdf-canvas__hint">Drag across a line to erase it.</span>
         </div>
       )}
 
@@ -2344,6 +2357,8 @@ export default function EditPdfCanvas({ fileId, pageCount, onChange }) {
           )}
         </div>
       )}
+
+      </div>
 
       <PageScrollViewer
         fileId={fileId}
