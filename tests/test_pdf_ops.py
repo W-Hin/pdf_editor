@@ -2776,3 +2776,10 @@ def test_edit_pdf_still_accepts_valid_segments_an_unknown_family_and_an_empty_li
     for segments in ([_seg("ok")], [_seg("ok", family="Comic Sans")], [_seg("")], []):
         edit_pdf(str(src), str(tmp_path / "o.pdf"),
                  [{"page": 1, "type": "text_edit", "run_index": 0, "segments": segments}], {})
+
+
+def test_text_edit_final_sizes_applies_the_min_size_floor_even_when_nothing_shrinks():
+    from app.core.pdf_ops import text_edit_final_sizes
+    sizes = text_edit_final_sizes([{"text": "Hi", "family": "helvetica", "bold": False, "italic": False, "size": 4}], 500)
+    assert sizes == [6.0]
+    assert all(isinstance(x, float) for x in sizes)

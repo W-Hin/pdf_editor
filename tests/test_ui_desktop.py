@@ -4074,27 +4074,43 @@ def test_pen_width_is_unchanged_when_the_page_scale_is_unknown():
     assert 5 <= thickness <= 7
 
 
-def test_arrowhead_length_follows_the_page_scale():
+def test_arrowhead_length_follows_the_page_scale(monkeypatch):
+    # width=1 pins the PEN out of the measurement: max(1.0, 1 * px_per_pt)
+    # saturates at the 1px floor at both scales, so only the head can shrink.
+    from PySide6.QtGui import QPainter
     model = EditElementsModel()
     widget = EditPageWidget(model, page_number=1)
     pm = QPixmap(400, 600)
     pm.fill(Qt.white)
     widget.set_page_pixmap(pm)
-    model.add(_shape_element(shape="arrow", x0=0.1, y0=0.5, x1=0.9, y1=0.5, color="#000000", width=3))
+    model.add(_shape_element(shape="arrow", x0=0.1, y0=0.5, x1=0.9, y1=0.5, color="#000000", width=1))
     model.select(None)
 
-    def head_height():
+    polygons = []
+    real_draw_polygon = QPainter.drawPolygon
+
+    def spy(self, *args, **kwargs):
+        polygons.append(args[0])
+        return real_draw_polygon(self, *args, **kwargs)
+
+    monkeypatch.setattr(QPainter, "drawPolygon", spy)
+
+    def head_height_and_extent():
+        polygons.clear()
+        widget.update()
         img = widget.grab().toImage()
         x = int(0.9 * 400) - 3          # just behind the tip, inside the head
         ys = [y for y in range(600) if img.pixelColor(x, y).lightness() < 128]
-        return (max(ys) - min(ys)) if ys else 0
+        poly = polygons[-1]
+        xs = [poly.at(k).x() for k in range(poly.size())]
+        return ((max(ys) - min(ys)) if ys else 0), (max(xs) - min(xs))
 
     widget.px_per_pt = 1.0
-    big = head_height()
+    big, big_extent = head_height_and_extent()
     widget.px_per_pt = 0.5
-    widget.update()
-    small = head_height()
+    small, small_extent = head_height_and_extent()
     assert big > small > 0
+    assert small_extent == pytest.approx(big_extent * 0.5, abs=2)
 
 
 def test_new_text_font_pixel_size_follows_the_page_scale():
@@ -4119,3 +4135,122 @@ def test_new_text_editor_and_painted_text_use_the_same_scaled_font():
     QTest.mouseClick(widget, Qt.LeftButton, Qt.NoModifier, QPoint(200, 300))
     assert widget._text_editor.font().pixelSize() == 7    # the default new-text size is 14pt x 0.5
     widget.commit_open_editors()
+
+
+def _handle_elements():
+    return [e for e in _typed_elements() if e[0] in ("new_text", "image", "shape", "highlight")]
+
+
+def _geometry(el):
+    keys = ("x", "y", "width", "height", "x0", "y0", "x1", "y1", "top", "left", "right", "bottom")
+    return {k: el[k] for k in keys if k in el}
+
+
+def _drag_from(widget, start, d=60):
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(widget, start + QPoint(d // 2, d // 2))
+    QTest.mouseMove(widget, start + QPoint(d, d))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, start + QPoint(d, d))
+
+
+@pytest.mark.parametrize("kind,element", _handle_elements(), ids=[k for k, _ in _handle_elements()])
+def test_an_unselected_elements_invisible_resize_handle_does_not_resize_it(kind, element):
+    model = EditElementsModel()
+    model.add(element)
+    model.select(None)
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    before = _geometry(model.elements[0])
+    _drag_from(widget, widget._resize_handles(model.elements[0])["corner"].center())
+    after = _geometry(model.elements[0])
+    # the press fell through to the body and armed a MOVE: extents are unchanged
+    if kind == "shape":
+        assert after["x1"] - after["x0"] == pytest.approx(before["x1"] - before["x0"])
+        assert after["y1"] - after["y0"] == pytest.approx(before["y1"] - before["y0"])
+    elif kind == "highlight":
+        assert (1 - after["left"] - after["right"]) == pytest.approx(1 - before["left"] - before["right"])
+        assert (1 - after["top"] - after["bottom"]) == pytest.approx(1 - before["top"] - before["bottom"])
+    else:
+        assert after["width"] == pytest.approx(before["width"])
+        assert after["height"] == pytest.approx(before["height"])
+    assert model.selected_id == model.elements[0]["id"]
+
+
+@pytest.mark.parametrize("kind,element", _handle_elements(), ids=[k for k, _ in _handle_elements()])
+def test_a_selected_elements_resize_handle_still_resizes_it(kind, element):
+    model = EditElementsModel()
+    model.add(element)  # add() selects
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    before = _geometry(model.elements[0])
+    _drag_from(widget, widget._resize_handles(model.elements[0])["corner"].center())
+    after = _geometry(model.elements[0])
+    assert after != before
+    if kind == "shape":
+        assert after["x0"] == before["x0"] and after["x1"] > before["x1"]
+    elif kind == "highlight":
+        assert after["left"] == before["left"] and after["top"] == before["top"]
+    else:
+        assert after["x"] == before["x"] and after["y"] == before["y"]
+
+
+def test_a_thin_lines_hit_margin_uses_the_pen_width_in_pixels():
+    model = EditElementsModel()
+    model.add(_shape_element(shape="line", x0=0.2, y0=0.5, x1=0.8, y1=0.5, width=40))
+    model.select(None)
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.px_per_pt = 0.5           # 40pt pen -> 20px margin
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(200, 300 + 18))
+    assert model.selected_id == model.elements[0]["id"]
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(200, 300 + 18))
+    model.select(None)
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(200, 300 + 26))
+    assert model.selected_id is None
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(200, 300 + 26))
+
+
+@pytest.mark.parametrize("rotation", [0, 90])
+def test_text_edit_preview_size_equals_the_exported_span_size_in_the_ratio_branch(tmp_path, rotation):
+    from app.core.pdf_ops import edit_pdf, text_edit_final_sizes
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+    doc = fitz.open()
+    page = doc.new_page(width=842, height=400)
+    page.insert_text((60, 200), "Hello World", fontname="helv", fontsize=14)
+    page.set_rotation(rotation)
+    src = tmp_path / f"ratio{rotation}.pdf"
+    doc.save(str(src))
+    doc.close()
+    raw_w = fitz.get_text_length("Hello World", fontname="helv", fontsize=14)
+    replacement = "Hello World"
+    seg = None
+    for extra in "abcdefghijklmnop":
+        replacement += extra
+        seg = {"text": replacement, "family": "helvetica", "bold": False, "italic": False, "size": 14.0}
+        if fitz.get_text_length(replacement, fontname="helv", fontsize=14) > raw_w * 1.3:
+            break
+    sizes = text_edit_final_sizes([seg], raw_w)
+    assert 7 < sizes[0] < 14   # ratio branch: 0.5 < scale < 1 (and not the 6pt floor)
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(src)])
+    dlg._set_create_mode("text")
+    widget = dlg._page_widgets[0]
+    _dclick_run(widget, 0)
+    widget._run_editor.selectAll()
+    QTest.keyClicks(widget._run_editor, replacement)
+    widget.commit_open_editors()
+    el = dlg.model.elements[0]
+    run = dlg.model.find_run(1, 0)
+    preview = widget._text_edit_preview_segments(el, run)[0]["size"]
+
+    out = tmp_path / "out.pdf"
+    elements = [{k: v for k, v in e.items() if k != "id"} for e in dlg.model.elements]
+    edit_pdf(str(src), str(out), elements, {})
+    result = fitz.open(str(out))
+    spans = [sp for blk in result[0].get_text("dict")["blocks"] for ln in blk.get("lines", [])
+             for sp in ln["spans"] if replacement in sp["text"]]
+    result.close()
+    assert spans, "the replacement should be in the export"
+    assert preview == pytest.approx(spans[0]["size"], abs=0.1)
+    assert preview == pytest.approx(sizes[0], abs=0.1)

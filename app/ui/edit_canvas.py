@@ -607,6 +607,11 @@ class EditPageWidget(QWidget):
                 return
         for i in reversed(range(len(elements))):
             el = elements[i]
+            # Handles are only DRAWN for the selected element, so they must
+            # only be live then; otherwise a click meant to select an
+            # element near its corner would silently resize it.
+            if self.model.selected_id != el["id"]:
+                continue
             for handle_name, rect in self._resize_handles(el).items():
                 if rect.contains(pos):
                     point = self._point_from_pos(pos)
@@ -625,7 +630,7 @@ class EditPageWidget(QWidget):
                 # freehand stroke is just as hard to hit exactly, so the
                 # margin is applied unconditionally (and grows with the
                 # stroke's own drawn width).
-                margin = max(6, el["width"])
+                margin = max(6, el["width"] * self.px_per_pt)
                 hit_rect = hit_rect.adjusted(-margin, -margin, margin, margin)
             if hit_rect.contains(pos):
                 point = self._point_from_pos(pos)

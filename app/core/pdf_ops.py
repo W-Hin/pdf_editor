@@ -623,7 +623,8 @@ def text_edit_final_sizes(segments: list[dict], original_width: float) -> list[f
     replacement is wider than the original run (measured in each segment's
     own base-14 font at its own size), every segment is scaled by the same
     factor - never below _TEXT_EDIT_SHRINK_FACTOR - and no segment goes below
-    _TEXT_EDIT_MIN_SIZE. Single source of truth: _apply_text_edit draws with
+    _TEXT_EDIT_MIN_SIZE (that floor applies even when nothing shrinks, so a
+    4pt run that fits is still drawn at 6pt). Single source of truth: _apply_text_edit draws with
     it and the desktop preview sizes its on-screen text with it, so the two
     can't drift apart."""
     resolved = [
@@ -634,7 +635,7 @@ def text_edit_final_sizes(segments: list[dict], original_width: float) -> list[f
     scale = 1.0
     if total_measured > original_width > 0:
         scale = max(_TEXT_EDIT_SHRINK_FACTOR, original_width / total_measured)
-    return [max(size * scale, _TEXT_EDIT_MIN_SIZE) for _text, _fontname, size in resolved]
+    return [float(max(size * scale, _TEXT_EDIT_MIN_SIZE)) for _text, _fontname, size in resolved]
 
 
 def _validate_text_edit_segments(el: dict) -> None:
