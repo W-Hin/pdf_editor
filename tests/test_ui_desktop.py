@@ -3916,9 +3916,12 @@ def test_preview_segments_shrink_an_over_wide_replacement_like_the_export():
 
 def test_preview_segments_are_unchanged_when_the_text_fits():
     model, widget = _text_widget(runs=[_run(0, text="Hello world", top=0.1, left=0.1, right=0.1, bottom=0.85)])
+    import copy
     segs = [{"text": "Hi", "family": "helvetica", "bold": False, "italic": False, "size": 12.0}]
+    stored = copy.deepcopy(segs)
     assert widget._text_edit_preview_segments({"page": 1, "type": "text_edit", "run_index": 0, "segments": segs},
                                               model.find_run(1, 0)) == segs
+    assert segs == stored  # the stored dicts were not mutated
 
 
 def test_preview_segments_use_the_displayed_height_as_the_original_width_on_a_rotated_page():
@@ -3944,7 +3947,10 @@ def test_preview_segments_fall_back_to_the_stored_sizes_without_page_info():
                                               _run(0)) == segs
 
 
-def test_a_shrunk_preview_is_actually_painted_smaller(tmp_path):
+def test_a_shrunk_preview_is_actually_painted_smaller(tmp_path, monkeypatch):
+    import copy
+    import app.ui.edit_canvas as ec
+    from app.core.pdf_ops import text_edit_final_sizes
     model, widget = _text_widget(runs=[_run(0, text="Hi", top=0.1, left=0.1, right=0.8, bottom=0.85, size=14.0)])
     widget.px_per_pt = 400 / 595
     pm = QPixmap(400, 600)
@@ -3953,8 +3959,22 @@ def test_a_shrunk_preview_is_actually_painted_smaller(tmp_path):
     long_segs = [{"text": "W" * 60, "family": "helvetica", "bold": False, "italic": False, "size": 30.0}]
     model.add({"page": 1, "type": "text_edit", "run_index": 0, "segments": long_segs})
     model.select(None)
+    recorded = []
+    real = ec.build_segments_document
+
+    def spy(segments, px_per_pt):
+        recorded.append(copy.deepcopy(segments))
+        return real(segments, px_per_pt)
+
+    monkeypatch.setattr(ec, "build_segments_document", spy)
     img = widget.grab().toImage()
-    # the dark text must fit in a band no taller than the SHRUNK size allows (<= 0.5 x 30pt x px_per_pt + slack)
+    # direct check: the painted document was built from the export's final sizes, not the stored 30pt
+    expected = text_edit_final_sizes(long_segs, (1 - 0.1 - 0.8) * 595)
+    assert recorded, "the preview should have built a document"
+    assert [s["size"] for s in recorded[-1]] == pytest.approx(expected)
+    assert all(s["size"] < 30.0 for s in recorded[-1])
+    assert long_segs[0]["size"] == 30.0
+    # pixel check: measured dark-row span is 5px shrunk vs 15px unshrunk, so <= 9 separates them
     dark_rows = [y for y in range(600) if any(img.pixelColor(x, y).lightness() < 128 for x in range(0, 400, 2))]
     assert dark_rows, "the replacement text should have been painted"
-    assert (max(dark_rows) - min(dark_rows)) <= 30 * 0.5 * (400 / 595) * 1.6 + 4
+    assert (max(dark_rows) - min(dark_rows)) <= 9
