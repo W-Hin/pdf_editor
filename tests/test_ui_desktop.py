@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import fitz
 import pytest
 from PySide6.QtCore import QPoint, QRect, Qt
-from PySide6.QtGui import QFont, QImage, QPixmap, QTextCharFormat
+from PySide6.QtGui import QColor, QFont, QImage, QPixmap, QTextCharFormat
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit, QPushButton, QTextEdit
 
@@ -2225,23 +2225,23 @@ def test_edit_page_widget_stroke_click_with_one_axis_of_jitter_is_kept():
     assert len(model.elements) == 1
 
 
-def test_edit_page_widget_stroke_with_both_axes_of_jitter_creates_nothing():
+def test_edit_page_widget_stroke_with_both_axes_of_jitter_is_kept():
     model = EditElementsModel()
     widget = EditPageWidget(model, page_number=1)
     widget.set_page_pixmap(QPixmap(400, 600))
     widget.create_mode = "stroke"
     w, h = widget.width(), widget.height()
-    # Two real points 2px apart on each axis: the stroke clears the
-    # "at least 2 points" gate and is discarded purely on its extent.
+    # Two real points 2px apart on each axis. This used to be discarded as
+    # "too short"; a short line must register (as on the web app).
     start = QPoint(int(w * 0.5), int(h * 0.5))
     end = QPoint(int(w * 0.5) + 2, int(h * 0.5) + 2)
     QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
     QTest.mouseMove(widget, end)
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
-    assert model.elements == []
+    assert len(model.elements) == 1 and model.elements[0]["type"] == "stroke"
 
 
-def test_edit_page_widget_stroke_single_point_click_creates_nothing():
+def test_edit_page_widget_stroke_single_point_click_makes_a_dot():
     model = EditElementsModel()
     widget = EditPageWidget(model, page_number=1)
     widget.set_page_pixmap(QPixmap(400, 600))
@@ -2249,7 +2249,9 @@ def test_edit_page_widget_stroke_single_point_click_creates_nothing():
     click = QPoint(40, 60)
     QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, click)
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, click)
-    assert model.elements == []
+    assert len(model.elements) == 1
+    assert len(model.elements[0]["points"]) == 1
+    assert model.selected_id is None  # drawings are only selectable with Select
 
 
 def test_edit_page_widget_stroke_has_no_resize_handle():
@@ -2265,6 +2267,7 @@ def test_edit_page_widget_moving_a_stroke_shifts_every_point():
     model = EditElementsModel()
     el_id = model.add(_stroke_element(points=[{"x": 0.2, "y": 0.2}, {"x": 0.25, "y": 0.25}, {"x": 0.3, "y": 0.2}]))
     widget = EditPageWidget(model, page_number=1)
+    widget.create_mode = "select"  # strokes are only selectable with the Select tool
     widget.set_page_pixmap(QPixmap(400, 600))
     w, h = widget.width(), widget.height()
     body = QPoint(int(w * 0.25), int(h * 0.22))
@@ -2602,6 +2605,7 @@ def test_edit_pdf_dialog_dragging_a_stroke_off_the_page_clamps_and_still_exports
     dlg = EditPdfDialog()
     dlg.on_files_changed([str(input_path)])
     page1 = dlg._page_widgets[0]
+    page1.create_mode = "select"  # strokes are only selectable with the Select tool
     w, h = page1.width(), page1.height()
     points = [{"x": 0.3, "y": 0.3}, {"x": 0.35, "y": 0.4}, {"x": 0.45, "y": 0.35}]
     el_id = dlg.model.add(_stroke_element(page=1, points=points))
@@ -3998,6 +4002,7 @@ def test_an_unselected_elements_invisible_marker_area_does_not_delete_it(kind, e
     model.add(element)
     model.select(None)
     widget = EditPageWidget(model, page_number=1)
+    widget.create_mode = "select"
     widget.set_page_pixmap(QPixmap(400, 600))
     marker = widget._marker_rect(model.elements[0])
     QTest.mouseClick(widget, Qt.LeftButton, Qt.NoModifier, marker.center())
@@ -4297,8 +4302,8 @@ def test_edit_pdf_dialog_white_is_in_the_palette_and_a_white_shape_exports(tmp_p
 def test_edit_pdf_dialog_each_tool_row_has_its_own_more_button():
     from app.ui.dialogs.edit_dialogs import EditPdfDialog
     dlg = EditPdfDialog()
-    assert set(dlg._more_buttons) == {"draw", "shape", "highlight"}
-    assert len({id(b) for b in dlg._more_buttons.values()}) == 3
+    assert set(dlg._more_buttons) == {"draw", "shape", "highlight", "marker"}
+    assert len({id(b) for b in dlg._more_buttons.values()}) == 4
 
 
 def test_edit_pdf_dialog_more_button_sets_only_its_tools_custom_colour(tmp_path, monkeypatch):
@@ -4308,7 +4313,7 @@ def test_edit_pdf_dialog_more_button_sets_only_its_tools_custom_colour(tmp_path,
     dlg._set_create_mode("shape")
     dlg._more_buttons["shape"].click()
     assert calls == ["#ff0000"]  # initial = the tool's current colour
-    assert dlg._tool_colors == {"draw": "#ff0000", "shape": "#12abef", "highlight": "#ffd43b"}
+    assert dlg._tool_colors == {"draw": "#ff0000", "shape": "#12abef", "highlight": "#ffd43b", "marker": "#ffd43b"}
     more = dlg._more_buttons["shape"]
     assert "border: 3px solid #1971c2" in more.styleSheet() and "#12abef" in more.styleSheet()
     assert "3px" not in dlg._more_buttons["draw"].styleSheet()
@@ -4328,7 +4333,7 @@ def test_edit_pdf_dialog_cancelled_or_invalid_colour_pick_changes_nothing(tmp_pa
     before = dict(dlg._tool_colors)
     for bad in (QColor(), None):  # QColorDialog.getColor returns an invalid QColor on cancel
         _stub_picker(monkeypatch, dlg, bad)
-        for tool in ("draw", "shape", "highlight"):
+        for tool in ("draw", "shape", "highlight", "marker"):
             dlg._more_buttons[tool].click()
     assert dlg._tool_colors == before
     assert all("3px" not in b.styleSheet() for b in dlg._more_buttons.values())
@@ -4702,3 +4707,216 @@ def test_removing_an_element_drops_it_from_the_group():
     model.select_many([ids["stroke"], ids["shape"]])
     model.remove(ids["shape"])
     assert model.selected_ids == [ids["stroke"]]
+
+
+# ---- Edit PDF: dots, drawing wins, freehand highlighter, eraser ----
+
+
+def _white_page_widget(model, create_mode):
+    widget = EditPageWidget(model, page_number=1)
+    pixmap = QPixmap(400, 600)
+    pixmap.fill(Qt.white)
+    widget.set_page_pixmap(pixmap)
+    widget.create_mode = create_mode
+    return widget
+
+
+def _drag(widget, points):
+    """Press at points[0], move through the rest, release at the last."""
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, points[0])
+    for p in points[1:]:
+        QTest.mouseMove(widget, p)
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, points[-1])
+
+
+def _px(widget, fx, fy):
+    return QPoint(int(widget.width() * fx), int(widget.height() * fy))
+
+
+def _stroke_at(y, x0=0.1, x1=0.9, width=3):
+    return {"page": 1, "type": "stroke", "points": [{"x": x0, "y": y}, {"x": x1, "y": y}], "color": "#000000", "width": width}
+
+
+def test_drawing_over_an_existing_shape_draws_instead_of_selecting_or_moving_it():
+    model = EditElementsModel()
+    shape_id = model.add({"page": 1, "type": "shape", "shape": "rectangle", "x0": 0.2, "y0": 0.2, "x1": 0.8, "y1": 0.8, "color": "#ff0000", "width": 3, "filled": True})
+    model.clear_selection()
+    before = dict(model.elements[0])
+    widget = _white_page_widget(model, "stroke")
+    _drag(widget, [_px(widget, 0.5, 0.5), _px(widget, 0.6, 0.6)])  # starts INSIDE the filled shape
+    assert [e["type"] for e in model.elements] == ["shape", "stroke"]
+    assert model.elements[0] == before  # not moved
+    assert model.selected_id is None  # not selected
+
+
+def test_drawing_starting_on_an_existing_stroke_draws_a_new_one():
+    model = EditElementsModel()
+    model.add(_stroke_at(0.5))
+    model.clear_selection()
+    widget = _white_page_widget(model, "stroke")
+    _drag(widget, [_px(widget, 0.5, 0.5), _px(widget, 0.5, 0.7)])
+    assert len(model.elements) == 2
+    assert model.selected_id is None
+
+
+def test_strokes_are_not_selectable_outside_the_select_tool():
+    for mode in ("new_text", "shape", "highlight", "text", "image"):
+        model = EditElementsModel()
+        model.add(_stroke_at(0.5))
+        model.clear_selection()
+        widget = _white_page_widget(model, mode)
+        QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, 0.5, 0.5))
+        QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, 0.5, 0.5))
+        assert model.selected_id is None, mode
+    model = EditElementsModel()
+    stroke_id = model.add(_stroke_at(0.5))
+    model.clear_selection()
+    widget = _white_page_widget(model, "select")
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, 0.5, 0.5))
+    assert model.selected_id == stroke_id
+
+
+def test_a_dot_is_visible_and_round():
+    model = EditElementsModel()
+    widget = _white_page_widget(model, "stroke")
+    widget.width_preset = "thick"
+    widget.color = "#000000"
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(200, 300))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(200, 300))
+    image = widget.grab().toImage()
+    assert QColor(image.pixel(200, 300)).lightness() < 100
+    assert QColor(image.pixel(300, 400)).lightness() > 240  # nothing far away
+
+
+def test_marker_stroke_is_translucent_and_carries_opacity():
+    model = EditElementsModel()
+    widget = _white_page_widget(model, "stroke")
+    widget.draw_tool = "marker"
+    widget.marker_color = "#ffff00"
+    widget.marker_width_preset = "medium"
+    _drag(widget, [_px(widget, 0.1, 0.5), _px(widget, 0.5, 0.5), _px(widget, 0.9, 0.5)])
+    stroke = model.elements[0]
+    assert stroke["opacity"] == 0.4 and stroke["color"] == "#ffff00" and stroke["width"] == 14
+    color = QColor(widget.grab().toImage().pixel(int(400 * 0.5), int(600 * 0.5)))
+    assert color.red() > 240 and color.green() > 240  # yellow over white...
+    assert 100 < color.blue() < 220  # ...but see-through, not solid
+
+
+def test_a_pen_stroke_has_no_opacity_field():
+    model = EditElementsModel()
+    widget = _white_page_widget(model, "stroke")
+    _drag(widget, [_px(widget, 0.1, 0.5), _px(widget, 0.9, 0.5)])
+    assert "opacity" not in model.elements[0]
+
+
+def test_eraser_removes_every_stroke_a_sparse_drag_crosses_in_one_undo_step():
+    model = EditElementsModel()
+    for y in (0.2, 0.4, 0.6):
+        model.add(_stroke_at(y))
+    shape_id = model.add({"page": 1, "type": "shape", "shape": "rectangle", "x0": 0.3, "y0": 0.1, "x1": 0.4, "y1": 0.9, "color": "#ff0000", "width": 3, "filled": True})
+    model.clear_selection()
+    model._undo_stack.clear()
+    widget = _white_page_widget(model, "eraser")
+    # One jump from above the first stroke to below the second: the eraser must
+    # still get both (it tests the segment, not just the endpoints)...
+    _drag(widget, [_px(widget, 0.5, 0.1), _px(widget, 0.5, 0.5)])
+    remaining = [e for e in model.elements if e["type"] == "stroke"]
+    assert len(remaining) == 1 and remaining[0]["points"][0]["y"] == 0.6
+    # ...and never the shape it drags over (x=0.3-0.4 is not crossed; press on it too).
+    _drag(widget, [_px(widget, 0.35, 0.05), _px(widget, 0.35, 0.95)])
+    assert any(e["id"] == shape_id for e in model.elements)
+    assert len(model._undo_stack) == 2  # one step per sweep
+    model.undo()
+    assert len([e for e in model.elements if e["type"] == "stroke"]) == 1
+    model.undo()
+    assert len([e for e in model.elements if e["type"] == "stroke"]) == 3
+    model.redo()
+    assert len([e for e in model.elements if e["type"] == "stroke"]) == 1
+
+
+def test_eraser_hides_strokes_while_sweeping_and_a_miss_commits_nothing():
+    model = EditElementsModel()
+    model.add(_stroke_at(0.5))
+    model.clear_selection()
+    model._undo_stack.clear()
+    widget = _white_page_widget(model, "eraser")
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, 0.5, 0.5))
+    assert widget._erase["ids"]  # marked...
+    assert len(model.elements) == 1  # ...but not yet removed
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, _px(widget, 0.5, 0.5))
+    assert model.elements == [] and len(model._undo_stack) == 1
+    model.undo()
+    widget2 = _white_page_widget(model, "eraser")
+    model._undo_stack.clear()
+    _drag(widget2, [_px(widget2, 0.5, 0.9), _px(widget2, 0.6, 0.95)])  # nowhere near
+    assert len(model.elements) == 1 and model._undo_stack == []
+
+
+def test_eraser_hits_a_thin_stroke_only_within_its_reach():
+    model = EditElementsModel()
+    model.add(_stroke_at(0.5, width=1))
+    widget = _white_page_widget(model, "eraser")
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(200, 300 - 40))  # 40px away
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(200, 300 - 40))
+    assert len(model.elements) == 1
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, QPoint(200, 300 - 6))  # within reach
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, QPoint(200, 300 - 6))
+    assert model.elements == []
+
+
+def test_dialog_draw_subtool_switch_swaps_options_and_style():
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([])
+    dlg._set_create_mode("draw")
+    assert dlg.pen_btn.isChecked() and not dlg.marker_btn.isChecked()
+    assert not dlg._pen_options.isHidden() and dlg._marker_options.isHidden()
+    dlg._set_draw_tool("marker")
+    assert dlg.marker_btn.isChecked() and not dlg.pen_btn.isChecked()
+    assert dlg._pen_options.isHidden() and not dlg._marker_options.isHidden()
+    assert dlg._active_style_tool() == "marker"
+    dlg._set_tool_color("marker", "#69db7c")
+    assert dlg._tool_colors["marker"] == "#69db7c" and dlg._tool_colors["draw"] == "#ff0000"
+
+
+def test_dialog_switching_mode_clears_selection_and_eraser_button_sets_the_mode(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    input_path = _single_page_pdf(tmp_path)
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    shape_id = dlg.model.add({"page": 1, "type": "shape", "shape": "rectangle", "x0": 0.2, "y0": 0.2, "x1": 0.5, "y1": 0.5, "color": "#ff0000", "width": 3, "filled": False})
+    assert dlg.model.selected_id == shape_id
+    dlg.eraser_btn.click()
+    assert dlg.model.selected_id is None
+    assert dlg._page_widgets[0].create_mode == "eraser" and dlg.eraser_btn.isChecked()
+    dlg.draw_btn.click()
+    assert dlg._page_widgets[0].create_mode == "stroke" and not dlg.eraser_btn.isChecked()
+
+
+def test_marker_and_dot_export_end_to_end(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    input_path = _single_page_pdf(tmp_path)
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(input_path)])
+    page = dlg._page_widgets[0]
+    dlg._set_create_mode("draw")
+    dlg._set_draw_tool("marker")
+    dlg._set_tool_color("marker", "#ffff00")
+    _drag(page, [_px(page, 0.2, 0.5), _px(page, 0.5, 0.5), _px(page, 0.8, 0.5)])
+    dlg._set_draw_tool("pen")
+    dlg._set_tool_color("draw", "#000000")
+    dlg._set_tool_width("draw", "thick")
+    QTest.mousePress(page, Qt.LeftButton, Qt.NoModifier, _px(page, 0.5, 0.8))  # a plain click
+    QTest.mouseRelease(page, Qt.LeftButton, Qt.NoModifier, _px(page, 0.5, 0.8))
+    elements = dlg.gather_params()["elements"]
+    assert [e["type"] for e in elements] == ["stroke", "stroke"]
+    assert elements[0]["opacity"] == 0.4 and len(elements[1]["points"]) == 1
+    out = dlg.run_operation([str(input_path)], dlg.gather_params())[0]
+    with fitz.open(out) as doc:
+        pix = doc[0].get_pixmap()
+    r, g, b = pix.pixel(int(pix.width * 0.5), int(pix.height * 0.5))[:3]
+    assert r > 240 and g > 240 and 100 < b < 220  # translucent yellow, page still visible through it
+    assert pix.pixel(int(pix.width * 0.5), int(pix.height * 0.8))[0] < 100  # the dot

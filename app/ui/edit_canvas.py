@@ -1,14 +1,14 @@
 import math
 import uuid
 
-from PySide6.QtCore import QPoint, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QPolygon,
     QTextCharFormat, QTextCursor, QTextDocument, QTextFormat,
 )
 from PySide6.QtWidgets import QTextEdit, QWidget
 
-from app.core.edit_geometry import clamp_move, element_bounds, union_bounds
+from app.core.edit_geometry import clamp_move, element_bounds, polyline_near_point, union_bounds
 from app.core.pdf_ops import text_edit_final_sizes
 from app.ui.widgets import box_to_insets, insets_to_box
 
@@ -19,6 +19,12 @@ _MIN_TEXT_WIDTH_FRACTION = 0.05
 _MIN_TEXT_HEIGHT_FRACTION = 0.03
 _MIN_DRAG_FRACTION = 0.02
 _WIDTH_PRESETS = {"thin": 1, "medium": 3, "thick": 6}
+# Freehand highlighter: a wide, translucent, round-capped stroke (same values
+# as the web app's, and the exporter's `opacity` field).
+_MARKER_WIDTHS = {"thin": 8, "medium": 14, "thick": 24}
+_MARKER_OPACITY = 0.4
+# How close (screen px, beyond a stroke's own half-width) the eraser must pass.
+_ERASER_RADIUS_PX = 8
 
 
 def closest_base14_family(font_name) -> str:
@@ -191,6 +197,18 @@ class EditElementsModel:
             self.selected_id = None
         if element_id in self.selected_ids:
             self.selected_ids = [i for i in self.selected_ids if i != element_id]
+        self._notify()
+
+    def remove_many(self, ids: list[str]) -> None:
+        """Removes several elements as ONE undo step (an eraser sweep)."""
+        doomed = set(ids)
+        if not doomed:
+            return
+        self.commit()
+        self.elements = [e for e in self.elements if e["id"] not in doomed]
+        if self.selected_id in doomed:
+            self.selected_id = None
+        self.selected_ids = [i for i in self.selected_ids if i not in doomed]
         self._notify()
 
     def select(self, element_id: str | None) -> None:
@@ -528,6 +546,13 @@ class EditPageWidget(QWidget):
         self.width_preset = "medium"
         self.filled = False
         self.px_per_pt = 1.0
+        # Draw's sub-tool: "pen" uses color/width_preset, "marker" (the freehand
+        # highlighter) uses its own colour and width.
+        self.draw_tool = "pen"
+        self.marker_color = "#ffd43b"
+        self.marker_width_preset = "medium"
+        # While the eraser button is held: {"last": point | None, "ids": set}.
+        self._erase: dict | None = None
         self._run_editor: _RunTextEdit | None = None
         self._editing_run: dict | None = None
         self._drag: dict | None = None
@@ -671,6 +696,19 @@ class EditPageWidget(QWidget):
         self.commit_open_editors()
         pos = e.position().toPoint()
         elements = self._elements()
+        if self.create_mode in ("stroke", "eraser"):
+            # Drawing and erasing work anywhere on the page, including on top of
+            # existing elements: a press here never selects, moves or resizes
+            # one (matching the web app).
+            point = self._point_from_pos(pos)
+            if point is None:
+                return
+            if self.create_mode == "eraser":
+                self._erase = {"last": None, "ids": set()}
+                self._erase_at(point)
+            elif self._create_drag is None:
+                self._create_drag = {"start": point, "current": point, "points": [point]}
+            return
         for i in reversed(range(len(elements))):
             el = elements[i]
             # The marker is only DRAWN for the selected element (every type),
@@ -696,6 +734,8 @@ class EditPageWidget(QWidget):
                     return
         for i in reversed(range(len(elements))):
             el = elements[i]
+            if el["type"] == "stroke" and self.create_mode != "select":
+                continue  # drawings are only selectable with the Select tool
             hit_rect = self._element_rect_px(el)
             if el["type"] in ("shape", "stroke"):
                 # EVERY shape and stroke bbox is inflated, by at least 6px
@@ -785,7 +825,33 @@ class EditPageWidget(QWidget):
             self._drag["committed"] = True
         self.model.update(self._drag["id"], **changes)
 
+    def _erase_at(self, point: tuple[float, float]) -> None:
+        """Marks every stroke the eraser touched. A fast drag delivers sparse
+        mouse events, so the whole segment since the last event is tested, not
+        just its endpoint, or thin lines would be skipped."""
+        last = self._erase["last"] or point
+        self._erase["last"] = point
+        w, h = self.width(), self.height()
+        length_px = math.hypot((point[0] - last[0]) * w, (point[1] - last[1]) * h)
+        steps = max(1, math.ceil(length_px / 4))
+        samples = [
+            (last[0] + (point[0] - last[0]) * i / steps, last[1] + (point[1] - last[1]) * i / steps)
+            for i in range(steps + 1)
+        ]
+        for el in self._elements():
+            if el["type"] != "stroke" or el["id"] in self._erase["ids"]:
+                continue
+            radius = _ERASER_RADIUS_PX + max(1.0, el["width"] * self.px_per_pt) / 2
+            if any(polyline_near_point(el["points"], s, radius, w, h) for s in samples):
+                self._erase["ids"].add(el["id"])
+        self.update()
+
     def mouseMoveEvent(self, e) -> None:
+        if self._erase is not None:
+            point = self._point_from_pos(e.position().toPoint())
+            if point is not None:
+                self._erase_at(point)
+            return
         if self._create_drag is not None:
             point = self._point_from_pos(e.position().toPoint())
             if point is not None:
@@ -845,6 +911,12 @@ class EditPageWidget(QWidget):
         # mid-stroke neither commits nor cancels what is being drawn.
         if e.button() != Qt.LeftButton:
             return
+        if self._erase is not None:
+            ids = list(self._erase["ids"])
+            self._erase = None
+            self.model.remove_many(ids)  # one undo step for the whole sweep
+            self.update()
+            return
         if self._create_drag is not None:
             drag = self._create_drag
             self._create_drag = None
@@ -883,18 +955,24 @@ class EditPageWidget(QWidget):
                 "color": self.color, "width": _WIDTH_PRESETS[self.width_preset], "filled": filled,
             })
         elif self.create_mode == "stroke":
+            # Any press-and-release makes a mark, however short: a lone point
+            # is a dot. (The old two-point / 2%-extent gate threw away short
+            # lines, which is exactly what the web app fixed.)
             pts = drag["points"]
-            if len(pts) < 2:
+            if not pts:
                 return None
-            xs = [p[0] for p in pts]
-            ys = [p[1] for p in pts]
-            if (max(xs) - min(xs)) < _MIN_DRAG_FRACTION and (max(ys) - min(ys)) < _MIN_DRAG_FRACTION:
-                return None
-            return self.model.add({
+            marker = self.draw_tool == "marker"
+            stroke = {
                 "page": self.page_number, "type": "stroke",
                 "points": [{"x": x, "y": y} for x, y in pts],
-                "color": self.color, "width": _WIDTH_PRESETS[self.width_preset],
-            })
+                "color": self.marker_color if marker else self.color,
+                "width": _MARKER_WIDTHS[self.marker_width_preset] if marker else _WIDTH_PRESETS[self.width_preset],
+            }
+            if marker:
+                stroke["opacity"] = _MARKER_OPACITY
+            new_id = self.model.add(stroke)
+            self.model.clear_selection()  # drawings are only selectable with Select
+            return new_id
         elif self.create_mode == "highlight":
             sx0, sx1 = sorted((x0, x1))
             sy0, sy1 = sorted((y0, y1))
@@ -921,7 +999,14 @@ class EditPageWidget(QWidget):
             }
             self._paint_shape(painter, preview)
         elif self.create_mode == "stroke":
-            preview = {"points": [{"x": x, "y": y} for x, y in self._create_drag["points"]], "color": self.color, "width": _WIDTH_PRESETS[self.width_preset]}
+            marker = self.draw_tool == "marker"
+            preview = {
+                "points": [{"x": x, "y": y} for x, y in self._create_drag["points"]],
+                "color": self.marker_color if marker else self.color,
+                "width": _MARKER_WIDTHS[self.marker_width_preset] if marker else _WIDTH_PRESETS[self.width_preset],
+            }
+            if marker:
+                preview["opacity"] = _MARKER_OPACITY
             self._paint_stroke(painter, preview)
         elif self.create_mode == "highlight":
             sx0, sx1 = sorted((self._create_drag["start"][0], self._create_drag["current"][0]))
@@ -1144,6 +1229,8 @@ class EditPageWidget(QWidget):
         if self.page_pixmap is not None:
             painter.drawPixmap(0, 0, self.page_pixmap)
         elements = self._elements()
+        if self._erase is not None:
+            elements = [el for el in elements if el["id"] not in self._erase["ids"]]  # fade out while sweeping
         # edit_pdf applies every text_edit FIRST and everything else after,
         # in array order - paint in that same order so the preview layers
         # the way the export will.
@@ -1162,6 +1249,8 @@ class EditPageWidget(QWidget):
             elif el["type"] == "highlight":
                 self._paint_highlight(painter, el)
         for el in elements:
+            if el["type"] == "stroke" and self.create_mode != "select":
+                continue  # a drawing shows no selection chrome outside the Select tool
             self._paint_chrome(painter, el)
         self._paint_create_preview(painter)
 
@@ -1238,12 +1327,31 @@ class EditPageWidget(QWidget):
         points = el["points"]
         if not points:
             return
-        path = QPainterPath()
+        color = QColor(el["color"])
+        opacity = el.get("opacity")
+        if opacity is not None:
+            color.setAlphaF(opacity)
+        diameter = max(1.0, el["width"] * self.px_per_pt)
         first = points[0]
+        if len(points) == 1:
+            # A lone point is a dot. Qt draws nothing for a zero-length line even
+            # with a round cap, so paint the circle the export's round cap makes.
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(color)
+            painter.drawEllipse(
+                QPointF(first["x"] * self.width(), first["y"] * self.height()), diameter / 2, diameter / 2
+            )
+            painter.setBrush(Qt.NoBrush)
+            return
+        path = QPainterPath()
         path.moveTo(first["x"] * self.width(), first["y"] * self.height())
         for p in points[1:]:
             path.lineTo(p["x"] * self.width(), p["y"] * self.height())
-        painter.setPen(QPen(QColor(el["color"]), max(1.0, el["width"] * self.px_per_pt)))
+        pen = QPen(color, diameter)
+        if opacity is not None:
+            pen.setCapStyle(Qt.RoundCap)  # marker ends are round, as in the export
+            pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
         painter.drawPath(path)
 
     def _paint_highlight(self, painter: QPainter, el: dict) -> None:

@@ -585,8 +585,8 @@ class EditPdfDialog(ToolDialog):
     # leak into the pen. EditPageWidget stays single-valued (one .color, one
     # .width_preset); the dialog is what pushes the ACTIVE tool's values onto
     # every page widget.
-    _TOOL_COLOR_DEFAULTS = {"draw": "#ff0000", "shape": "#ff0000", "highlight": "#ffd43b"}
-    _TOOL_WIDTH_DEFAULTS = {"draw": "medium", "shape": "medium"}
+    _TOOL_COLOR_DEFAULTS = {"draw": "#ff0000", "shape": "#ff0000", "highlight": "#ffd43b", "marker": "#ffd43b"}
+    _TOOL_WIDTH_DEFAULTS = {"draw": "medium", "shape": "medium", "marker": "medium"}
     # The amber is the web's own default highlight colour, so it must be
     # offer-able from the swatch row too, not just be the starting value.
     _PALETTE = ["#000000", "#ff0000", "#0000ff", "#00aa00", "#ffff00", "#ffd43b", "#ffffff"]
@@ -596,6 +596,7 @@ class EditPdfDialog(ToolDialog):
         # state straight from it while they are being built.
         self._page_widgets: list[EditPageWidget] = []
         self._create_mode = "new_text"
+        self._draw_tool = "pen"  # Draw's sub-tool: "pen" | "marker" (freehand highlighter)
         self._shape_type = "rectangle"
         self._filled = False
         self._tool_colors = dict(self._TOOL_COLOR_DEFAULTS)
@@ -631,16 +632,44 @@ class EditPdfDialog(ToolDialog):
         self.edit_text_btn.setCheckable(True)
         self.edit_text_btn.clicked.connect(lambda: self._set_create_mode("text"))
         mode_row.addWidget(self.edit_text_btn)
+        self.eraser_btn = QPushButton("Eraser")
+        self.eraser_btn.setCheckable(True)
+        self.eraser_btn.clicked.connect(lambda: self._set_create_mode("eraser"))
+        mode_row.addWidget(self.eraser_btn)
         layout.addLayout(mode_row)
 
         self._draw_options = QWidget()
         draw_row = QHBoxLayout(self._draw_options)
-        draw_row.addLayout(self._make_swatch_row("draw"))
+        self.pen_btn = QPushButton("Pen")
+        self.pen_btn.setCheckable(True)
+        self.pen_btn.setChecked(True)
+        self.pen_btn.clicked.connect(lambda: self._set_draw_tool("pen"))
+        draw_row.addWidget(self.pen_btn)
+        self.marker_btn = QPushButton("Highlighter")
+        self.marker_btn.setCheckable(True)
+        self.marker_btn.clicked.connect(lambda: self._set_draw_tool("marker"))
+        draw_row.addWidget(self.marker_btn)
+        self._pen_options = QWidget()
+        pen_row = QHBoxLayout(self._pen_options)
+        pen_row.setContentsMargins(0, 0, 0, 0)
+        pen_row.addLayout(self._make_swatch_row("draw"))
         self.draw_width_combo = QComboBox()
         self.draw_width_combo.addItems(["thin", "medium", "thick"])
         self.draw_width_combo.setCurrentText(self._tool_widths["draw"])
         self.draw_width_combo.currentTextChanged.connect(lambda preset: self._set_tool_width("draw", preset))
-        draw_row.addWidget(self.draw_width_combo)
+        pen_row.addWidget(self.draw_width_combo)
+        draw_row.addWidget(self._pen_options)
+        self._marker_options = QWidget()
+        marker_row = QHBoxLayout(self._marker_options)
+        marker_row.setContentsMargins(0, 0, 0, 0)
+        marker_row.addLayout(self._make_swatch_row("marker"))
+        self.marker_width_combo = QComboBox()
+        self.marker_width_combo.addItems(["thin", "medium", "thick"])
+        self.marker_width_combo.setCurrentText(self._tool_widths["marker"])
+        self.marker_width_combo.currentTextChanged.connect(lambda preset: self._set_tool_width("marker", preset))
+        marker_row.addWidget(self.marker_width_combo)
+        draw_row.addWidget(self._marker_options)
+        self._marker_options.setVisible(False)
         layout.addWidget(self._draw_options)
 
         self._shapes_options = QWidget()
@@ -694,7 +723,7 @@ class EditPdfDialog(ToolDialog):
         text_row.addWidget(self.text_revert_btn)
         layout.addWidget(self._text_options)
 
-        self._width_combos = {"draw": self.draw_width_combo, "shape": self.shape_width_combo}
+        self._width_combos = {"draw": self.draw_width_combo, "shape": self.shape_width_combo, "marker": self.marker_width_combo}
 
         self._draw_options.setVisible(False)
         self._shapes_options.setVisible(False)
@@ -805,14 +834,20 @@ class EditPdfDialog(ToolDialog):
     def _active_style_tool(self) -> str | None:
         """Which markup tool's colour/width the page widgets should carry
         right now, or None in the two modes (new_text, image) that draw no
-        markup at all and so leave the widgets' values untouched."""
+        markup at all and so leave the widgets' values untouched. Draw's
+        Highlighter sub-tool is its own tool ("marker") with its own colour."""
+        if self._create_mode == "draw" and self._draw_tool == "marker":
+            return "marker"
         return self._create_mode if self._create_mode in self._tool_colors else None
 
     def _apply_style_to(self, widget) -> None:
         widget.shape_type = self._shape_type
         widget.filled = self._filled
+        widget.draw_tool = self._draw_tool
+        widget.marker_color = self._tool_colors["marker"]
+        widget.marker_width_preset = self._tool_widths["marker"]
         tool = self._active_style_tool()
-        if tool is None:
+        if tool is None or tool == "marker":
             return
         widget.color = self._tool_colors[tool]
         if tool in self._tool_widths:  # the highlight tool has no width
@@ -822,8 +857,19 @@ class EditPdfDialog(ToolDialog):
         for widget in self._page_widgets:
             self._apply_style_to(widget)
 
+    def _set_draw_tool(self, tool: str) -> None:
+        self._draw_tool = tool
+        self.pen_btn.setChecked(tool == "pen")
+        self.marker_btn.setChecked(tool == "marker")
+        self._pen_options.setVisible(tool == "pen")
+        self._marker_options.setVisible(tool == "marker")
+        self._push_style_to_widgets()
+
     def _set_create_mode(self, mode: str) -> None:
         self._commit_open_editors()
+        # A selection made in one tool means nothing in another (drawings are
+        # only selectable with the Select tool), so switching drops it.
+        self.model.clear_selection()
         self._create_mode = mode
         self.new_text_btn.setChecked(mode == "new_text")
         self.image_btn.setChecked(mode == "image")
@@ -831,6 +877,7 @@ class EditPdfDialog(ToolDialog):
         self.shapes_btn.setChecked(mode == "shape")
         self.highlight_btn.setChecked(mode == "highlight")
         self.edit_text_btn.setChecked(mode == "text")
+        self.eraser_btn.setChecked(mode == "eraser")
         self._text_options.setVisible(mode == "text")
         self._draw_options.setVisible(mode == "draw")
         self._shapes_options.setVisible(mode == "shape")
