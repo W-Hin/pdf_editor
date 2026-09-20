@@ -335,6 +335,24 @@ class EditElementsModel:
             "height": height,
         }
 
+    @property
+    def can_undo(self) -> bool:
+        return bool(self._undo_stack)
+
+    @property
+    def can_redo(self) -> bool:
+        return bool(self._redo_stack)
+
+    @property
+    def has_selected_element(self) -> bool:
+        """A single selection that still points at a live element (Undo can leave
+        selected_id behind on purpose, so Redo brings the element back selected)."""
+        return any(e["id"] == self.selected_id for e in self.elements)
+
+    @property
+    def can_paste(self) -> bool:
+        return self._clipboard is not None
+
     def undo(self) -> None:
         if not self._undo_stack:
             return
@@ -409,6 +427,7 @@ class EditElementsModel:
                 clip = dict(el)
                 clip.pop("id", None)
                 self._clipboard = clip
+                self._notify()  # the toolbar's Paste button enables itself from this
                 return
 
     def cut(self) -> None:

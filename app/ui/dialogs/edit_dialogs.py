@@ -3,14 +3,15 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPixmap, QShortcut, QKeySequence
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea, QTextEdit, QSpinBox, QCheckBox, QColorDialog
+from PySide6.QtGui import QAction, QColor, QIcon, QPixmap, QShortcut, QKeySequence
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea, QTextEdit, QSpinBox, QCheckBox, QColorDialog, QFrame, QMenu
 
 from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, get_page_size, get_page_rotation, extract_text_runs, edit_pdf, extract_form_fields, fill_form
 from app.core.compare_pdf import extract_page_texts, diff_page_text, render_page_image, diff_page_visual
 from app.core.errors import PDFError
 from app.ui.dialogs.base import ToolDialog
 from app.ui.edit_canvas import EditElementsModel, EditPageWidget
+from app.ui.theme import ACCENT, MUTED_FOREGROUND, icon_pixmap
 from app.ui.widgets import RectangleOverlayWidget, box_to_insets, insets_to_box, SignaturePadWidget, ImagePlacementWidget, FormFieldsWidget, DiffPreviewWidget
 
 
@@ -605,42 +606,64 @@ class EditPdfDialog(ToolDialog):
         self._more_buttons: dict[str, QPushButton] = {}
 
         layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
 
-        mode_row = QHBoxLayout()
-        self.select_btn = QPushButton("Select")
-        self.select_btn.setCheckable(True)
-        self.select_btn.clicked.connect(lambda: self._set_create_mode("select"))
-        mode_row.addWidget(self.select_btn)
-        self.new_text_btn = QPushButton("New Text")
-        self.new_text_btn.setCheckable(True)
-        self.new_text_btn.setChecked(True)
-        self.new_text_btn.clicked.connect(lambda: self._set_create_mode("new_text"))
-        mode_row.addWidget(self.new_text_btn)
-        self.image_btn = QPushButton("Insert Image")
-        self.image_btn.setCheckable(True)
-        self.image_btn.clicked.connect(lambda: self._set_create_mode("image"))
-        mode_row.addWidget(self.image_btn)
-        self.draw_btn = QPushButton("Draw")
-        self.draw_btn.setCheckable(True)
-        self.draw_btn.clicked.connect(lambda: self._set_create_mode("draw"))
-        mode_row.addWidget(self.draw_btn)
-        self.shapes_btn = QPushButton("Shapes")
-        self.shapes_btn.setCheckable(True)
-        self.shapes_btn.clicked.connect(lambda: self._set_create_mode("shape"))
-        mode_row.addWidget(self.shapes_btn)
-        self.highlight_btn = QPushButton("Highlight")
-        self.highlight_btn.setCheckable(True)
-        self.highlight_btn.clicked.connect(lambda: self._set_create_mode("highlight"))
-        mode_row.addWidget(self.highlight_btn)
-        self.edit_text_btn = QPushButton("Edit Text")
-        self.edit_text_btn.setCheckable(True)
-        self.edit_text_btn.clicked.connect(lambda: self._set_create_mode("text"))
-        mode_row.addWidget(self.edit_text_btn)
-        self.eraser_btn = QPushButton("Eraser")
-        self.eraser_btn.setCheckable(True)
-        self.eraser_btn.clicked.connect(lambda: self._set_create_mode("eraser"))
-        mode_row.addWidget(self.eraser_btn)
-        layout.addLayout(mode_row)
+        # ONE toolbar row: modes, undo/redo, arrange, clipboard, then the active
+        # mode's own options. It scrolls sideways when the window is too narrow
+        # rather than wrapping onto more rows and eating the page's room.
+        self._toolbar_widget = QWidget()
+        self._toolbar_widget.setObjectName("editToolbar")
+        bar = QHBoxLayout(self._toolbar_widget)
+        bar.setContentsMargins(0, 0, 0, 0)
+        bar.setSpacing(6)
+        self._toolbar_scroll = QScrollArea()
+        self._toolbar_scroll.setWidget(self._toolbar_widget)
+        self._toolbar_scroll.setWidgetResizable(True)
+        self._toolbar_scroll.setFrameShape(QFrame.NoFrame)
+        self._toolbar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._toolbar_scroll.setFixedHeight(58)
+        layout.addWidget(self._toolbar_scroll)
+
+        # Same order and names as the web app's toolbar.
+        self._mode_buttons: dict[str, QPushButton] = {}
+        for mode, label, icon_name, attr in self._MODES:
+            btn = QPushButton()
+            btn.setObjectName("modeButton")
+            btn.setCheckable(True)
+            btn.setIcon(self._two_state_icon(icon_name))
+            btn.setToolTip(label)
+            btn.setAccessibleName(label)
+            btn.clicked.connect(lambda _=False, m=mode: self._set_create_mode(m))
+            setattr(self, attr, btn)
+            self._mode_buttons[mode] = btn
+            bar.addWidget(btn)
+        self._refresh_mode_buttons()
+        bar.addWidget(self._divider())
+
+        self.undo_btn = self._toolbar_icon("arrow-u-up-left", "Undo", "Undo (Ctrl+Z)", lambda: self._toolbar_action("undo"))
+        self.redo_btn = self._toolbar_icon("arrow-u-up-right", "Redo", "Redo (Ctrl+Y)", lambda: self._toolbar_action("redo"))
+        bar.addWidget(self.undo_btn)
+        bar.addWidget(self.redo_btn)
+
+        self.arrange_btn = QPushButton("Arrange")
+        self.arrange_btn.setIcon(QIcon(icon_pixmap("stack-simple", MUTED_FOREGROUND, 18)))
+        self.arrange_btn.setToolTip("Bring the selected item forward or send it back")
+        arrange_menu = QMenu(self.arrange_btn)
+        for label, direction in (("Bring to Front", "front"), ("Forward", "forward"), ("Backward", "backward"), ("Send to Back", "back")):
+            action = QAction(label, arrange_menu)
+            action.triggered.connect(lambda _=False, d=direction: self._reorder_from_toolbar(d))
+            arrange_menu.addAction(action)
+        self.arrange_btn.setMenu(arrange_menu)
+        bar.addWidget(self.arrange_btn)
+
+        self.copy_btn = self._toolbar_icon("copy", "Copy", "Copy (Ctrl+C)", lambda: self._toolbar_action("copy"))
+        self.cut_btn = self._toolbar_icon("scissors", "Cut", "Cut (Ctrl+X)", lambda: self._toolbar_action("cut"))
+        self.paste_btn = self._toolbar_icon("clipboard-text", "Paste", "Paste (Ctrl+V)", lambda: self._toolbar_action("paste"))
+        self.delete_btn = self._toolbar_icon("trash", "Delete", "Delete (Del)", lambda: self._toolbar_action("delete"))
+        for btn in (self.copy_btn, self.cut_btn, self.paste_btn, self.delete_btn):
+            bar.addWidget(btn)
+        bar.addWidget(self._divider())
 
         self._draw_options = QWidget()
         draw_row = QHBoxLayout(self._draw_options)
@@ -674,7 +697,7 @@ class EditPdfDialog(ToolDialog):
         marker_row.addWidget(self.marker_width_combo)
         draw_row.addWidget(self._marker_options)
         self._marker_options.setVisible(False)
-        layout.addWidget(self._draw_options)
+        bar.addWidget(self._draw_options)
 
         self._shapes_options = QWidget()
         shapes_row = QHBoxLayout(self._shapes_options)
@@ -691,12 +714,12 @@ class EditPdfDialog(ToolDialog):
         self.filled_checkbox = QCheckBox("Filled")
         self.filled_checkbox.toggled.connect(self._set_filled)
         shapes_row.addWidget(self.filled_checkbox)
-        layout.addWidget(self._shapes_options)
+        bar.addWidget(self._shapes_options)
 
         self._highlight_options = QWidget()
         highlight_row = QHBoxLayout(self._highlight_options)
         highlight_row.addLayout(self._make_swatch_row("highlight"))
-        layout.addWidget(self._highlight_options)
+        bar.addWidget(self._highlight_options)
 
         self._text_options = QWidget()
         text_row = QHBoxLayout(self._text_options)
@@ -725,7 +748,7 @@ class EditPdfDialog(ToolDialog):
         self.text_revert_btn.setFocusPolicy(Qt.NoFocus)
         self.text_revert_btn.clicked.connect(self._revert_open_run)
         text_row.addWidget(self.text_revert_btn)
-        layout.addWidget(self._text_options)
+        bar.addWidget(self._text_options)
 
         self._width_combos = {"draw": self.draw_width_combo, "shape": self.shape_width_combo, "marker": self.marker_width_combo}
 
@@ -734,33 +757,7 @@ class EditPdfDialog(ToolDialog):
         self._highlight_options.setVisible(False)
         self._text_options.setVisible(False)
 
-        action_row = QHBoxLayout()
-        undo_btn = QPushButton("Undo")
-        undo_btn.clicked.connect(lambda: self._toolbar_action("undo"))
-        action_row.addWidget(undo_btn)
-        redo_btn = QPushButton("Redo")
-        redo_btn.clicked.connect(lambda: self._toolbar_action("redo"))
-        action_row.addWidget(redo_btn)
-        copy_btn = QPushButton("Copy")
-        copy_btn.clicked.connect(lambda: self._toolbar_action("copy"))
-        action_row.addWidget(copy_btn)
-        cut_btn = QPushButton("Cut")
-        cut_btn.clicked.connect(lambda: self._toolbar_action("cut"))
-        action_row.addWidget(cut_btn)
-        paste_btn = QPushButton("Paste")
-        paste_btn.clicked.connect(lambda: self._toolbar_action("paste"))
-        action_row.addWidget(paste_btn)
-        delete_btn = QPushButton("Delete")
-        delete_btn.clicked.connect(lambda: self._toolbar_action("delete"))
-        action_row.addWidget(delete_btn)
-        layout.addLayout(action_row)
-
-        reorder_row = QHBoxLayout()
-        for label, direction in (("Bring to Front", "front"), ("Send to Back", "back"), ("Forward", "forward"), ("Backward", "backward")):
-            btn = QPushButton(label)
-            btn.clicked.connect(lambda _, d=direction: self._reorder_from_toolbar(d))
-            reorder_row.addWidget(btn)
-        layout.addLayout(reorder_row)
+        bar.addStretch(1)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -770,6 +767,8 @@ class EditPdfDialog(ToolDialog):
         layout.addWidget(self._scroll)
 
         self.model = EditElementsModel()
+        self.model.on_change.append(self._refresh_toolbar_state)
+        self._refresh_toolbar_state()
         self._input_path: str | None = None
 
         for keys, action in (
@@ -778,6 +777,63 @@ class EditPdfDialog(ToolDialog):
         ):
             shortcut = QShortcut(QKeySequence(keys), self)
             shortcut.activated.connect(lambda a=action: self._handle_shortcut(a))
+
+    # (mode key, tooltip / label, icon, attribute) in the web toolbar's order.
+    _MODES = (
+        ("select", "Select", "cursor", "select_btn"),
+        ("text", "Edit Text", "cursor-text", "edit_text_btn"),
+        ("draw", "Draw", "pencil-simple", "draw_btn"),
+        ("shape", "Shapes", "rectangle", "shapes_btn"),
+        ("highlight", "Highlight", "highlighter", "highlight_btn"),
+        ("image", "Insert Image", "image-square", "image_btn"),
+        ("new_text", "Add Text", "text-aa", "new_text_btn"),
+        ("eraser", "Eraser", "eraser", "eraser_btn"),
+    )
+
+    @staticmethod
+    def _two_state_icon(name: str) -> QIcon:
+        """Muted when idle, white on the accent fill when the mode is active."""
+        icon = QIcon()
+        icon.addPixmap(icon_pixmap(name, MUTED_FOREGROUND, 18), QIcon.Normal, QIcon.Off)
+        icon.addPixmap(icon_pixmap(name, "#ffffff", 18), QIcon.Normal, QIcon.On)
+        return icon
+
+    @staticmethod
+    def _divider() -> QFrame:
+        line = QFrame()
+        line.setObjectName("toolbarDivider")
+        line.setFixedSize(1, 24)
+        return line
+
+    def _toolbar_icon(self, icon_name: str, name: str, tooltip: str, on_click) -> QPushButton:
+        btn = QPushButton()
+        btn.setObjectName("toolbarIcon")
+        btn.setIcon(QIcon(icon_pixmap(icon_name, MUTED_FOREGROUND, 18)))
+        btn.setToolTip(tooltip)
+        btn.setAccessibleName(name)
+        btn.setFocusPolicy(Qt.NoFocus)  # a click must not steal keys from the page
+        btn.clicked.connect(lambda _=False: on_click())
+        return btn
+
+    def _refresh_mode_buttons(self) -> None:
+        """Only the active mode shows its name; the rest are icon-only."""
+        labels = {mode: label for mode, label, _icon, _attr in self._MODES}
+        for mode, btn in self._mode_buttons.items():
+            active = mode == self._create_mode
+            btn.setChecked(active)
+            btn.setText(labels[mode] if active else "")
+
+    def _refresh_toolbar_state(self) -> None:
+        """Greys out what can't act right now (nothing to undo, nothing selected)."""
+        model = self.model
+        has_selection = model.has_selected_element
+        self.undo_btn.setEnabled(model.can_undo)
+        self.redo_btn.setEnabled(model.can_redo)
+        self.arrange_btn.setEnabled(has_selection)
+        self.copy_btn.setEnabled(has_selection)
+        self.cut_btn.setEnabled(has_selection)
+        self.paste_btn.setEnabled(model.can_paste)
+        self.delete_btn.setEnabled(has_selection or bool(model.selected_ids))
 
     def _make_swatch_row(self, tool: str) -> QHBoxLayout:
         """Builds one tool's colour palette row. Each row writes to - and
@@ -875,14 +931,7 @@ class EditPdfDialog(ToolDialog):
         # only selectable with the Select tool), so switching drops it.
         self.model.clear_selection()
         self._create_mode = mode
-        self.new_text_btn.setChecked(mode == "new_text")
-        self.image_btn.setChecked(mode == "image")
-        self.draw_btn.setChecked(mode == "draw")
-        self.shapes_btn.setChecked(mode == "shape")
-        self.highlight_btn.setChecked(mode == "highlight")
-        self.edit_text_btn.setChecked(mode == "text")
-        self.eraser_btn.setChecked(mode == "eraser")
-        self.select_btn.setChecked(mode == "select")
+        self._refresh_mode_buttons()
         self._text_options.setVisible(mode == "text")
         self._draw_options.setVisible(mode == "draw")
         self._shapes_options.setVisible(mode == "shape")
@@ -1084,7 +1133,10 @@ class EditPdfDialog(ToolDialog):
             if widget is not None:
                 widget.deleteLater()
         self._page_widgets = []
+        self.model.remove_listener(self._refresh_toolbar_state)
         self.model = EditElementsModel()
+        self.model.on_change.append(self._refresh_toolbar_state)
+        self._refresh_toolbar_state()
         self._input_path = paths[0] if paths else None
         if self._input_path is None:
             return

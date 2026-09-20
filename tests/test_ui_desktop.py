@@ -5121,8 +5121,7 @@ def test_backspace_and_the_toolbar_delete_button_also_delete_the_group(tmp_path)
     assert dlg.model.elements == []
     dlg.model.undo()
     _marquee(page, (0.05, 0.05), (0.7, 0.3))
-    delete_btn = next(b for b in dlg.findChildren(QPushButton) if b.text() == "Delete")
-    delete_btn.click()
+    dlg.delete_btn.click()
     assert dlg.model.elements == []
 
 
@@ -5149,3 +5148,133 @@ def test_a_moved_group_exports_cleanly(tmp_path):
     QTest.mouseMove(page, QPoint(1, 1))  # clamp hard against the corner
     QTest.mouseRelease(page, Qt.LeftButton, Qt.NoModifier, QPoint(1, 1))
     _assert_exports_cleanly(dlg, input_path)
+
+
+# ---- Edit PDF: one-row toolbar ----
+
+
+def _toolbar_dialog(tmp_path=None):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([])
+    return dlg
+
+
+def test_toolbar_is_a_single_row_with_the_modes_in_the_web_order():
+    dlg = _toolbar_dialog()
+    bar = dlg._toolbar_widget.layout()
+    assert type(bar).__name__ == "QHBoxLayout"
+    modes = []
+    for i in range(bar.count()):
+        widget = bar.itemAt(i).widget()
+        if widget is not None and widget.objectName() == "modeButton":
+            modes.append(widget.accessibleName())
+    assert modes == ["Select", "Edit Text", "Draw", "Shapes", "Highlight", "Insert Image", "Add Text", "Eraser"]
+
+
+def test_toolbar_has_no_separate_action_or_arrange_rows():
+    dlg = _toolbar_dialog()
+    # Everything - modes, history, arrange, clipboard AND the option rows - lives
+    # in the one toolbar widget; nothing is stacked beneath it but the pages.
+    for widget in (
+        dlg.select_btn, dlg.eraser_btn, dlg.undo_btn, dlg.redo_btn, dlg.arrange_btn, dlg.copy_btn, dlg.cut_btn,
+        dlg.paste_btn, dlg.delete_btn, dlg._draw_options, dlg._shapes_options, dlg._highlight_options, dlg._text_options,
+    ):
+        assert widget.parentWidget() is dlg._toolbar_widget
+    outer = dlg.preview_widget.layout()
+    assert [outer.itemAt(i).widget() for i in range(outer.count())] == [dlg._toolbar_scroll, dlg._scroll]
+
+
+def test_toolbar_scrolls_sideways_instead_of_wrapping_when_narrow():
+    dlg = _toolbar_dialog()
+    assert dlg._toolbar_scroll.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+    assert dlg._toolbar_scroll.horizontalScrollBarPolicy() != Qt.ScrollBarAlwaysOff
+    assert dlg._toolbar_scroll.widgetResizable()
+    assert dlg._toolbar_scroll.height() <= 60  # one row's worth, not several
+
+
+def test_only_the_active_mode_shows_its_name():
+    dlg = _toolbar_dialog()
+    dlg.draw_btn.click()
+    labels = {b.accessibleName(): b.text() for b in dlg._mode_buttons.values()}
+    assert labels["Draw"] == "Draw"
+    assert all(text == "" for name, text in labels.items() if name != "Draw")
+    dlg.eraser_btn.click()
+    assert dlg.eraser_btn.text() == "Eraser" and dlg.draw_btn.text() == ""
+    assert [b.isChecked() for b in dlg._mode_buttons.values()].count(True) == 1
+
+
+def test_switching_mode_swaps_the_inline_options():
+    dlg = _toolbar_dialog()
+    for button, visible in (
+        (dlg.draw_btn, "_draw_options"), (dlg.shapes_btn, "_shapes_options"),
+        (dlg.highlight_btn, "_highlight_options"), (dlg.edit_text_btn, "_text_options"),
+    ):
+        button.click()
+        shown = [n for n in ("_draw_options", "_shapes_options", "_highlight_options", "_text_options") if not getattr(dlg, n).isHidden()]
+        assert shown == [visible]
+    dlg.select_btn.click()
+    assert all(getattr(dlg, n).isHidden() for n in ("_draw_options", "_shapes_options", "_highlight_options", "_text_options"))
+
+
+def test_undo_redo_and_selection_buttons_enable_only_when_they_can_act():
+    dlg = _toolbar_dialog()
+    assert not dlg.undo_btn.isEnabled() and not dlg.redo_btn.isEnabled()
+    assert not dlg.arrange_btn.isEnabled() and not dlg.copy_btn.isEnabled()
+    assert not dlg.cut_btn.isEnabled() and not dlg.delete_btn.isEnabled() and not dlg.paste_btn.isEnabled()
+    dlg.model.add(_shape_element(x0=0.2, y0=0.2, x1=0.5, y1=0.5))  # add() selects it
+    assert dlg.undo_btn.isEnabled() and not dlg.redo_btn.isEnabled()
+    assert dlg.arrange_btn.isEnabled() and dlg.copy_btn.isEnabled() and dlg.delete_btn.isEnabled()
+    dlg.copy_btn.click()
+    assert dlg.paste_btn.isEnabled()
+    dlg.undo_btn.click()
+    assert dlg.model.elements == [] and dlg.redo_btn.isEnabled() and not dlg.undo_btn.isEnabled()
+    assert not dlg.delete_btn.isEnabled()  # nothing selected any more
+    dlg.redo_btn.click()
+    assert len(dlg.model.elements) == 1
+
+
+def test_toolbar_state_follows_the_model_after_a_new_file_is_loaded(tmp_path):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(_single_page_pdf(tmp_path, "a.pdf"))])
+    dlg.model.add(_shape_element(x0=0.2, y0=0.2, x1=0.5, y1=0.5))
+    old_model = dlg.model
+    assert dlg.undo_btn.isEnabled()
+    dlg.on_files_changed([str(_single_page_pdf(tmp_path, "b.pdf"))])  # a fresh model
+    assert not dlg.undo_btn.isEnabled() and not dlg.delete_btn.isEnabled()
+    assert dlg._refresh_toolbar_state not in old_model.on_change  # no dangling listener
+    dlg.model.add(_shape_element(x0=0.2, y0=0.2, x1=0.5, y1=0.5))
+    assert dlg.undo_btn.isEnabled()
+
+
+def test_arrange_menu_reorders_the_selected_element():
+    dlg = _toolbar_dialog()
+    first = dlg.model.add(_shape_element(x0=0.1, y0=0.1, x1=0.3, y1=0.3))
+    dlg.model.add(_shape_element(x0=0.4, y0=0.4, x1=0.6, y1=0.6))
+    dlg.model.select(first)
+    labels = [a.text() for a in dlg.arrange_btn.menu().actions()]
+    assert labels == ["Bring to Front", "Forward", "Backward", "Send to Back"]
+    dlg.arrange_btn.menu().actions()[0].trigger()  # Bring to Front
+    assert dlg.model.elements[-1]["id"] == first
+    dlg.arrange_btn.menu().actions()[3].trigger()  # Send to Back
+    assert dlg.model.elements[0]["id"] == first
+
+
+def test_toolbar_delete_cut_and_paste_buttons_act_on_the_selection():
+    dlg = _toolbar_dialog()
+    dlg.model.add(_shape_element(x0=0.2, y0=0.2, x1=0.5, y1=0.5))
+    dlg.cut_btn.click()
+    assert dlg.model.elements == []
+    dlg.paste_btn.click()
+    assert len(dlg.model.elements) == 1
+    dlg.delete_btn.click()
+    assert dlg.model.elements == []
+
+
+def test_toolbar_icon_buttons_do_not_take_keyboard_focus():
+    dlg = _toolbar_dialog()
+    for btn in (dlg.undo_btn, dlg.redo_btn, dlg.copy_btn, dlg.cut_btn, dlg.paste_btn, dlg.delete_btn):
+        assert btn.focusPolicy() == Qt.NoFocus and btn.toolTip() and btn.accessibleName()

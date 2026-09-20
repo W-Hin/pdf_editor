@@ -76,6 +76,17 @@ QPushButton#dropButton {
     padding: 16px; color: @MUTED_FOREGROUND@;
 }
 QPushButton#dropButton:hover { border-color: @ACCENT@; color: @FOREGROUND@; }
+QPushButton:checked { background: #dbeafe; border-color: @ACCENT@; }
+QPushButton#modeButton { padding: 6px 10px; }
+QPushButton#modeButton:checked {
+    background: @ACCENT@; border-color: @ACCENT@; color: #ffffff;
+}
+QPushButton#toolbarIcon { padding: 6px 8px; }
+QPushButton::menu-indicator { subcontrol-position: right center; right: 6px; }
+QFrame#toolbarDivider { background: @BORDER@; border: none; }
+QMenu { background: @CARD@; border: 1px solid @BORDER@; border-radius: 6px; padding: 4px; }
+QMenu::item { padding: 6px 18px; border-radius: 4px; }
+QMenu::item:selected { background: @MUTED@; color: @FOREGROUND@; }
 QPushButton#backButton {
     border: none; background: transparent; color: @MUTED_FOREGROUND@;
     padding: 4px 0; text-align: left;
