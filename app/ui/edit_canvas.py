@@ -546,7 +546,11 @@ class EditPageWidget(QWidget):
         return {}
 
     def _qfont_for(self, el: dict) -> QFont:
-        font = QFont(el["family"], el["size"])
+        font = QFont(el["family"])
+        # el["size"] is in PDF points; the thumbnail is px_per_pt pixels per
+        # point (1.0 when the page size is unknown), so size in pixels - not
+        # in screen points, which would depend on the display's DPI.
+        font.setPixelSize(max(1, round(el["size"] * self.px_per_pt)))
         font.setBold(el["bold"])
         font.setItalic(el["italic"])
         font.setUnderline(el["underline"])
@@ -1134,7 +1138,7 @@ class EditPageWidget(QWidget):
         x0_px, y0_px = el["x0"] * self.width(), el["y0"] * self.height()
         x1_px, y1_px = el["x1"] * self.width(), el["y1"] * self.height()
         color = QColor(el["color"])
-        painter.setPen(QPen(color, el["width"]))
+        painter.setPen(QPen(color, max(1.0, el["width"] * self.px_per_pt)))
         if el["shape"] in ("rectangle", "ellipse"):
             rect = QRect(int(min(x0_px, x1_px)), int(min(y0_px, y1_px)), int(abs(x1_px - x0_px)), int(abs(y1_px - y0_px)))
             painter.setBrush(color if el["filled"] else Qt.NoBrush)
@@ -1158,7 +1162,7 @@ class EditPageWidget(QWidget):
         path.moveTo(first["x"] * self.width(), first["y"] * self.height())
         for p in points[1:]:
             path.lineTo(p["x"] * self.width(), p["y"] * self.height())
-        painter.setPen(QPen(QColor(el["color"]), el["width"]))
+        painter.setPen(QPen(QColor(el["color"]), max(1.0, el["width"] * self.px_per_pt)))
         painter.drawPath(path)
 
     def _paint_highlight(self, painter: QPainter, el: dict) -> None:
@@ -1180,7 +1184,7 @@ class EditPageWidget(QWidget):
         match the export's geometry."""
         painter.drawLine(int(x0), int(y0), int(x1), int(y1))
         angle = math.atan2(y1 - y0, x1 - x0)
-        head_len = max(8, width * 3)
+        head_len = max(8, width * 3) * self.px_per_pt  # the core's head length is in PDF points
         head_angle = math.radians(25)
         h1x = x1 - head_len * math.cos(angle - head_angle)
         h1y = y1 - head_len * math.sin(angle - head_angle)

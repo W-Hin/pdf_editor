@@ -4026,3 +4026,96 @@ def test_clicking_an_unselected_elements_marker_area_then_clicking_again_deletes
     QTest.mouseClick(widget, Qt.LeftButton, Qt.NoModifier, marker.center())   # selects
     QTest.mouseClick(widget, Qt.LeftButton, Qt.NoModifier, marker.center())   # now the visible marker is hit
     assert model.elements == []
+
+
+def _line_thickness(widget, y):
+    img = widget.grab().toImage()
+    x = widget.width() // 2
+    ys = [yy for yy in range(widget.height()) if img.pixelColor(x, yy).lightness() < 128]
+    return len(ys), (min(ys), max(ys)) if ys else None
+
+
+def test_shape_pen_width_is_scaled_from_pdf_points_to_pixels():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    pm = QPixmap(400, 600)
+    pm.fill(Qt.white)
+    widget.set_page_pixmap(pm)
+    widget.px_per_pt = 0.5
+    el_id = model.add(_shape_element(shape="line", x0=0.1, y0=0.5, x1=0.9, y1=0.5, color="#000000", width=6))
+    model.select(None)
+    thickness, _ = _line_thickness(widget, 300)
+    assert 2 <= thickness <= 4   # 6pt at 0.5 px/pt is a 3px line, not the raw 6px
+
+
+def test_stroke_pen_width_is_scaled_from_pdf_points_to_pixels():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    pm = QPixmap(400, 600)
+    pm.fill(Qt.white)
+    widget.set_page_pixmap(pm)
+    widget.px_per_pt = 0.5
+    model.add(_stroke_element(points=[{"x": 0.1, "y": 0.5}, {"x": 0.9, "y": 0.5}], color="#000000", width=6))
+    model.select(None)
+    thickness, _ = _line_thickness(widget, 300)
+    assert 2 <= thickness <= 4
+
+
+def test_pen_width_is_unchanged_when_the_page_scale_is_unknown():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    pm = QPixmap(400, 600)
+    pm.fill(Qt.white)
+    widget.set_page_pixmap(pm)   # no page info -> px_per_pt stays 1.0
+    assert widget.px_per_pt == 1.0
+    model.add(_shape_element(shape="line", x0=0.1, y0=0.5, x1=0.9, y1=0.5, color="#000000", width=6))
+    model.select(None)
+    thickness, _ = _line_thickness(widget, 300)
+    assert 5 <= thickness <= 7
+
+
+def test_arrowhead_length_follows_the_page_scale():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    pm = QPixmap(400, 600)
+    pm.fill(Qt.white)
+    widget.set_page_pixmap(pm)
+    model.add(_shape_element(shape="arrow", x0=0.1, y0=0.5, x1=0.9, y1=0.5, color="#000000", width=3))
+    model.select(None)
+
+    def head_height():
+        img = widget.grab().toImage()
+        x = int(0.9 * 400) - 3          # just behind the tip, inside the head
+        ys = [y for y in range(600) if img.pixelColor(x, y).lightness() < 128]
+        return (max(ys) - min(ys)) if ys else 0
+
+    widget.px_per_pt = 1.0
+    big = head_height()
+    widget.px_per_pt = 0.5
+    widget.update()
+    small = head_height()
+    assert big > small > 0
+
+
+def test_new_text_font_pixel_size_follows_the_page_scale():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    el = {"family": "helvetica", "bold": False, "italic": False, "underline": False, "size": 20}
+    widget.px_per_pt = 1.0
+    assert widget._qfont_for(el).pixelSize() == 20
+    widget.px_per_pt = 0.5
+    assert widget._qfont_for(el).pixelSize() == 10
+    widget.px_per_pt = 0.01
+    assert widget._qfont_for(el).pixelSize() >= 1   # never zero
+
+
+def test_new_text_editor_and_painted_text_use_the_same_scaled_font():
+    model = EditElementsModel()
+    widget = EditPageWidget(model, page_number=1)
+    widget.set_page_pixmap(QPixmap(400, 600))
+    widget.px_per_pt = 0.5
+    widget.create_mode = "new_text"
+    QTest.mouseClick(widget, Qt.LeftButton, Qt.NoModifier, QPoint(200, 300))
+    assert widget._text_editor.font().pixelSize() == 7    # the default new-text size is 14pt x 0.5
+    widget.commit_open_editors()
