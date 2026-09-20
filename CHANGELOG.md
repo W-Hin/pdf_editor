@@ -5,6 +5,18 @@ and the **desktop app** (PySide6) by `PDFEditorDesktopSetup.exe` (also runnable 
 source with `python -m app.main`). Both share the same PDF engine in `app/core/`, so a
 change to the engine lands in both.
 
+## 0.17.1 — 2026-09-21
+
+Desktop Edit PDF is now comfortable to work in.
+
+- **Bigger, centred pages:** pages fit the window (previously a fixed, tiny 450 px thumbnail)
+  and are redrawn sharply at any size.
+- **Zoom** from 50% to 300% (toolbar buttons, Ctrl+scroll, Ctrl+= / Ctrl+- / Ctrl+0).
+- **Slimmer layout:** the file box collapses to one "filename - Change file" line once a
+  single file is chosen (all single-file tools), and Back and the title share a line.
+- Only the pages near the view are drawn, so long documents stay light.
+- Clicking a page now gives it the keyboard (Delete, arrows, Esc).
+
 ## 0.17.0 — 2026-09-21
 
 The desktop app now matches the web app: same look, same tools inside the window, same
