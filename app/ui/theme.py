@@ -39,6 +39,15 @@ QLabel#pageTitle { font-size: 24px; font-weight: 700; }
 QLabel#categoryLabel {
     font-size: 12px; font-weight: 600; color: @MUTED_FOREGROUND@;
 }
+QLabel#historyName { font-weight: 500; }
+QLabel#historyMeta { color: @MUTED_FOREGROUND@; font-size: 13px; }
+QLabel#historyThumb { background: @MUTED@; border-radius: 6px; }
+QLabel#emptyState { color: @MUTED_FOREGROUND@; padding: 48px; }
+QFrame#historyRow { background: @CARD@; border: 1px solid @BORDER@; border-radius: 10px; }
+QPushButton#headerLink {
+    background: transparent; border: none; color: #ffffff; font-weight: 500; padding: 4px 0;
+}
+QPushButton#headerLink:hover { color: #cbd5e1; }
 QLabel#toolIcon { background: @MUTED@; border-radius: 6px; }
 QLabel#toolName { font-size: 15px; font-weight: 500; }
 

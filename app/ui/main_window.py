@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.ui.recent_files import RecentFilesPage
 from app.ui.theme import MUTED_FOREGROUND, icon, icon_pixmap
 
 APP_TITLE = "PDF Editor (Desktop)"
@@ -132,6 +133,13 @@ class MainWindow(QMainWindow):
         header_row.addWidget(brand_icon)
         header_row.addWidget(QLabel(APP_TITLE))
         header_row.addStretch(1)
+        self._recent_link = QPushButton("Recent Files")
+        self._recent_link.setObjectName("headerLink")
+        self._recent_link.setIcon(icon("clock-counter-clockwise", "#ffffff", 18))
+        self._recent_link.setIconSize(QSize(18, 18))
+        self._recent_link.setCursor(Qt.PointingHandCursor)
+        self._recent_link.clicked.connect(self.show_recent)
+        header_row.addWidget(self._recent_link)
         layout.addWidget(header)
 
         self._stack = QStackedWidget()
@@ -145,12 +153,7 @@ class MainWindow(QMainWindow):
         tool_layout = QVBoxLayout(self._tool_page)
         tool_layout.setContentsMargins(32, 24, 32, 24)
         tool_layout.setSpacing(12)
-        self._back_button = QPushButton("Back")
-        self._back_button.setObjectName("backButton")
-        self._back_button.setIcon(icon("arrow-left", MUTED_FOREGROUND, 16))
-        self._back_button.setIconSize(QSize(16, 16))
-        self._back_button.setCursor(Qt.PointingHandCursor)
-        self._back_button.clicked.connect(self.show_home)
+        self._back_button = self._make_back_button()
         tool_layout.addWidget(self._back_button, 0, Qt.AlignLeft)
         self._tool_title = QLabel()
         self._tool_title.setObjectName("pageTitle")
@@ -160,7 +163,36 @@ class MainWindow(QMainWindow):
         tool_layout.addLayout(self._tool_holder, 1)
         self._stack.addWidget(self._tool_page)
 
+        self._recent_page = QWidget()
+        self._recent_page.setObjectName("page")
+        recent_layout = QVBoxLayout(self._recent_page)
+        recent_layout.setContentsMargins(32, 24, 32, 24)
+        recent_layout.setSpacing(12)
+        self._recent_back = self._make_back_button()
+        recent_layout.addWidget(self._recent_back, 0, Qt.AlignLeft)
+        recent_title = QLabel("Recent Files")
+        recent_title.setObjectName("pageTitle")
+        recent_layout.addWidget(recent_title)
+        self._recent_list = RecentFilesPage()
+        recent_layout.addWidget(self._recent_list, 1)
+        self._stack.addWidget(self._recent_page)
+
         self._current_tool = None
+
+    def _make_back_button(self) -> QPushButton:
+        button = QPushButton("Back")
+        button.setObjectName("backButton")
+        button.setIcon(icon("arrow-left", MUTED_FOREGROUND, 16))
+        button.setIconSize(QSize(16, 16))
+        button.setCursor(Qt.PointingHandCursor)
+        button.clicked.connect(self.show_home)
+        return button
+
+    def show_recent(self) -> None:
+        if not self._leave_current_tool():
+            return
+        self._recent_list.refresh()
+        self._stack.setCurrentWidget(self._recent_page)
 
     def add_tool(self, category: str, label: str, dialog_cls, icon_name: str = "file") -> None:
         card = ToolCard(label, icon_name)
@@ -183,13 +215,18 @@ class MainWindow(QMainWindow):
         tool.show()
         self._stack.setCurrentWidget(self._tool_page)
 
-    def show_home(self) -> None:
+    def _leave_current_tool(self) -> bool:
+        """Close the open tool, unless it is still running (then say so and stay)."""
         worker = getattr(self._current_tool, "_worker", None)
         if worker is not None and worker.isRunning():
             QMessageBox.information(self, "Still working", "This tool is still running. Wait for it to finish, then go back.")
-            return
+            return False
         self._discard_current_tool()
-        self._stack.setCurrentWidget(self._home)
+        return True
+
+    def show_home(self) -> None:
+        if self._leave_current_tool():
+            self._stack.setCurrentWidget(self._home)
 
     def _discard_current_tool(self) -> None:
         tool, self._current_tool = self._current_tool, None

@@ -4492,3 +4492,108 @@ def test_theme_loads_the_bundled_font_and_icons():
     _themed_main_window()
     assert "Inter" in QFontDatabase.families()
     assert not icon_pixmap("stack").isNull()
+
+
+# ---- Recent Files ----
+
+
+def _row_names(window):
+    from PySide6.QtWidgets import QFrame, QLabel
+
+    rows = window._recent_list.findChildren(QFrame, "historyRow")
+    return [r.findChild(QLabel, "historyName").text() for r in rows]
+
+
+def test_a_finished_tool_is_recorded_in_recent_files(tmp_path):
+    from app.core import history
+
+    out = tmp_path / "result.pdf"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(str(out))
+    doc.close()
+    dlg = RotateDialog()
+    dlg._on_success([str(out)])
+    entries = history.list_entries()
+    assert [e["filename"] for e in entries] == ["result.pdf"]
+    assert entries[0]["tool"] == dlg.title
+    assert entries[0]["page_count"] == 1
+
+
+def test_a_history_write_failure_does_not_break_the_operation(tmp_path, monkeypatch):
+    from app.core import history
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(history, "add_entry", boom)
+    dlg = RotateDialog()
+    dlg._on_success([str(tmp_path / "x.pdf")])
+    assert dlg.status_label.text().startswith("Done")
+
+
+def test_recent_files_page_lists_newest_first_and_remove_keeps_the_file(tmp_path):
+    from app.core import history
+
+    a = tmp_path / "a.pdf"
+    a.write_bytes(b"x")
+    b = tmp_path / "b.pdf"
+    b.write_bytes(b"x")
+    history.add_entry(str(a), "Merge PDF")
+    history.add_entry(str(b), "Rotate PDF")
+    window = _themed_main_window()
+    window.show_recent()
+    assert window._stack.currentWidget() is window._recent_page
+    assert _row_names(window) == ["b.pdf", "a.pdf"]
+    window._recent_list.remove(history.list_entries()[0]["id"])
+    assert _row_names(window) == ["a.pdf"]
+    assert b.exists()
+
+
+def test_recent_files_shows_an_empty_message_and_flags_missing_files(tmp_path):
+    from PySide6.QtWidgets import QLabel
+
+    from app.core import history
+
+    window = _themed_main_window()
+    window.show_recent()
+    assert window._recent_list.findChild(QLabel, "emptyState") is not None
+    history.add_entry(str(tmp_path / "gone.pdf"), "Merge PDF")
+    window.show_recent()
+    row = window._recent_list.findChildren(QPushButton)
+    assert [b.text() for b in row] == ["Remove"]  # no Open / Show in folder for a missing file
+
+
+def test_recent_files_open_and_show_in_folder_use_the_saved_path(tmp_path, monkeypatch):
+    from app.core import history
+    from app.ui import recent_files
+
+    f = tmp_path / "keep.pdf"
+    f.write_bytes(b"x")
+    history.add_entry(str(f), "Merge PDF")
+    opened, revealed = [], []
+    monkeypatch.setattr(recent_files.RecentFilesPage, "open_file", staticmethod(opened.append))
+    monkeypatch.setattr(recent_files.RecentFilesPage, "show_in_folder", staticmethod(revealed.append))
+    window = _themed_main_window()
+    window.show_recent()
+    buttons = {b.text(): b for b in window._recent_list.findChildren(QPushButton)}
+    buttons["Open"].click()
+    buttons["Show in folder"].click()
+    assert opened == [str(f)] and revealed == [str(f)]
+
+
+def test_recent_files_link_is_refused_while_a_tool_is_running(monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    window = _themed_main_window()
+    window.open_tool("Rotate PDF", RotateDialog)
+
+    class Busy:
+        def isRunning(self):
+            return True
+
+    window._current_tool._worker = Busy()
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: shown.append(a))
+    window._recent_link.click()
+    assert shown and window._stack.currentWidget() is window._tool_page

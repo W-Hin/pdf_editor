@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
 )
 
+from app.core import history
 from app.core.errors import PDFError
 from app.core.pdf_ops import get_page_count, render_page_thumbnail
 from app.ui.theme import MUTED_FOREGROUND, icon
@@ -232,10 +233,24 @@ class ToolDialog(QDialog):
         else:
             output_paths, message = result, None
         self._output_paths = output_paths if isinstance(output_paths, list) else [output_paths]
+        self._record_history(self._output_paths)
         if message is None:
             message = f"Done — {len(self._output_paths)} file(s) created."
         self.status_label.setText(message)
         self.open_folder_button.setEnabled(True)
+
+    def _record_history(self, paths: list[str]) -> None:
+        # The list is a convenience: failing to write it must never turn a
+        # finished operation into an error.
+        for path in paths:
+            try:
+                pages = get_page_count(path) if str(path).lower().endswith(".pdf") else None
+            except Exception:
+                pages = None
+            try:
+                history.add_entry(str(path), self.title, page_count=pages)
+            except Exception:
+                pass
 
     def _on_failure(self, message: str) -> None:
         self.progress.setVisible(False)

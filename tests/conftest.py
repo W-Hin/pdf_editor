@@ -2,6 +2,12 @@ import fitz
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolated_history_db(tmp_path, monkeypatch):
+    """Tests must never write to the real Recent Files database."""
+    monkeypatch.setenv("PDF_EDITOR_DATA_DIR", str(tmp_path / "appdata"))
+
+
 @pytest.fixture
 def make_pdf(tmp_path):
     counter = 0
