@@ -5,6 +5,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from app.ui.main_window import MainWindow
+from app.ui.theme import apply_theme
 from app.ui.dialogs.organize_dialogs import MergeDialog, SplitDialog
 from app.ui.dialogs.pages_dialogs import RemovePagesDialog, ExtractPagesDialog, ReorderPagesDialog
 from app.ui.dialogs.edit_dialogs import RotateDialog, WatermarkDialog, AddPageNumbersDialog, CropDialog, RedactDialog, SignDialog, FillFormDialog, CompareDialog, EditPdfDialog
@@ -14,37 +15,38 @@ from app.ui.dialogs.convert_dialogs import ToImagesDialog, ToWordDialog, PdfToMa
 
 def build_main_window() -> MainWindow:
     window = MainWindow()
-    window.add_tool("Organize", "Merge PDF", MergeDialog)
-    window.add_tool("Organize", "Split PDF", SplitDialog)
-    window.add_tool("Organize", "Remove pages", RemovePagesDialog)
-    window.add_tool("Organize", "Extract pages", ExtractPagesDialog)
-    window.add_tool("Organize", "Reorder pages", ReorderPagesDialog)
-    window.add_tool("Edit", "Rotate PDF", RotateDialog)
-    window.add_tool("Edit", "Add watermark", WatermarkDialog)
-    window.add_tool("Edit", "Add page numbers", AddPageNumbersDialog)
-    window.add_tool("Edit", "Crop PDF", CropDialog)
-    window.add_tool("Edit", "Redact PDF", RedactDialog)
-    window.add_tool("Edit", "Sign PDF", SignDialog)
-    window.add_tool("Edit", "PDF Forms", FillFormDialog)
-    window.add_tool("Edit", "Compare PDF", CompareDialog)
-    window.add_tool("Edit", "Edit PDF", EditPdfDialog)
-    window.add_tool("Optimize", "Compress PDF", CompressDialog)
-    window.add_tool("Optimize", "Repair PDF", RepairDialog)
-    window.add_tool("Optimize", "Protect PDF", ProtectDialog)
-    window.add_tool("Optimize", "OCR PDF", OcrDialog)
-    window.add_tool("Optimize", "PDF to PDF/A", PdfToPdfaDialog)
-    window.add_tool("Optimize", "Unlock PDF", UnlockDialog)
-    window.add_tool("Convert", "PDF to JPG", ToImagesDialog)
-    window.add_tool("Convert", "PDF to Word", ToWordDialog)
-    window.add_tool("Convert", "PDF to Markdown", PdfToMarkdownDialog)
-    window.add_tool("Convert", "PDF to PowerPoint", PdfToPptxDialog)
-    window.add_tool("Convert", "PDF to Excel", PdfToXlsxDialog)
-    window.add_tool("Convert", "Images to PDF", ImagesToPdfDialog)
+    window.add_tool("Organize", "Merge PDF", MergeDialog, "stack")
+    window.add_tool("Organize", "Split PDF", SplitDialog, "scissors")
+    window.add_tool("Organize", "Remove pages", RemovePagesDialog, "file-x")
+    window.add_tool("Organize", "Extract pages", ExtractPagesDialog, "file-arrow-down")
+    window.add_tool("Organize", "Reorder pages", ReorderPagesDialog, "arrows-down-up")
+    window.add_tool("Edit", "Rotate PDF", RotateDialog, "arrow-clockwise")
+    window.add_tool("Edit", "Add watermark", WatermarkDialog, "drop")
+    window.add_tool("Edit", "Add page numbers", AddPageNumbersDialog, "list-numbers")
+    window.add_tool("Edit", "Crop PDF", CropDialog, "crop")
+    window.add_tool("Edit", "Redact PDF", RedactDialog, "eraser")
+    window.add_tool("Edit", "Sign PDF", SignDialog, "signature")
+    window.add_tool("Edit", "PDF Forms", FillFormDialog, "list-checks")
+    window.add_tool("Edit", "Compare PDF", CompareDialog, "file-magnifying-glass")
+    window.add_tool("Edit", "Edit PDF", EditPdfDialog, "note-pencil")
+    window.add_tool("Optimize", "Compress PDF", CompressDialog, "arrows-in-simple")
+    window.add_tool("Optimize", "Repair PDF", RepairDialog, "wrench")
+    window.add_tool("Optimize", "Protect PDF", ProtectDialog, "lock")
+    window.add_tool("Optimize", "OCR PDF", OcrDialog, "scan")
+    window.add_tool("Optimize", "PDF to PDF/A", PdfToPdfaDialog, "archive")
+    window.add_tool("Optimize", "Unlock PDF", UnlockDialog, "lock-open")
+    window.add_tool("Convert", "PDF to JPG", ToImagesDialog, "image")
+    window.add_tool("Convert", "PDF to Word", ToWordDialog, "file-doc")
+    window.add_tool("Convert", "PDF to Markdown", PdfToMarkdownDialog, "file-text")
+    window.add_tool("Convert", "PDF to PowerPoint", PdfToPptxDialog, "file-ppt")
+    window.add_tool("Convert", "PDF to Excel", PdfToXlsxDialog, "file-xls")
+    window.add_tool("Convert", "Images to PDF", ImagesToPdfDialog, "file-image")
     return window
 
 
 def main() -> int:
     app = QApplication(sys.argv)
+    apply_theme(app)
     window = build_main_window()
     window.show()
     return app.exec()

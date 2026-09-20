@@ -11,7 +11,7 @@ import traceback
 from pathlib import Path
 
 
-def _checks(work: Path) -> list[tuple[str, object]]:
+def _checks(work: Path, report: Path) -> list[tuple[str, object]]:
     import pymupdf
 
     from app.core.ocr import ocr_pdf
@@ -33,9 +33,19 @@ def _checks(work: Path) -> list[tuple[str, object]]:
     scan.close()
 
     def window():
-        from app.main import build_main_window
+        from PySide6.QtGui import QFontDatabase
+        from PySide6.QtWidgets import QApplication
 
-        build_main_window()
+        from app.main import build_main_window
+        from app.ui.theme import apply_theme
+
+        apply_theme(QApplication.instance())
+        assert "Inter" in QFontDatabase.families(), "the bundled Inter font did not load"
+        win = build_main_window()
+        win.show()
+        QApplication.processEvents()
+        # Kept beside the report so a build can be looked at, not just trusted.
+        win.grab().save(str(report.with_suffix(".png")))
 
     def rotate():
         out = work / "rotated.pdf"
@@ -63,7 +73,7 @@ def run_smoke(report_path: str) -> int:
     failed = False
     with tempfile.TemporaryDirectory() as tmp:
         try:
-            checks = _checks(Path(tmp))
+            checks = _checks(Path(tmp), Path(report_path))
         except Exception:
             lines.append("SETUP FAILED\n" + traceback.format_exc())
             checks = []

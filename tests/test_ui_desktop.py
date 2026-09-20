@@ -6,7 +6,7 @@ import pytest
 from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QFont, QImage, QPixmap, QTextCharFormat
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit, QTextEdit
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit, QPushButton, QTextEdit
 
 from app.core.pdf_ops import crop_pdf, extract_form_fields, render_page_thumbnail
 from app.ui.edit_canvas import EditElementsModel, EditPageWidget
@@ -4417,3 +4417,78 @@ def test_edit_pdf_dialog_does_not_register_delete_or_backspace_as_shortcuts():
     keys = {s.key().toString() for s in dlg.findChildren(QShortcut)}
     assert "Delete" not in keys and "Backspace" not in keys
     assert {"Ctrl+Z", "Ctrl+Y", "Ctrl+C", "Ctrl+X", "Ctrl+V"} <= keys
+
+
+# ---- main window: tools open in-window with a Back link ----
+
+
+from app.ui.dialogs.edit_dialogs import RotateDialog  # noqa: E402
+
+
+def _themed_main_window():
+    from app.main import build_main_window
+    from app.ui.theme import apply_theme
+
+    apply_theme(QApplication.instance())
+    return build_main_window()
+
+
+def test_main_window_has_a_card_for_every_tool():
+    from app.ui.main_window import ToolCard
+
+    window = _themed_main_window()
+    cards = window._home.findChildren(ToolCard)
+    assert len(cards) == 26
+    assert "Desktop" in window.windowTitle()
+
+
+def test_clicking_a_card_opens_the_tool_in_the_window_and_back_returns_home():
+    window = _themed_main_window()
+    window.show()
+    card = next(c for c in window._home.findChildren(QPushButton) if c.accessibleName() == "Rotate PDF")
+    card.click()
+    assert window._stack.currentWidget() is window._tool_page
+    assert window._tool_title.text() == "Rotate PDF"
+    tool = window._current_tool
+    assert tool.parent() is not None and not tool.isWindow()  # embedded, not a pop-up
+    window._back_button.click()
+    assert window._stack.currentWidget() is window._home
+    assert window._current_tool is None
+
+
+def test_escape_does_not_close_an_embedded_tool():
+    window = _themed_main_window()
+    window.show()
+    window.open_tool("Rotate PDF", RotateDialog)
+    tool = window._current_tool
+    tool.reject()
+    tool.accept()
+    assert tool.isVisible()
+
+
+def test_back_is_refused_while_a_tool_is_still_running(monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    window = _themed_main_window()
+    window.open_tool("Rotate PDF", RotateDialog)
+
+    class Busy:
+        def isRunning(self):
+            return True
+
+    window._current_tool._worker = Busy()
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: shown.append(a))
+    window.show_home()
+    assert shown
+    assert window._stack.currentWidget() is window._tool_page
+
+
+def test_theme_loads_the_bundled_font_and_icons():
+    from PySide6.QtGui import QFontDatabase
+
+    from app.ui.theme import icon_pixmap
+
+    _themed_main_window()
+    assert "Inter" in QFontDatabase.families()
+    assert not icon_pixmap("stack").isNull()

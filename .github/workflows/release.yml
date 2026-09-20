@@ -105,6 +105,7 @@ jobs:
           --collect-all ocrmypdf --copy-metadata ocrmypdf
           --add-data "VERSION;."
           --add-data "ocr_binaries;ocr_binaries"
+          --add-data "app/ui/assets;app/ui/assets"
           -y app/main.py
 
       # A missing bundled file only shows up when the packaged app runs, and it

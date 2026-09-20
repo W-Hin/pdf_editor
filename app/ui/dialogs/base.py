@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from app.core.errors import PDFError
 from app.core.pdf_ops import get_page_count, render_page_thumbnail
+from app.ui.theme import MUTED_FOREGROUND, icon
 from app.ui.workers import Worker
 
 
@@ -36,23 +37,39 @@ class ToolDialog(QDialog):
         self.resize(*self.dialog_size)
         self._worker: Worker | None = None
         self._output_paths: list[str] = []
+        self._embedded = False
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
 
-        file_row = QHBoxLayout()
-        self.file_list = QListWidget()
-        file_row.addWidget(self.file_list)
-        pick_btn = QPushButton("Add file(s)…")
+        # Same as the web app: one wide "Choose a PDF file..." bar, then the
+        # chosen file(s) listed beneath it.
+        kind = "PDF " if self.file_filter.startswith("PDF") else ""
+        pick_btn = QPushButton(f"Choose {kind}files…" if self.allow_multiple_files else f"Choose a {kind}file…")
+        pick_btn.setObjectName("dropButton")
+        pick_btn.setIcon(icon("upload-simple", MUTED_FOREGROUND, 18))
+        pick_btn.setCursor(Qt.PointingHandCursor)
         pick_btn.clicked.connect(self._pick_files)
-        file_row.addWidget(pick_btn)
-        layout.addLayout(file_row)
+        layout.addWidget(pick_btn)
+        self.file_list = QListWidget()
+        self.file_list.setMaximumHeight(160 if self.allow_multiple_files else 56)
+        self.file_list.setVisible(False)
+        layout.addWidget(self.file_list)
+        model = self.file_list.model()
+        for changed in (model.rowsInserted, model.rowsRemoved, model.modelReset):
+            changed.connect(self._sync_file_list_visibility)
 
         self.preview_widget = QWidget()
         self.build_preview(self.preview_widget)
+        # The default thumbnail strip has nothing to show until a file is chosen.
+        self.preview_widget.setVisible(not hasattr(self, "thumbnail_strip"))
         layout.addWidget(self.preview_widget)
 
         self.options_widget = QWidget()
         self.build_options(self.options_widget)
+        if self.options_widget.layout() is not None:
+            self.options_widget.layout().setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.options_widget)
 
         self.status_label = QLabel("")
@@ -64,14 +81,33 @@ class ToolDialog(QDialog):
         layout.addWidget(self.progress)
 
         button_row = QHBoxLayout()
+        button_row.setSpacing(8)
         self.run_button = QPushButton("Run")
+        self.run_button.setProperty("primary", True)
+        self.run_button.setIcon(icon("play", "#ffffff", 16))
         self.run_button.clicked.connect(self._run)
         button_row.addWidget(self.run_button)
         self.open_folder_button = QPushButton("Show in folder")
         self.open_folder_button.setEnabled(False)
         self.open_folder_button.clicked.connect(self._open_output_folder)
         button_row.addWidget(self.open_folder_button)
+        button_row.addStretch(1)
         layout.addLayout(button_row)
+
+    def embed(self) -> None:
+        """Turn this from a pop-up window into a plain widget that the main window
+        shows in a page. Esc / Enter then no longer close it (a closed embedded
+        tool would leave a blank page, and could discard unsaved edits)."""
+        self._embedded = True
+        self.setWindowFlags(Qt.Widget)
+
+    def accept(self) -> None:
+        if not self._embedded:
+            super().accept()
+
+    def reject(self) -> None:
+        if not self._embedded:
+            super().reject()
 
     def build_preview(self, container: QWidget) -> None:
         """Override in subclasses to replace the default thumbnail-strip preview
@@ -85,6 +121,7 @@ class ToolDialog(QDialog):
         self.thumbnail_strip.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._thumbnail_container = QWidget()
         self._thumbnail_layout = QHBoxLayout(self._thumbnail_container)
+        self._thumbnail_layout.setAlignment(Qt.AlignLeft)
         self.thumbnail_strip.setWidget(self._thumbnail_container)
         layout.addWidget(self.thumbnail_strip)
 
@@ -109,8 +146,18 @@ class ToolDialog(QDialog):
         one (e.g. a result summary)."""
         raise NotImplementedError
 
+    @property
+    def fills_page(self) -> bool:
+        """Tools with their own interactive preview (a page canvas) want all the
+        room they can get; the plain ones sit compactly under the file bar."""
+        return type(self).build_preview is not ToolDialog.build_preview
+
     def selected_files(self) -> list[str]:
         return [self.file_list.item(i).text() for i in range(self.file_list.count())]
+
+    def _sync_file_list_visibility(self, *_args) -> None:
+        # An empty list box is just a blank rectangle; only show it once it has files.
+        self.file_list.setVisible(self.file_list.count() > 0)
 
     def _pick_files(self) -> None:
         if not self.allow_multiple_files:
@@ -139,6 +186,8 @@ class ToolDialog(QDialog):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+        self.thumbnail_strip.setVisible(False)
+        self.preview_widget.setVisible(False)
         paths = self.selected_files()
         if not paths:
             return
@@ -146,6 +195,8 @@ class ToolDialog(QDialog):
             count = get_page_count(paths[0])
         except PDFError:
             return
+        self.thumbnail_strip.setVisible(count > 0)
+        self.preview_widget.setVisible(count > 0)
         for i in range(1, count + 1):
             try:
                 thumb_bytes = render_page_thumbnail(paths[0], i, max_size=100)
