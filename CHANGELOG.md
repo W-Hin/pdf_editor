@@ -5,6 +5,14 @@ All notable changes to PDF Editor. The **web app** is what the Windows installer
 run from source. Both share the same PDF engine in `app/core/`, so a change to the
 engine lands in both.
 
+## 0.16.1 — 2026-09-21
+
+- **New:** a second installer, `PDFEditorDesktopSetup.exe`, for the desktop app ("PDF Editor
+  (Desktop)"). Every release now has both it and `PDFEditorSetup.exe` (the web app); they
+  can be installed side by side.
+- The release build now runs the packaged desktop app's self-test (window, PDF to
+  Markdown, OCR) before publishing.
+
 ## 0.16.0 — 2026-09-21
 
 Edit PDF (web app) drawing overhaul, plus the fixes made since 0.15.2.
