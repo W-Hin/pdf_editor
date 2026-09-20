@@ -3,7 +3,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import fitz
 import pytest
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QFont, QImage, QPixmap, QTextCharFormat
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit, QTextEdit
@@ -3171,18 +3171,36 @@ def test_a_text_edits_marker_click_removes_it_and_restores_the_original_run():
     assert model.elements == []
 
 
-def test_a_text_edit_paints_the_replacement_and_whites_out_the_original_run():
+def _painted_text_edit_image(text):
     model, widget = _text_widget()
     pm = QPixmap(400, 600)
     pm.fill(Qt.black)  # a dark "page" so the white-out is unmistakable
     widget.set_page_pixmap(pm)
     run_box = model.find_run(1, 0)["bbox"]
     model.add({"page": 1, "type": "text_edit", "run_index": 0,
-               "segments": [{"text": "", "family": "helvetica", "bold": False, "italic": False, "size": 14.0}]})
-    img = widget.grab().toImage()
-    cx = int(((run_box["left"] + (1 - run_box["right"])) / 2) * 400)
-    cy = int(((run_box["top"] + (1 - run_box["bottom"])) / 2) * 600)
-    assert img.pixelColor(cx, cy).lightness() > 200  # original run area painted white (erased)
+               "segments": [{"text": text, "family": "helvetica", "bold": False, "italic": False, "size": 40.0}]})
+    model.select(None)
+    rect = widget._run_bbox_rect_px(model.find_run(1, 0))
+    return widget.grab().toImage(), rect, run_box
+
+
+def _count_dark(img, rect):
+    return sum(1 for x in range(rect.left(), rect.right() + 1) for y in range(rect.top(), rect.bottom() + 1)
+               if img.pixelColor(x, y).lightness() < 128)
+
+
+def test_a_text_edit_paints_the_replacement_and_whites_out_the_original_run():
+    img, rect, run_box = _painted_text_edit_image("WWWW")
+    assert _count_dark(img, rect) > 0  # the replacement text is really drawn (dark on the white-out)
+    # just outside the original run bbox the dark page is untouched
+    assert img.pixelColor(rect.left() - 3, rect.top() - 3).lightness() < 50
+    assert img.pixelColor(rect.right() + 3, rect.bottom() + 3).lightness() < 50
+
+
+def test_an_empty_text_edit_leaves_the_run_area_fully_white():
+    img, rect, run_box = _painted_text_edit_image("")
+    assert _count_dark(img, QRect(rect.left(), rect.top(), rect.width() - 1, rect.height() - 1)) == 0
+    assert img.pixelColor(rect.left() + 2, rect.top() + 2).lightness() > 200
 
 
 def test_text_edit_elements_paint_before_other_elements_like_the_export_applies_them():
@@ -3435,7 +3453,13 @@ def test_edit_pdf_dialog_a_page_whose_runs_cannot_be_read_still_loads_without_ru
         raise PDFError("no text layer")
     monkeypatch.setattr(mod, "extract_text_runs", boom)
     dlg.on_files_changed([str(src)])
-    assert len(dlg._page_widgets) == 1 and dlg.model.text_runs.get(1, []) == []
+    assert len(dlg._page_widgets) == 1
+    assert 1 in dlg.model.text_runs and dlg.model.text_runs[1] == []
+    assert dlg.model.page_info[1]["width_pt"] == 0
+    widget = dlg._page_widgets[0]
+    dlg._set_create_mode("text")
+    QTest.mouseDClick(widget, Qt.LeftButton, Qt.NoModifier, QPoint(widget.width() // 2, widget.height() // 2))
+    assert widget._run_editor is None and widget._text_editor is None
 
 
 def test_edit_pdf_dialog_edit_text_mode_button_is_mutually_exclusive_with_the_others(tmp_path):
@@ -3674,3 +3698,201 @@ def test_edit_pdf_dialog_typing_a_multi_digit_size_never_leaks_digits_into_the_r
     assert widget._run_editor.toPlainText() == before
     widget.commit_open_editors()
     assert dlg.model.elements[0]["segments"][0]["size"] == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Final-review fixes
+# ---------------------------------------------------------------------------
+
+_LONG_LINE = ("The quick brown fox jumps over the lazy dog. The quick brown fox jumps over "
+              "the lazy dog. Pack my box with five")
+
+
+def _rotated_long_line_pdf(tmp_path, rotation):
+    doc = fitz.open()
+    page = doc.new_page(width=842, height=595)
+    page.insert_text((30, 300), _LONG_LINE, fontname="helv", fontsize=14)
+    page.set_rotation(rotation)
+    src = tmp_path / f"rot{rotation}.pdf"
+    doc.save(str(src))
+    doc.close()
+    return src
+
+
+def _rotated_dialog(tmp_path, rotation):
+    from app.core.pdf_ops import extract_text_runs
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+    src = _rotated_long_line_pdf(tmp_path, rotation)
+    run = extract_text_runs(str(src), 1)[0]
+    hfrac = 1 - run["bbox"]["top"] - run["bbox"]["bottom"]
+    assert hfrac > 0.72  # spans > 71% of the displayed height once rotated
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([str(src)])
+    dlg._set_create_mode("text")
+    return dlg, src
+
+
+def _assert_in_page(model, el_id):
+    el = next(e for e in model.elements if e["id"] == el_id)
+    assert 0 <= el["x"] <= 1 and 0 <= el["y"] <= 1
+    assert "width" not in el and "height" not in el
+    box = model.text_edit_box(el)
+    assert box["width"] <= 1 and box["height"] <= 1
+
+
+def _drag_element(widget, el, dx, dy):
+    start = widget._element_rect_px(el).center()
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(widget, start + QPoint(dx // 2, dy // 2))
+    QTest.mouseMove(widget, start + QPoint(dx, dy))
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, start + QPoint(dx, dy))
+
+
+@pytest.mark.parametrize("rotation", [90, 270])
+def test_moving_and_nudging_a_text_edit_twice_on_a_rotated_page_stays_in_bounds_and_exports(tmp_path, rotation):
+    dlg, src = _rotated_dialog(tmp_path, rotation)
+    widget = dlg._page_widgets[0]
+    _dclick_run(widget, 0)
+    widget._run_editor.selectAll()
+    QTest.keyClicks(widget._run_editor, "Rotated rewrite")
+    widget.commit_open_editors()
+    el_id = dlg.model.elements[0]["id"]
+    # two mouse drags in different directions
+    for dx, dy in ((-30, 40), (25, -20)):
+        el = next(e for e in dlg.model.elements if e["id"] == el_id)
+        _drag_element(widget, el, dx, dy)
+        _assert_in_page(dlg.model, el_id)
+    # three nudges in different directions
+    for key, mod in ((Qt.Key_Left, Qt.ShiftModifier), (Qt.Key_Down, Qt.NoModifier), (Qt.Key_Up, Qt.ShiftModifier)):
+        dlg.model.select(el_id)
+        QTest.keyClick(dlg, key, mod)
+        _assert_in_page(dlg.model, el_id)
+    assert "x" in dlg.model.elements[0]
+    out = dlg.run_operation([str(src)], dlg.gather_params())
+    result = fitz.open(out[0])
+    assert "Rotated rewrite" in result[0].get_text()
+    result.close()
+
+
+@pytest.mark.parametrize("rotation", [90, 270])
+def test_a_rotated_long_runs_box_never_exceeds_the_page_and_translate_never_leaves_it(tmp_path, rotation):
+    dlg, src = _rotated_dialog(tmp_path, rotation)
+    model = dlg.model
+    el_id = model.add(_text_edit_element(text="Long"))
+    el = next(e for e in model.elements if e["id"] == el_id)
+    el.update({"x": 0.5, "y": 0.5})
+    box = model.text_edit_box(el)
+    assert box["width"] <= 1.0 and box["height"] <= 1.0
+    assert box["width"] == pytest.approx(1.0)  # the unclamped swap would exceed 1
+    for dx, dy in ((0.9, 0.9), (-0.9, -0.9), (0.3, -0.2), (-2, 2)):
+        out = model.clamped_translate(el, dx, dy)
+        assert 0 <= out["x"] <= 1 and 0 <= out["y"] <= 1
+        assert set(out) == {"x", "y"}
+
+
+def test_nudging_a_text_edit_with_an_unknown_run_pushes_no_undo_step():
+    model = EditElementsModel()
+    el_id = model.add(_text_edit_element(run_index=99))
+    before = len(model._undo_stack)
+    model.nudge(el_id, 0.1, 0.1)
+    assert len(model._undo_stack) == before
+    assert "x" not in model.elements[0]
+    model.nudge("no-such-id", 0.1, 0.1)
+    assert len(model._undo_stack) == before
+
+
+def test_unselected_text_edit_has_no_invisible_delete_hotspot():
+    model, widget = _text_widget()
+    model.add(_text_edit_element())
+    model.select(None)
+    marker = widget._marker_rect(model.elements[0])
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, marker.center())
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, marker.center())
+    assert len(model.elements) == 1
+    assert model.selected_id == model.elements[0]["id"]  # it selected instead
+    # now selected, its marker is live and still deletes
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, marker.center())
+    assert model.elements == []
+
+
+def _two_page_dialog(tmp_path):
+    dlg, src = _dialog_with_text(tmp_path, pages=2)
+    dlg._set_create_mode("text")
+    return dlg, src
+
+
+def test_opening_a_run_editor_on_page_two_commits_page_ones_editor(tmp_path):
+    dlg, src = _two_page_dialog(tmp_path)
+    w1, w2 = dlg._page_widgets
+    _dclick_run(w1, 0)
+    w1._run_editor.selectAll()
+    QTest.keyClicks(w1._run_editor, "Page one edit")
+    _dclick_run(w2, 0)
+    assert w1._run_editor is None
+    assert w2._run_editor is not None
+    assert sum(1 for w in dlg._page_widgets if w._run_editor is not None) == 1
+    assert dlg._open_run_widget() is w2
+    assert [(e["page"], e["segments"][0]["text"]) for e in dlg.model.elements] == [(1, "Page one edit")]
+    # the style row acts on page 2's selection only
+    w2._run_editor.selectAll()
+    dlg.text_bold_btn.click()
+    w2.commit_open_editors()
+    page2 = next(e for e in dlg.model.elements if e["page"] == 2)
+    assert all(seg["bold"] for seg in page2["segments"])
+    page1 = next(e for e in dlg.model.elements if e["page"] == 1)
+    assert not any(seg["bold"] for seg in page1["segments"])
+    assert not dlg._any_text_editor_open()
+    dlg.model.select(page2["id"])
+    QTest.keyClick(dlg, Qt.Key_Right)
+    assert next(e for e in dlg.model.elements if e["id"] == page2["id"]).get("x") is not None
+
+
+def test_clicking_page_two_commits_page_ones_new_text_editor(tmp_path):
+    dlg, src = _two_page_dialog(tmp_path)
+    dlg._set_create_mode("new_text")
+    w1, w2 = dlg._page_widgets
+    QTest.mouseClick(w1, Qt.LeftButton, Qt.NoModifier, QPoint(60, 60))
+    assert w1._text_editor is not None
+    QTest.keyClicks(w1._text_editor, "Draft one")
+    QTest.mouseClick(w2, Qt.LeftButton, Qt.NoModifier, QPoint(60, 300))
+    assert w1._text_editor is None
+    assert [e["text"] for e in dlg.model.elements if e["type"] == "new_text" and e["page"] == 1] == ["Draft one"]
+    assert w2._text_editor is not None
+    assert sum(1 for w in dlg._page_widgets if w._text_editor is not None) == 1
+
+
+def test_reopening_a_file_with_an_editor_open_leaves_no_editor_open(tmp_path):
+    dlg, src = _dialog_with_text(tmp_path)
+    dlg._set_create_mode("text")
+    widget = dlg._page_widgets[0]
+    _dclick_run(widget, 0)
+    assert dlg._any_text_editor_open()
+    dlg.on_files_changed([str(src)])
+    assert not dlg._any_text_editor_open()
+    assert len(dlg._page_widgets) == 1
+
+
+def test_arrow_nudge_is_a_no_op_on_a_shape_while_a_run_editor_is_open_then_works(tmp_path):
+    dlg, src = _dialog_with_text(tmp_path)
+    dlg._set_create_mode("text")
+    shape_id = dlg.model.add({"page": 1, "type": "shape", "shape": "rectangle", "x0": 0.1, "y0": 0.5,
+                              "x1": 0.3, "y1": 0.6, "color": "#ff0000", "width": 3, "filled": False})
+    widget = dlg._page_widgets[0]
+    _dclick_run(widget, 0)
+    dlg.model.select(shape_id)
+    before = dict(next(e for e in dlg.model.elements if e["id"] == shape_id))
+    QTest.keyClick(dlg, Qt.Key_Right)
+    assert next(e for e in dlg.model.elements if e["id"] == shape_id) == before
+    widget.commit_open_editors()
+    dlg.model.select(shape_id)
+    QTest.keyClick(dlg, Qt.Key_Right)
+    now = next(e for e in dlg.model.elements if e["id"] == shape_id)
+    assert now["x0"] == pytest.approx(before["x0"] + 0.004)
+
+
+def test_revert_restores_the_run_editors_default_font():
+    model, widget = _text_widget()
+    _dclick_run(widget)
+    widget.revert_run_editor()
+    run = model.find_run(1, 0)
+    assert widget._run_editor.document().defaultFont().pixelSize() == max(1, round(run["size"] * widget.px_per_pt))

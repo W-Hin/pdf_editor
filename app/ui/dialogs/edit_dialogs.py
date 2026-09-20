@@ -869,6 +869,11 @@ class EditPdfDialog(ToolDialog):
         for widget in self._page_widgets:
             widget.commit_open_editors()
 
+    def _commit_open_editors_except(self, keep) -> None:
+        for widget in self._page_widgets:
+            if widget is not keep:
+                widget.commit_open_editors()
+
     def _toolbar_action(self, action: str) -> None:
         """A toolbar CLICK (unlike a keyboard shortcut, whose keystroke
         belongs to an open text editor) finishes any open editor first so the
@@ -933,13 +938,12 @@ class EditPdfDialog(ToolDialog):
         .setFocus() (real window activation never happens without a
         genuine event loop), so it's not a trustworthy signal in tests OR
         in the same code path this app already runs under for CI. "Open"
-        is also the semantically right check for the real running app: a
-        toolbar button click naturally commits the open editor (via its
-        own focus-out) before the button's own click handler runs, so by
-        the time _handle_shortcut executes, _text_editor is already back
-        to None in that case - this check only actually matters for the
-        case a real focus-out hasn't fired yet (e.g. a keyboard shortcut
-        pressed while still actively typing). Centralized here so both
+        is also the semantically right check for the real running app.
+        Toolbar clicks do not rely on focus-out: they commit any open
+        editor explicitly through _toolbar_action before acting, so this
+        check only matters for keyboard shortcuts pressed while still
+        actively typing. It must consider both _text_editor (new_text)
+        and _run_editor (run editing). Centralized here so both
         _handle_shortcut and keyPressEvent share one check."""
         return any(w._text_editor is not None or w._run_editor is not None for w in self._page_widgets)
 
@@ -977,6 +981,9 @@ class EditPdfDialog(ToolDialog):
         super().keyPressEvent(e)
 
     def on_files_changed(self, paths: list[str]) -> None:
+        # Close any open editors on the outgoing widgets cleanly (the model
+        # is replaced below, so this only guarantees nothing is left dangling).
+        self._commit_open_editors()
         while self._container_layout.count():
             item = self._container_layout.takeAt(0)
             widget = item.widget()
@@ -1004,12 +1011,12 @@ class EditPdfDialog(ToolDialog):
                 rotation = get_page_rotation(self._input_path, page_num)
             except PDFError:
                 runs, width_pt, height_pt, rotation = [], 0.0, 0.0, 0
-            if width_pt:
-                self.model.set_page_text_info(page_num, runs, rotation, width_pt, height_pt)
+            self.model.set_page_text_info(page_num, runs, rotation, width_pt, height_pt)
             widget = EditPageWidget(self.model, page_num)
             widget.run_editor_cursor_moved.connect(self._sync_text_style_row)
             # The callback closes over the WIDGET itself rather than a page
             # number, so it can never index into the wrong page's widget.
+            widget.commit_other_editors = lambda w=widget: self._commit_open_editors_except(w)
             widget.on_image_click = lambda point, wgt=widget: self._prompt_for_image(wgt, point)
             # A freshly built page must honour whichever toolbar mode and
             # tool settings are currently in force, not EditPageWidget's own

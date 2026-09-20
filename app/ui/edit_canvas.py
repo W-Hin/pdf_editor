@@ -225,6 +225,9 @@ class EditElementsModel:
         if moved and info and info["rotation"] in (90, 270):
             w_pt, h_pt = width * info["width_pt"], height * info["height_pt"]
             width, height = h_pt / info["width_pt"], w_pt / info["height_pt"]
+            # A long sideways run can transpose to more than the whole page;
+            # the box must never claim more than the page it sits on.
+            width, height = min(width, 1.0), min(height, 1.0)
         return {
             "x": el["x"] if moved else bbox["left"],
             "y": el["y"] if moved else bbox["top"],
@@ -392,8 +395,8 @@ class EditElementsModel:
             if box is None:
                 return {}
             return {
-                "x": min(max(box["x"] + dx, 0), 1 - box["width"]),
-                "y": min(max(box["y"] + dy, 0), 1 - box["height"]),
+                "x": min(max(box["x"] + dx, 0), max(0, 1 - box["width"])),
+                "y": min(max(box["y"] + dy, 0), max(0, 1 - box["height"])),
             }
         # new_text / image: x,y is the top-left corner and width/height are
         # stored, so the clamp can be expressed on the coordinates directly.
@@ -407,11 +410,14 @@ class EditElementsModel:
         unlike a mouse drag's many intermediate positions, each nudge call
         commits its own undo step, matching add/remove's own
         commit-before-mutate pattern."""
+        el = next((e for e in self.elements if e["id"] == element_id), None)
+        if el is None:
+            return
+        changes = self.clamped_translate(el, dx, dy)
+        if not changes:
+            return  # nothing to move (e.g. unknown run): no useless undo step
         self.commit()
-        for el in self.elements:
-            if el["id"] == element_id:
-                el.update(self.clamped_translate(el, dx, dy))
-                break
+        el.update(changes)
         self._notify()
 
 
@@ -436,6 +442,9 @@ class EditPageWidget(QWidget):
         self.page_pixmap = None
         self.create_mode = "new_text"
         self.on_image_click = on_image_click
+        # Set by the owning dialog: commits the OTHER pages' open editors so
+        # only one editor is ever open across the whole dialog.
+        self.commit_other_editors = None
         self.image_cache: dict = {}
         self.shape_type = "rectangle"
         self.color = "#ff0000"
@@ -577,11 +586,16 @@ class EditPageWidget(QWidget):
         # draft is silently discarded and _text_editor never returns to
         # None - which would also leave EditPdfDialog._any_text_editor_open
         # stuck True, disabling every shortcut for the rest of the session.
+        self._commit_others()
         self.commit_open_editors()
         pos = e.position().toPoint()
         elements = self._elements()
         for i in reversed(range(len(elements))):
             el = elements[i]
+            # A text_edit's marker is only drawn (so only live) while it is
+            # selected; otherwise it is an invisible hotspot on the run.
+            if el["type"] == "text_edit" and self.model.selected_id != el["id"]:
+                continue
             if self._marker_rect(el).contains(pos):
                 self.model.remove(el["id"])
                 return
@@ -829,7 +843,12 @@ class EditPageWidget(QWidget):
             preview = {"color": self.color, **insets}
             self._paint_highlight(painter, preview)
 
+    def _commit_others(self) -> None:
+        if self.commit_other_editors is not None:
+            self.commit_other_editors()
+
     def _open_text_editor_for_new(self, point: tuple[float, float]) -> None:
+        self._commit_others()
         width, height = 0.25, 0.08
         x = min(max(point[0] - width / 2, 0), 1 - width)
         y = min(max(point[1] - height / 2, 0), 1 - height)
@@ -840,6 +859,7 @@ class EditPageWidget(QWidget):
         })
 
     def _open_text_editor_for_existing(self, el: dict) -> None:
+        self._commit_others()
         self._editing_element_id = el["id"]
         self._show_text_editor(el["x"], el["y"], el["width"], el["height"], el["text"], el)
 
@@ -895,6 +915,7 @@ class EditPageWidget(QWidget):
         """Opens the unified rich-text editor over a detected run, seeded from
         the pending text_edit's segments if there is one, else from the run's
         own text in the run's own default style."""
+        self._commit_others()
         self.commit_open_editors()
         pending = self.model.text_edit_for_run(self.page_number, run["index"])
         default = self._run_default_style(run)
@@ -912,11 +933,7 @@ class EditPageWidget(QWidget):
         # is what such text displays in - set it to the run's own default style
         # (export already falls back to that same style for a format-less
         # fragment, see segments_from_document).
-        default_font = QFont(default["family"])
-        default_font.setPixelSize(max(1, round(default["size"] * self.px_per_pt)))
-        default_font.setBold(default["bold"])
-        default_font.setItalic(default["italic"])
-        doc.setDefaultFont(default_font)
+        self._apply_default_font(doc, default)
         editor.setDocument(doc)
         editor.setStyleSheet("QTextEdit { background: white; color: #1f2937; }")
         # typing continues in the style of the last segment (or the run's default)
@@ -936,6 +953,13 @@ class EditPageWidget(QWidget):
         editor.cursorPositionChanged.connect(self.run_editor_cursor_moved)
         self.run_editor_cursor_moved.emit()
         self.update()
+
+    def _apply_default_font(self, doc: QTextDocument, default: dict) -> None:
+        font = QFont(default["family"])
+        font.setPixelSize(max(1, round(default["size"] * self.px_per_pt)))
+        font.setBold(default["bold"])
+        font.setItalic(default["italic"])
+        doc.setDefaultFont(font)
 
     def _commit_run_editor(self) -> None:
         if self._run_editor is None:
@@ -1021,6 +1045,7 @@ class EditPageWidget(QWidget):
             self.model.remove(pending["id"])
         doc = build_segments_document([{"text": run["text"], **default}], self.px_per_pt)
         doc.setParent(self._run_editor)
+        self._apply_default_font(doc, default)
         self._run_editor.setDocument(doc)
         self._run_editor.setCurrentCharFormat(_segment_format({**default, "text": ""}, self.px_per_pt))
         self._editing_run["initial_segments"] = segments_from_document(doc, default)
@@ -1076,7 +1101,7 @@ class EditPageWidget(QWidget):
         painter.save()
         painter.translate(rect.x(), rect.y())
         painter.setPen(QColor("#1f2937"))
-        doc.drawContents(painter, QRectF(0, 0, max(rect.width(), int(doc.idealWidth()) + 1), max(rect.height(), 1)))
+        doc.drawContents(painter, QRectF(0, 0, max(rect.width(), int(doc.idealWidth()) + 1), max(rect.height(), int(doc.size().height()) + 1)))
         painter.restore()
 
     def _paint_image(self, painter: QPainter, el: dict) -> None:
