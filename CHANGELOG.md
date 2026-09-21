@@ -5,6 +5,25 @@ and the **desktop app** (PySide6) by `PDFEditorDesktopSetup.exe` (also runnable 
 source with `python -m app.main`). Both share the same PDF engine in `app/core/`, so a
 change to the engine lands in both.
 
+## 0.18.0 — 2026-09-21
+
+- **Desktop update banner:** the desktop app now tells you when a newer version is out
+  ("A newer version (vX) is available", with Download update and Dismiss), like the web app.
+  The check runs in the background and stays invisible offline. Set
+  `PDF_EDITOR_NO_UPDATE_CHECK=1` to turn it off. The web app now shares the same check.
+- **Desktop Recent Files:** a search box (file name, tool or folder) and paging - 50 at a
+  time with "Show more".
+- **Faster desktop Edit PDF on long documents:** a document is read in one pass instead of
+  reopening the file three times per page (a 200-page test file: 2.15 s down to 0.21 s), and
+  pages are drawn on a background thread, so opening, scrolling and zooming no longer stall.
+  A page whose text can't be read now keeps its real size.
+- **Desktop controls you can see:** unchecked checkboxes now show a box (and a blue tick when
+  checked), drop-downs and number spinners show their arrows.
+- **Desktop forms:** simple option forms are a comfortable width instead of running across
+  the whole window, the OCR language list is spaced out, and Sign PDF's first screen now
+  says what to do.
+- README: notes on the Windows SmartScreen warning for the unsigned installers.
+
 ## 0.17.3 — 2026-09-21
 
 - **Fixed:** PDF to Markdown crashed on any PDF containing a picture when the temp folder's
