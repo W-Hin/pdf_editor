@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from app.core import history
 from app.core.errors import PDFError
 from app.core.pdf_ops import get_page_count, render_page_thumbnail
+from app.ui.page_grid import PageGridWidget
 from app.ui.theme import MUTED_FOREGROUND, icon, icon_pixmap
 from app.ui.workers import Worker
 
@@ -143,8 +144,6 @@ class ToolDialog(QDialog):
         body.setSpacing(16)
         self.preview_widget = QWidget()
         self.build_preview(self.preview_widget)
-        # The default thumbnail strip has nothing to show until a file is chosen.
-        self.preview_widget.setVisible(not hasattr(self, "thumbnail_strip"))
         body.addWidget(self.preview_widget, 1)
         self._body_layout = body
 
@@ -212,6 +211,9 @@ class ToolDialog(QDialog):
 
     def shutdown(self) -> None:
         """Called before the tool goes away; a tool with background work stops it."""
+        grid = getattr(self, "page_grid", None)
+        if grid is not None:
+            grid.shutdown()
 
     def embed(self) -> None:
         """Turn this from a pop-up window into a plain widget that the main window
@@ -229,20 +231,13 @@ class ToolDialog(QDialog):
             super().reject()
 
     def build_preview(self, container: QWidget) -> None:
-        """Override in subclasses to replace the default thumbnail-strip preview
-        with something else (e.g. an interactive rectangle-selection widget for
-        Crop/Redact). Default: the existing horizontal scrolling thumbnail strip."""
+        """Override in subclasses to replace the default preview with something else
+        (e.g. an interactive rectangle-selection widget for Crop/Redact). Default: a
+        grid of large page thumbnails, like the web app's."""
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.thumbnail_strip = QScrollArea()
-        self.thumbnail_strip.setWidgetResizable(True)
-        self.thumbnail_strip.setFixedHeight(130)
-        self.thumbnail_strip.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._thumbnail_container = QWidget()
-        self._thumbnail_layout = QHBoxLayout(self._thumbnail_container)
-        self._thumbnail_layout.setAlignment(Qt.AlignLeft)
-        self.thumbnail_strip.setWidget(self._thumbnail_container)
-        layout.addWidget(self.thumbnail_strip)
+        self.page_grid = PageGridWidget("view")
+        layout.addWidget(self.page_grid)
 
     def build_options(self, container: QWidget) -> None:
         """Override in subclasses to add tool-specific option widgets into `container`."""
@@ -264,12 +259,6 @@ class ToolDialog(QDialog):
         override the default "Done — N file(s) created." status text with a custom
         one (e.g. a result summary)."""
         raise NotImplementedError
-
-    @property
-    def fills_page(self) -> bool:
-        """Tools with their own interactive preview (a page canvas) want all the
-        room they can get; the plain ones sit compactly under the file bar."""
-        return type(self).build_preview is not ToolDialog.build_preview
 
     def selected_files(self) -> list[str]:
         return [self.file_list.item(i).text() for i in range(self.file_list.count())]
@@ -319,35 +308,13 @@ class ToolDialog(QDialog):
         self._refresh_thumbnails()
 
     def _refresh_thumbnails(self) -> None:
-        if not hasattr(self, "_thumbnail_layout"):
+        """Show the chosen file's pages in the default page grid (a tool with its own
+        preview has no `page_grid` and does nothing here)."""
+        grid = getattr(self, "page_grid", None)
+        if grid is None:
             return
-        while self._thumbnail_layout.count():
-            item = self._thumbnail_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        self.thumbnail_strip.setVisible(False)
-        self.preview_widget.setVisible(False)
         paths = self.selected_files()
-        if not paths:
-            return
-        try:
-            count = get_page_count(paths[0])
-        except PDFError:
-            return
-        self.thumbnail_strip.setVisible(count > 0)
-        self.preview_widget.setVisible(count > 0)
-        for i in range(1, count + 1):
-            try:
-                thumb_bytes = render_page_thumbnail(paths[0], i, max_size=100)
-            except PDFError:
-                continue
-            pixmap = QPixmap()
-            pixmap.loadFromData(thumb_bytes)
-            label = QLabel()
-            label.setPixmap(pixmap)
-            label.setToolTip(f"Page {i}")
-            self._thumbnail_layout.addWidget(label)
+        grid.set_document(paths[0] if paths else None)
 
     def _run(self) -> None:
         input_paths = self.selected_files()

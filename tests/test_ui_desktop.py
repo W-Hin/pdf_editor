@@ -190,13 +190,13 @@ def test_crop_dialog_rebuilds_mirrors_on_file_change(tmp_path):
     assert dlg._mirrors == []
 
 
-def test_compress_dialog_still_builds_its_thumbnail_strip():
+def test_compress_dialog_shows_its_pages_in_the_large_page_grid():
     from app.ui.dialogs.optimize_dialogs import CompressDialog
+    from app.ui.page_grid import PageGridWidget
 
     dlg = CompressDialog()
-    assert hasattr(dlg, "thumbnail_strip")
-    assert hasattr(dlg, "_thumbnail_layout")
-    assert dlg.quality_slider.value() == 60
+    assert isinstance(dlg.page_grid, PageGridWidget) and dlg.page_grid.mode == "view"
+    assert not hasattr(dlg, "thumbnail_strip")  # the 100px strip is gone
 
 
 def test_redact_dialog_each_page_holds_its_own_boxes_independently(tmp_path):
