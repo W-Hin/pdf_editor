@@ -51,31 +51,51 @@ class RotateDialog(ToolDialog):
 class WatermarkDialog(ToolDialog):
     title = "Add watermark"
 
+    def _slider_row(self, layout, label: str, low: int, high: int, value: int, suffix: str = "") -> QSlider:
+        """A labelled slider with its current value shown beside the label."""
+        caption = QLabel()
+        layout.addWidget(caption)
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(low, high)
+        slider.setValue(value)
+        slider.valueChanged.connect(lambda v: caption.setText(f"{label}: {v}{suffix}"))
+        caption.setText(f"{label}: {value}{suffix}")
+        layout.addWidget(slider)
+        return slider
+
     def build_options(self, container: QWidget) -> None:
         layout = QVBoxLayout(container)
         layout.addWidget(QLabel("Watermark text:"))
         self.text_input = QLineEdit()
         layout.addWidget(self.text_input)
-        layout.addWidget(QLabel("Opacity (%):"))
-        self.opacity_slider = QSlider(Qt.Horizontal)
-        self.opacity_slider.setRange(10, 100)
-        self.opacity_slider.setValue(30)
-        layout.addWidget(self.opacity_slider)
-        # Live preview: the text appears on every page as you type.
-        self.page_grid.set_overlay(watermark_overlay(self.page_grid, self.text_input.text, lambda: self.opacity_slider.value() / 100))
+        # Same controls and ranges as the web app: opacity 10-100 %, size 10-120 pt, any rotation.
+        self.opacity_slider = self._slider_row(layout, "Opacity (%)", 10, 100, 30)
+        self.font_size_slider = self._slider_row(layout, "Font size (pt)", 10, 120, 40)
+        self.rotation_slider = self._slider_row(layout, "Rotation (degrees)", 0, 360, 0)
+        # Live preview: the text appears on every page as you type, at the chosen size and angle.
+        self.page_grid.set_overlay(watermark_overlay(
+            self.page_grid, self.text_input.text, lambda: self.opacity_slider.value() / 100,
+            self.font_size_slider.value, self.rotation_slider.value,
+        ))
         self.text_input.textChanged.connect(lambda _t: self.page_grid.refresh())
-        self.opacity_slider.valueChanged.connect(lambda _v: self.page_grid.refresh())
+        for slider in (self.opacity_slider, self.font_size_slider, self.rotation_slider):
+            slider.valueChanged.connect(lambda _v: self.page_grid.refresh())
 
     def gather_params(self) -> dict:
         return {
             "text": self.text_input.text(),
             "opacity": self.opacity_slider.value() / 100,
+            "font_size": self.font_size_slider.value(),
+            "rotate": self.rotation_slider.value(),
         }
 
     def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         input_path = input_paths[0]
         out_path = str(Path(input_path).with_name(Path(input_path).stem + "_watermarked.pdf"))
-        add_watermark(input_path, out_path, params["text"], opacity=params["opacity"])
+        add_watermark(
+            input_path, out_path, params["text"], opacity=params["opacity"],
+            font_size=params["font_size"], rotate=params["rotate"],
+        )
         return [out_path]
 
 

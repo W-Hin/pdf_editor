@@ -5,12 +5,13 @@ from PySide6.QtGui import QColor, QFont
 
 from app.core.pdf_ops import _PAGE_NUMBER_BAND_HEIGHT, _PAGE_NUMBER_MARGIN, _format_page_number
 
-WATERMARK_FONT_SIZE_PT = 40  # what add_watermark draws at
+DEFAULT_WATERMARK_FONT_SIZE_PT = 40  # add_watermark's own default
 PAGE_NUMBER_FONT_SIZE_PT = 10  # what add_page_numbers draws at
 
 
-def watermark_overlay(grid, text, opacity):
-    """`text()` and `opacity()` (0-1) are read fresh on every paint."""
+def watermark_overlay(grid, text, opacity, font_size=None, rotation=None):
+    """`text()`, `opacity()` (0-1), `font_size()` (points) and `rotation()` (degrees,
+    counter-clockwise like the exported watermark) are read fresh on every paint."""
 
     def paint(painter, rect, page, total):
         value = text().strip()
@@ -18,13 +19,19 @@ def watermark_overlay(grid, text, opacity):
             return
         width_pt, _height_pt = grid.page_size_pt(0, page)
         scale = rect.width() / width_pt
+        size_pt = font_size() if font_size is not None else DEFAULT_WATERMARK_FONT_SIZE_PT
         font = QFont("Helvetica")
-        font.setPixelSize(max(4, round(WATERMARK_FONT_SIZE_PT * scale)))
+        font.setPixelSize(max(4, round(size_pt * scale)))
         painter.setFont(font)
         colour = QColor(128, 128, 128)
         colour.setAlphaF(opacity())
         painter.setPen(colour)
-        painter.drawText(rect, Qt.AlignCenter, value)
+        painter.translate(rect.center())
+        # The export rotates counter-clockwise (PDF's y axis points up); Qt's rotate()
+        # is clockwise on screen, hence the minus.
+        painter.rotate(-(rotation() if rotation is not None else 0))
+        text_rect = QRectF(-rect.width() * 2, -rect.height(), rect.width() * 4, rect.height() * 2)
+        painter.drawText(text_rect, Qt.AlignCenter, value)
 
     return paint
 

@@ -15,6 +15,23 @@ from app.ui.page_grid import CELL_WIDTHS, GAP, LABEL_HEIGHT, PageGridWidget
 _app = QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def _close_every_window_after_each_test():
+    """Tests show real windows and never close them. Left open they pile up, keep
+    repainting, and keep their render threads alive into the next test (the cause of a
+    rare native crash while painting a leftover thumbnail)."""
+    yield
+    for widget in QApplication.topLevelWidgets():
+        stop = getattr(widget, "shutdown", None)
+        if stop is not None:
+            stop()
+        widget.close()
+        widget.deleteLater()
+    end = time.monotonic() + 0.03
+    while time.monotonic() < end:
+        QApplication.processEvents()
+
+
 def _pdf(tmp_path, pages=6, name="doc.pdf", sizes=None):
     doc = fitz.open()
     for i in range(pages):
@@ -757,3 +774,180 @@ def test_tools_whose_preview_is_meaningful_show_their_own_hint_not_a_note():
     from app.ui.dialogs.pages_dialogs import RemovePagesDialog
 
     assert "Click the pages you want to remove" in RemovePagesDialog().page_grid._hint.text()
+
+
+# ---- Add watermark: size and rotation, like the web app ----
+
+
+def _ink_box(image, rect, baseline=None, threshold=235):
+    """Bounding box of the dark pixels inside `rect`. With a `baseline` image (the same
+    cell without the watermark) only pixels that changed count, so the page's own text
+    never matters - it is there or not depending on whether the thumbnail has rendered."""
+    xs, ys = [], []
+    for x in range(int(rect.left()) + 2, int(rect.right()) - 2):
+        for y in range(int(rect.top()) + 2, int(rect.bottom()) - 2):
+            green = image.pixelColor(x, y).green()
+            if baseline is not None:
+                if abs(green - baseline.pixelColor(x, y).green()) > 12:
+                    xs.append(x)
+                    ys.append(y)
+            elif green < threshold:
+                xs.append(x)
+                ys.append(y)
+    return (min(xs), min(ys), max(xs), max(ys)) if xs else None
+
+
+def _watermark_box(dlg, cell):
+    """Where the watermark's own ink is on the cell, found by diffing against the cell with no text."""
+    text = dlg.text_input.text()
+    dlg.text_input.setText("")
+    _pump(0.05)
+    baseline = cell.grab().toImage()
+    dlg.text_input.setText(text)
+    _pump(0.05)
+    return _ink_box(cell.grab().toImage(), cell._page_rect(), baseline)
+
+
+def test_watermark_has_the_webs_controls_with_the_webs_ranges_and_defaults(tmp_path):
+    from app.ui.dialogs.edit_dialogs import WatermarkDialog
+
+    dlg = WatermarkDialog()
+    assert (dlg.opacity_slider.minimum(), dlg.opacity_slider.maximum(), dlg.opacity_slider.value()) == (10, 100, 30)
+    assert (dlg.font_size_slider.minimum(), dlg.font_size_slider.maximum(), dlg.font_size_slider.value()) == (10, 120, 40)
+    assert (dlg.rotation_slider.minimum(), dlg.rotation_slider.maximum(), dlg.rotation_slider.value()) == (0, 360, 0)
+    dlg.text_input.setText("DRAFT")
+    assert dlg.gather_params() == {"text": "DRAFT", "opacity": 0.3, "font_size": 40, "rotate": 0}
+    dlg.font_size_slider.setValue(90)
+    dlg.rotation_slider.setValue(135)
+    dlg.opacity_slider.setValue(55)
+    assert dlg.gather_params() == {"text": "DRAFT", "opacity": 0.55, "font_size": 90, "rotate": 135}
+
+
+def test_watermark_sliders_show_their_current_value():
+    from PySide6.QtWidgets import QLabel
+
+    from app.ui.dialogs.edit_dialogs import WatermarkDialog
+
+    dlg = WatermarkDialog()
+    dlg.font_size_slider.setValue(72)
+    dlg.rotation_slider.setValue(45)
+    texts = [lbl.text() for lbl in dlg.options_widget.findChildren(QLabel)]
+    assert "Font size (pt): 72" in texts and "Rotation (degrees): 45" in texts and "Opacity (%): 30" in texts
+
+
+def test_the_exported_watermark_uses_the_chosen_size_and_rotation(tmp_path):
+    from app.ui.dialogs.edit_dialogs import WatermarkDialog
+
+    dlg, path = _dialog(WatermarkDialog, tmp_path, pages=2)
+    dlg.text_input.setText("CONFIDENTIAL")
+    dlg.font_size_slider.setValue(72)
+    dlg.rotation_slider.setValue(90)
+    out = dlg.run_operation([path], dlg.gather_params())[0]
+    with fitz.open(out) as doc:
+        spans = [
+            (line["dir"], span["size"])
+            for block in doc[0].get_text("dict")["blocks"] if block["type"] == 0
+            for line in block["lines"] for span in line["spans"] if "CONFIDENTIAL" in span["text"]
+        ]
+    assert spans, "the watermark text is on the page"
+    (dx, dy), size = spans[0]
+    assert size == pytest.approx(72) and abs(dx) < 0.01 and dy == pytest.approx(-1, abs=0.01)  # written bottom-to-top
+
+
+def test_the_preview_follows_size_and_rotation_and_matches_the_exports_orientation(tmp_path):
+    from app.ui.dialogs.edit_dialogs import WatermarkDialog
+
+    dlg, path = _dialog(WatermarkDialog, tmp_path, pages=1)
+    dlg.text_input.setText("CONFIDENTIAL")
+    dlg.opacity_slider.setValue(100)
+    cell = dlg.page_grid.cells()[0]
+
+    def box():
+        return _watermark_box(dlg, cell)
+
+    dlg.font_size_slider.setValue(20)
+    small = box()
+    dlg.font_size_slider.setValue(80)
+    big = box()
+    assert (big[2] - big[0]) > (small[2] - small[0]) * 1.5  # a bigger font makes a wider watermark
+    dlg.font_size_slider.setValue(40)
+    flat = box()
+    assert (flat[2] - flat[0]) > (flat[3] - flat[1]) * 3  # horizontal text: much wider than tall
+    dlg.rotation_slider.setValue(90)
+    upright = box()
+    assert (upright[3] - upright[1]) > (upright[2] - upright[0]) * 3  # turned a quarter: much taller than wide
+    # ...and the exported page turns the same way: also taller than wide.
+    out = dlg.run_operation([path], dlg.gather_params())[0]
+    with fitz.open(out) as doc:
+        pix = doc[0].get_pixmap(dpi=72)
+    xs = [x for x in range(pix.width) for y in range(0, pix.height, 2) if y > 90 and pix.pixel(x, y)[1] < 235]  # y > 90 skips the page's own "Page 1" line
+    ys = [y for y in range(90, pix.height) for x in range(0, pix.width, 2) if pix.pixel(x, y)[1] < 235]
+    assert ys and xs
+    assert (max(ys) - min(ys)) > (max(xs) - min(xs)) * 2  # taller than wide in the real output as well
+
+
+def test_a_45_degree_watermark_runs_and_previews(tmp_path):
+    from app.ui.dialogs.edit_dialogs import WatermarkDialog
+
+    dlg, path = _dialog(WatermarkDialog, tmp_path, pages=1)
+    dlg.text_input.setText("DRAFT")
+    dlg.rotation_slider.setValue(45)
+    cell = dlg.page_grid.cells()[0]
+    assert _watermark_box(dlg, cell) is not None
+    out = dlg.run_operation([path], dlg.gather_params())[0]
+    assert os.path.exists(out)
+
+
+def test_an_empty_watermark_text_is_still_refused(tmp_path):
+    from app.core.errors import PDFError
+    from app.ui.dialogs.edit_dialogs import WatermarkDialog
+
+    dlg, path = _dialog(WatermarkDialog, tmp_path, pages=1)
+    with pytest.raises(PDFError):
+        dlg.run_operation([path], dlg.gather_params())
+
+
+# ---- small parity fixes with the web app ----
+
+
+def test_pdf_to_image_is_named_and_defaulted_like_the_web(tmp_path):
+    from app.ui.dialogs.convert_dialogs import ToImagesDialog
+
+    dlg = ToImagesDialog()
+    assert dlg.title == "PDF to Image"
+    assert [dlg.format_box.itemText(i) for i in range(dlg.format_box.count())] == ["jpg", "png"]
+    assert dlg.gather_params() == {"image_format": "jpg"}  # the web app's default
+
+
+def test_the_home_screen_lists_pdf_to_image_not_pdf_to_jpg():
+    from PySide6.QtWidgets import QPushButton
+
+    from app.main import build_main_window
+    from app.ui.theme import apply_theme
+
+    sheet, font = _app.styleSheet(), _app.font()
+    apply_theme(_app)
+    try:
+        window = build_main_window()
+        names = {c.accessibleName() for c in window._home.findChildren(QPushButton)}
+    finally:  # the theme is app-wide; later tests expect the unthemed defaults
+        _app.setStyleSheet(sheet)
+        _app.setFont(font)
+    assert "PDF to Image" in names and "PDF to JPG" not in names
+
+
+def test_ocr_pdfa_checkbox_explains_itself_like_the_web():
+    from app.ui.dialogs.optimize_dialogs import OcrDialog
+
+    tip = OcrDialog().pdfa_check.toolTip()
+    assert "archival format" in tip and "long-term storage" in tip
+
+
+def test_unlock_needs_a_password_like_the_web(tmp_path):
+    from app.core.errors import PDFError
+    from app.ui.dialogs.optimize_dialogs import UnlockDialog
+
+    dlg = UnlockDialog()
+    path = _pdf(tmp_path, 1)
+    with pytest.raises(PDFError, match="password"):
+        dlg.run_operation([path], {"password": ""})

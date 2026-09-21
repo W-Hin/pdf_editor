@@ -35,7 +35,7 @@ def build_main_window() -> MainWindow:
     window.add_tool("Optimize", "OCR PDF", OcrDialog, "scan")
     window.add_tool("Optimize", "PDF to PDF/A", PdfToPdfaDialog, "archive")
     window.add_tool("Optimize", "Unlock PDF", UnlockDialog, "lock-open")
-    window.add_tool("Convert", "PDF to JPG", ToImagesDialog, "image")
+    window.add_tool("Convert", "PDF to Image", ToImagesDialog, "image")
     window.add_tool("Convert", "PDF to Word", ToWordDialog, "file-doc")
     window.add_tool("Convert", "PDF to Markdown", PdfToMarkdownDialog, "file-text")
     window.add_tool("Convert", "PDF to PowerPoint", PdfToPptxDialog, "file-ppt")

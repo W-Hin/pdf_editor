@@ -10,13 +10,13 @@ from app.ui.dialogs.base import ToolDialog
 
 
 class ToImagesDialog(ToolDialog):
-    title = "PDF to JPG"
+    title = "PDF to Image"
 
     def build_options(self, container: QWidget) -> None:
         layout = QVBoxLayout(container)
         layout.addWidget(QLabel("Format:"))
         self.format_box = QComboBox()
-        self.format_box.addItems(["png", "jpg"])
+        self.format_box.addItems(["jpg", "png"])  # jpg first: the web app's default
         layout.addWidget(self.format_box)
 
     def gather_params(self) -> dict:

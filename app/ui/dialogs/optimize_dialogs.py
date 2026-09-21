@@ -3,6 +3,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QLabel, QSlider, QLineEdit, QCheckBox
 
+from app.core.errors import PDFError
 from app.core.pdf_ops import compress_pdf
 from app.core.pdf_repair import repair_pdf, protect_pdf, unlock_pdf
 from app.core.ocr import ocr_pdf, pdf_to_pdfa
@@ -85,6 +86,8 @@ class UnlockDialog(ToolDialog):
 
     def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         input_path = input_paths[0]
+        if not params["password"]:
+            raise PDFError("Enter the PDF's password to unlock it.")  # the web app won't run without one either
         out_path = str(Path(input_path).with_name(Path(input_path).stem + "_unlocked.pdf"))
         unlock_pdf(input_path, out_path, params["password"])
         return [out_path]
@@ -123,6 +126,7 @@ class OcrDialog(ToolDialog):
             grid.addWidget(box, row, col)
         layout.addLayout(grid)
         self.pdfa_check = QCheckBox("Also convert to PDF/A")
+        self.pdfa_check.setToolTip('PDF/A is a locked-down archival format designed for long-term storage — every font is embedded and nothing depends on external files, so the document is guaranteed to open identically in the future. Useful for legal, medical, or government records; not needed for everyday use.')
         layout.addWidget(self.pdfa_check)
 
     def gather_params(self) -> dict:
