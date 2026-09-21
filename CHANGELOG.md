@@ -5,6 +5,21 @@ and the **desktop app** (PySide6) by `PDFEditorDesktopSetup.exe` (also runnable 
 source with `python -m app.main`). Both share the same PDF engine in `app/core/`, so a
 change to the engine lands in both.
 
+## 0.17.2 — 2026-09-21
+
+The desktop page tools get the same comfortable page view as Edit PDF.
+
+- **Crop, Redact, Sign, PDF Forms and Compare** now show pages that fit the window and are
+  centred (they were fixed, tiny thumbnails), redrawn sharply at any size.
+- **Zoom** from 50% to 300% in each (a small - / 100% / + control, Ctrl+scroll,
+  Ctrl+= / Ctrl+- / Ctrl+0). Crop boxes, redactions, signature placements and typed form
+  values all stay exactly where they are when you zoom.
+- Only the pages near the view are drawn, so long documents stay light.
+- **Compare** shows both pages side by side at the window's width, with its controls on
+  one row so the pages get the room.
+- A page that fails to render is kept as a blank white page instead of being dropped, so
+  page numbers can never shift.
+
 ## 0.17.1 — 2026-09-21
 
 Desktop Edit PDF is now comfortable to work in.
