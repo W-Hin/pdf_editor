@@ -11,6 +11,7 @@ from app.ui.dialogs.base import ToolDialog
 
 class CompressDialog(ToolDialog):
     title = "Compress PDF"
+    preview_note = 'Compression changes file size, not appearance — pages will look the same.'
 
     def build_options(self, container: QWidget) -> None:
         layout = QVBoxLayout(container)
@@ -32,6 +33,7 @@ class CompressDialog(ToolDialog):
 
 class RepairDialog(ToolDialog):
     title = "Repair PDF"
+    preview_note = "Repair fixes the file's internal structure, not its visual content — there's nothing meaningful to preview before running."
 
     def run_operation(self, input_paths: list[str], params: dict) -> tuple[list[str], str]:
         input_path = input_paths[0]
@@ -103,6 +105,7 @@ _OCR_LANGUAGES = [
 
 class OcrDialog(ToolDialog):
     title = "OCR PDF"
+    preview_note = "OCR adds an invisible, searchable text layer to scanned pages — the page's appearance doesn't change, so there's nothing meaningful to preview before running."
 
     def build_options(self, container: QWidget) -> None:
         layout = QVBoxLayout(container)
@@ -142,6 +145,7 @@ class OcrDialog(ToolDialog):
 
 class PdfToPdfaDialog(ToolDialog):
     title = "PDF to PDF/A"
+    preview_note = "PDF/A converts the file's internal format for long-term archiving — it doesn't change how pages look, so there's nothing meaningful to preview before running."
 
     def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         input_path = input_paths[0]

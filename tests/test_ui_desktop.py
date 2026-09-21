@@ -5463,13 +5463,14 @@ def test_single_file_tools_show_the_file_name_on_a_slim_bar_not_in_a_list(tmp_pa
     assert dlg._pick_btn.text() == default_text and dlg._pick_btn.property("compact") is False
 
 
-def test_multi_file_tools_still_list_their_files(tmp_path):
+def test_multi_file_tools_show_their_files_as_compact_chips_not_a_tall_list(tmp_path):
     from app.ui.dialogs.organize_dialogs import MergeDialog
 
     dlg = MergeDialog()
     dlg.file_list.addItem(_tall_pdf(tmp_path, 1, "a.pdf"))
     dlg.file_list.addItem(_tall_pdf(tmp_path, 1, "b.pdf"))
-    assert not dlg.file_list.isHidden()
+    assert dlg.file_list.isHidden() and not dlg.file_chips.isHidden()
+    assert dlg.file_chips.height() <= 60  # one slim row, not a 160px box
     assert dlg._pick_btn.property("compact") is False
 
 

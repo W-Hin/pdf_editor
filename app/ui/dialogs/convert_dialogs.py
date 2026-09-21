@@ -30,6 +30,7 @@ class ToImagesDialog(ToolDialog):
 
 class ToWordDialog(ToolDialog):
     title = "PDF to Word"
+    preview_note = "Word documents can't be previewed here — conversion quality depends on the PDF's layout."
 
     def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         input_path = input_paths[0]
@@ -40,6 +41,7 @@ class ToWordDialog(ToolDialog):
 
 class PdfToMarkdownDialog(ToolDialog):
     title = "PDF to Markdown"
+    preview_note = "PDF to Markdown extracts text and images — the result can't be previewed as a PDF page. Note: a page auto-rotated by this app's own OCR tool may come through with missing text, due to a known limitation in the underlying conversion library."
 
     def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         input_path = input_paths[0]
@@ -50,6 +52,7 @@ class PdfToMarkdownDialog(ToolDialog):
 
 class PdfToPptxDialog(ToolDialog):
     title = "PDF to PowerPoint"
+    preview_note = "PDF to PowerPoint rebuilds positioned text boxes — complex layouts may not convert perfectly, and the result can't be previewed as a PDF page."
 
     def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         input_path = input_paths[0]
@@ -60,6 +63,7 @@ class PdfToPptxDialog(ToolDialog):
 
 class PdfToXlsxDialog(ToolDialog):
     title = "PDF to Excel"
+    preview_note = "PDF to Excel only includes pages with a detected table — the result can't be previewed as a PDF page."
 
     def run_operation(self, input_paths: list[str], params: dict) -> list[str]:
         input_path = input_paths[0]

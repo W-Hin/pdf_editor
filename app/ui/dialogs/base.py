@@ -41,6 +41,63 @@ class _StatusLabel(QLabel):
         self.setVisible(bool(text))
 
 
+class _FileChips(QScrollArea):
+    """The chosen files of a multi-file tool as a compact row of chips - each with its
+    number, name, optional move-earlier/later arrows, and a remove button - instead of
+    a tall list of full paths."""
+
+    def __init__(self, dialog: "ToolDialog"):
+        super().__init__()
+        self._dialog = dialog
+        self.setFrameShape(QFrame.NoFrame)
+        self.setWidgetResizable(True)
+        self.setFixedHeight(52)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._row_widget = QWidget()
+        self._row = QHBoxLayout(self._row_widget)
+        self._row.setContentsMargins(0, 4, 0, 4)
+        self._row.setSpacing(8)
+        self.setWidget(self._row_widget)
+
+    def rebuild(self, paths: list[str]) -> None:
+        while self._row.count():
+            item = self._row.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        reorder = self._dialog.allow_file_reorder
+        for index, path in enumerate(paths):
+            chip = QFrame()
+            chip.setObjectName("fileChip")
+            layout = QHBoxLayout(chip)
+            layout.setContentsMargins(10, 4, 6, 4)
+            layout.setSpacing(6)
+            name = Path(path).name
+            label = QLabel(f"{index + 1}  {name if len(name) <= 32 else name[:29] + '...'}")
+            label.setToolTip(path)
+            layout.addWidget(label)
+            if reorder:
+                for icon_name, delta, tip in (("caret-left", -1, "Move earlier"), ("caret-right", 1, "Move later")):
+                    btn = QPushButton()
+                    btn.setIcon(icon(icon_name, MUTED_FOREGROUND, 14))
+                    btn.setObjectName("chipButton")
+                    btn.setToolTip(tip)
+                    btn.setAccessibleName(tip)
+                    btn.setEnabled(0 <= index + delta < len(paths))
+                    btn.clicked.connect(lambda _=False, i=index, d=delta: self._dialog._move_file(i, d))
+                    layout.addWidget(btn)
+            remove = QPushButton()
+            remove.setIcon(icon("x", MUTED_FOREGROUND, 14))
+            remove.setObjectName("chipButton")
+            remove.setToolTip("Remove this file")
+            remove.setAccessibleName("Remove this file")
+            remove.clicked.connect(lambda _=False, i=index: self._dialog._remove_file(i))
+            layout.addWidget(remove)
+            self._row.addWidget(chip)
+        self._row.addStretch(1)
+
+
 class ToolDialog(QDialog):
     """Base dialog: input file picker + subclass-provided options + run button + progress."""
 
@@ -48,7 +105,10 @@ class ToolDialog(QDialog):
     file_filter = "PDF files (*.pdf)"
     allow_multiple_files = False
     dialog_size = (480, 360)
+    preview_note = ""  # shown above the pages by a tool whose result cannot be previewed (as on the web)
     SIDE_PANEL_WIDTH = 320
+    SIDE_PANEL_FILL = False     # True: the panel is as tall as the window (its content grows with it)
+    allow_file_reorder = False  # multi-file tools whose file ORDER matters (Merge) show move arrows
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -127,10 +187,14 @@ class ToolDialog(QDialog):
         top.addWidget(self.open_folder_button)
         work.addLayout(top)
 
+        # The list is the model; single-file tools show the name on the chip button above
+        # and multi-file tools a row of chips, so the list itself is never on screen.
         self.file_list = QListWidget()
-        self.file_list.setMaximumHeight(84 if self.allow_multiple_files else 56)
         self.file_list.setVisible(False)
         work.addWidget(self.file_list)
+        self.file_chips = _FileChips(self)
+        self.file_chips.setVisible(False)
+        work.addWidget(self.file_chips)
         model = self.file_list.model()
         for changed in (model.rowsInserted, model.rowsRemoved, model.modelReset):
             changed.connect(self._sync_file_list_visibility)
@@ -146,6 +210,9 @@ class ToolDialog(QDialog):
         self.build_preview(self.preview_widget)
         body.addWidget(self.preview_widget, 1)
         self._body_layout = body
+        grid = getattr(self, "page_grid", None)
+        if grid is not None and self.preview_note:
+            grid.set_hint(self.preview_note)
 
         self.options_widget = QWidget()
         self.build_options(self.options_widget)
@@ -160,14 +227,17 @@ class ToolDialog(QDialog):
         side.addWidget(side_title)
         if self.options_widget.layout() is not None:
             self.options_widget.layout().setContentsMargins(0, 0, 0, 0)
-        side.addWidget(self.options_widget)
-        side.addStretch(1)
+        if self.SIDE_PANEL_FILL:
+            side.addWidget(self.options_widget, 1)
+        else:
+            side.addWidget(self.options_widget)
+            side.addStretch(1)
         # A tool with no options (Edit PDF's controls live in its toolbar) gets no panel:
         # its pages take the whole width.
         has_options = self.options_widget.layout() is not None
         self.options_widget.setVisible(has_options)
         self.side_panel.setVisible(has_options)
-        body.addWidget(self.side_panel, 0, Qt.AlignTop)
+        body.addWidget(self.side_panel, 0, Qt.Alignment() if self.SIDE_PANEL_FILL else Qt.AlignTop)
         work.addLayout(body, 1)
         self._states.addWidget(workspace)
 
@@ -271,7 +341,10 @@ class ToolDialog(QDialog):
         self._show_state(count > 0)
         if count == 0:
             self._refresh_thumbnails()  # nothing chosen: nothing to preview
-        self.file_list.setVisible(count > 0 and not single)
+        self.file_list.setVisible(False)
+        self.file_chips.setVisible(count > 0 and not single)
+        if count > 0 and not single:
+            self.file_chips.rebuild(self.selected_files())
         chosen = single and count == 1
         if chosen:
             name = Path(self.file_list.item(0).text()).name
@@ -293,6 +366,27 @@ class ToolDialog(QDialog):
             # Cancelling a change keeps the file that is already chosen.
             return
         self._add_files(paths)
+
+    def _files_edited(self) -> None:
+        """Tell the tool after the chosen files were reordered or one was removed."""
+        try:
+            self.on_files_changed(self.selected_files())
+        except PDFError as exc:
+            QMessageBox.warning(self, "Could not read file", str(exc))
+        self._refresh_thumbnails()
+
+    def _move_file(self, row: int, delta: int) -> None:
+        target = row + delta
+        if not 0 <= target < self.file_list.count():
+            return
+        item = self.file_list.takeItem(row)
+        self.file_list.insertItem(target, item)
+        self._files_edited()
+
+    def _remove_file(self, row: int) -> None:
+        if 0 <= row < self.file_list.count():
+            self.file_list.takeItem(row)
+            self._files_edited()
 
     def _add_files(self, paths: list[str]) -> None:
         """Adds files (replacing the current one for a single-file tool) and tells the tool."""

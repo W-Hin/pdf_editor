@@ -78,6 +78,29 @@ def _checks(work: Path, report: Path) -> list[tuple[str, object]]:
         tool.shutdown()
         assert tool._page_widgets[0].has_pixmap, "the background page renderer never delivered a picture"
 
+    def page_grid():
+        import time
+
+        from PySide6.QtWidgets import QApplication
+
+        from app.main import build_main_window
+        from app.ui.dialogs.pages_dialogs import RemovePagesDialog
+        from app.ui.theme import apply_theme
+
+        apply_theme(QApplication.instance())
+        win = build_main_window()
+        win.open_tool("Remove pages", RemovePagesDialog)
+        tool = win._current_tool
+        tool._add_files([str(text_pdf)])  # the real flow: chooser -> workspace with the page grid
+        cells = tool.page_grid.cells()
+        assert cells, "the page grid showed no pages"
+        deadline = time.monotonic() + 20
+        while not cells[0].has_pixmap() and time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.01)
+        tool.shutdown()
+        assert cells[0].has_pixmap(), "the background thumbnail renderer never delivered a picture"
+
     def history():
         from app.core import history
 
@@ -103,7 +126,7 @@ def _checks(work: Path, report: Path) -> list[tuple[str, object]]:
         with pymupdf.open(str(out)) as d:
             assert "fox" in d[0].get_text().lower(), "OCR produced no text"
 
-    return [("main window", window), ("edit pdf tool", edit_pdf_tool), ("recent files database", history), ("rotate", rotate), ("pdf to markdown", markdown), ("ocr", ocr)]
+    return [("main window", window), ("edit pdf tool", edit_pdf_tool), ("page grid", page_grid), ("recent files database", history), ("rotate", rotate), ("pdf to markdown", markdown), ("ocr", ocr)]
 
 
 def run_smoke(report_path: str) -> int:

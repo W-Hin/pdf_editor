@@ -10,6 +10,7 @@ from app.ui.dialogs.base import ToolDialog
 class MergeDialog(ToolDialog):
     title = "Merge PDF"
     allow_multiple_files = True
+    allow_file_reorder = True  # the order of the files is the order of the merged pages
 
     def build_options(self, container: QWidget) -> None:
         layout = QVBoxLayout(container)

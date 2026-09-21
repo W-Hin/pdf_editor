@@ -225,6 +225,7 @@ class PageGridWidget(QWidget):
         bar = QHBoxLayout()
         self._hint = QLabel("")
         self._hint.setObjectName("gridHint")
+        self._hint.setWordWrap(True)
         bar.addWidget(self._hint, 1)
         self.zoom_out_btn = self._size_button("magnifying-glass-minus", "Smaller pages", -1)
         self.zoom_in_btn = self._size_button("magnifying-glass-plus", "Larger pages", 1)

@@ -619,3 +619,141 @@ def test_split_with_a_broken_file_shows_an_empty_grid(tmp_path):
     dlg.file_list.addItem(str(bad))
     dlg._refresh_thumbnails()
     assert dlg.page_grid.cells() == []
+
+
+# ---- file chips (multi-file tools) and Compare's layout ----
+
+
+def _chips(dlg):
+    from PySide6.QtWidgets import QFrame, QLabel
+
+    frames = dlg.file_chips.findChildren(QFrame, "fileChip")
+    frames.sort(key=lambda f: f.geometry().left())
+    return [f.findChild(QLabel).text() for f in frames]
+
+
+def _merge_with(tmp_path, names=("a.pdf", "b.pdf", "c.pdf")):
+    from app.ui.dialogs.organize_dialogs import MergeDialog
+
+    dlg = MergeDialog()
+    dlg.resize(1300, 800)
+    dlg.show()
+    _pump(0.05)
+    paths = [_pdf(tmp_path, 2, name=n) for n in names]
+    dlg._add_files(paths)
+    _pump()
+    return dlg, paths
+
+
+def test_chips_show_number_and_name_with_the_full_path_on_hover(tmp_path):
+    from PySide6.QtWidgets import QFrame, QLabel
+
+    dlg, paths = _merge_with(tmp_path)
+    assert _chips(dlg) == ["1  a.pdf", "2  b.pdf", "3  c.pdf"]
+    label = dlg.file_chips.findChildren(QFrame, "fileChip")[0].findChild(QLabel)
+    assert label.toolTip() in paths
+
+
+def test_a_very_long_file_name_is_shortened_on_its_chip(tmp_path):
+    dlg, _ = _merge_with(tmp_path, names=("a_really_quite_extraordinarily_long_report_name_final_v2.pdf",))
+    text = _chips(dlg)[0]
+    assert text.endswith("...") and len(text) <= 40
+
+
+def test_merge_files_can_be_moved_and_the_preview_and_order_follow(tmp_path):
+    from PySide6.QtWidgets import QPushButton
+
+    dlg, paths = _merge_with(tmp_path)
+    later = [b for b in dlg.file_chips.findChildren(QPushButton) if b.accessibleName() == "Move later"]
+    earlier = [b for b in dlg.file_chips.findChildren(QPushButton) if b.accessibleName() == "Move earlier"]
+    assert not earlier[0].isEnabled() and not later[-1].isEnabled()  # nowhere to go past the ends
+    later[0].click()  # a moves after b
+    assert [os.path.basename(p) for p in dlg.selected_files()] == ["b.pdf", "a.pdf", "c.pdf"]
+    assert _chips(dlg) == ["1  b.pdf", "2  a.pdf", "3  c.pdf"]
+    assert dlg.page_grid._titles[0].text().startswith("1. b.pdf")  # the preview blocks reordered too
+    out = dlg.run_operation(dlg.selected_files(), {"filename": "m.pdf"})[0]
+    assert fitz.open(out).page_count == 6
+
+
+def test_a_file_can_be_removed_from_its_chip_and_removing_the_last_returns_to_choosing(tmp_path):
+    from PySide6.QtWidgets import QPushButton
+
+    dlg, paths = _merge_with(tmp_path, names=("a.pdf", "b.pdf"))
+    removers = [b for b in dlg.file_chips.findChildren(QPushButton) if b.accessibleName() == "Remove this file"]
+    removers[0].click()
+    assert [os.path.basename(p) for p in dlg.selected_files()] == ["b.pdf"] and _chips(dlg) == ["1  b.pdf"]
+    assert [c.section for c in dlg.page_grid.cells()] == [0, 0]
+    dlg.file_chips.findChildren(QPushButton, "chipButton")[-1].click()
+    assert dlg.selected_files() == [] and dlg._states.currentIndex() == 0  # back to the chooser
+    assert dlg.page_grid.cells() == []
+
+
+def test_only_merge_has_reorder_arrows(tmp_path):
+    from PySide6.QtWidgets import QPushButton
+
+    from app.ui.dialogs.edit_dialogs import CompareDialog
+
+    dlg = CompareDialog()
+    dlg._add_files([_pdf(tmp_path, 1, name="x.pdf"), _pdf(tmp_path, 1, name="y.pdf")])
+    names = {b.accessibleName() for b in dlg.file_chips.findChildren(QPushButton)}
+    assert names == {"Remove this file"}  # compare's two files are "original" and "changed": no arrows
+
+
+def test_compare_gives_the_pages_the_room_and_puts_its_controls_in_the_side_panel(tmp_path):
+    from app.ui.dialogs.edit_dialogs import CompareDialog
+
+    dlg = CompareDialog()
+    dlg.resize(1500, 900)
+    dlg.show()
+    _pump(0.05)
+    dlg._add_files([_pdf(tmp_path, 2, name="a.pdf"), _pdf(tmp_path, 2, name="b.pdf")])
+    _pump(0.4)
+    assert dlg.page_spin.parentWidget() is not None and dlg.side_panel.isAncestorOf(dlg.page_spin)
+    assert dlg.side_panel.isAncestorOf(dlg.text_diff_view) and dlg.side_panel.isAncestorOf(dlg.status_label_compare)
+    assert dlg.side_panel.width() == 400 and dlg.preview_widget.width() > dlg.side_panel.width() * 2
+    assert dlg.side_panel.height() > 500  # as tall as the window, so the text diff has room
+    assert dlg.text_diff_view.height() > 200
+    assert dlg.visual_a.width() > 300 and dlg.visual_a.height() > 400  # not the old fixed 400x560 sliver
+
+
+def test_compare_still_compares_after_the_layout_change(tmp_path):
+    from app.ui.dialogs.edit_dialogs import CompareDialog
+
+    dlg = CompareDialog()
+    dlg.resize(1500, 900)
+    dlg.show()
+    _pump(0.05)
+    dlg._add_files([_pdf(tmp_path, 3, name="a.pdf"), _pdf(tmp_path, 3, name="b.pdf")])
+    _pump(0.4)
+    assert dlg.page_spin.maximum() == 3
+    assert "Comparing 3 page(s)" in dlg.status_label_compare.text()
+    dlg.page_spin.setValue(2)
+    assert "Page 2" in dlg.text_diff_view.toPlainText()  # the text diff of the chosen page is shown
+    assert dlg.run_operation([], {"file_count": 2})[1].startswith("Compared 3")
+
+
+# ---- explanatory notes for tools whose result cannot be previewed (as on the web) ----
+
+
+@pytest.mark.parametrize("module,cls,needle", [
+    ("optimize_dialogs", "CompressDialog", "file size, not appearance"),
+    ("optimize_dialogs", "RepairDialog", "internal structure"),
+    ("optimize_dialogs", "OcrDialog", "invisible, searchable text layer"),
+    ("optimize_dialogs", "PdfToPdfaDialog", "long-term archiving"),
+    ("convert_dialogs", "ToWordDialog", "can't be previewed"),
+    ("convert_dialogs", "PdfToMarkdownDialog", "extracts text and images"),
+    ("convert_dialogs", "PdfToPptxDialog", "positioned text boxes"),
+    ("convert_dialogs", "PdfToXlsxDialog", "detected table"),
+])
+def test_tools_with_no_meaningful_preview_say_so_above_the_pages(module, cls, needle, tmp_path):
+    import importlib
+
+    dialog = getattr(importlib.import_module(f"app.ui.dialogs.{module}"), cls)()
+    assert needle in dialog.page_grid._hint.text()
+    assert dialog.page_grid._hint.wordWrap()  # long notes wrap instead of running off the edge
+
+
+def test_tools_whose_preview_is_meaningful_show_their_own_hint_not_a_note():
+    from app.ui.dialogs.pages_dialogs import RemovePagesDialog
+
+    assert "Click the pages you want to remove" in RemovePagesDialog().page_grid._hint.text()

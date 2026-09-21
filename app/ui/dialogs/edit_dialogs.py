@@ -485,17 +485,15 @@ class CompareDialog(_ZoomedPages, ToolDialog):
     dialog_size = (900, 780)
     allow_multiple_files = True
 
-    def build_preview(self, container: QWidget) -> None:
-        layout = QVBoxLayout(container)
+    SIDE_PANEL_WIDTH = 400
+    SIDE_PANEL_FILL = True
 
-        # Only ever two files, so the list is short; the controls share one row so
-        # the pages below get the room.
-        self.file_list.setMaximumHeight(64)
+    def build_options(self, container: QWidget) -> None:
+        # Everything that is not the pages themselves lives in the side panel, so the
+        # two pages get the whole main area.
+        layout = QVBoxLayout(container)
+        layout.setSpacing(10)
         controls = QHBoxLayout()
-        clear_btn = QPushButton("Clear files")
-        clear_btn.clicked.connect(self._clear_files)
-        controls.addWidget(clear_btn)
-        controls.addSpacing(16)
         controls.addWidget(QLabel("Page:"))
         self.page_spin = QSpinBox()
         self.page_spin.setMinimum(1)
@@ -504,6 +502,9 @@ class CompareDialog(_ZoomedPages, ToolDialog):
         self.page_spin.valueChanged.connect(self._load_current_page)
         controls.addWidget(self.page_spin)
         controls.addStretch(1)
+        clear_btn = QPushButton("Clear files")
+        clear_btn.clicked.connect(self._clear_files)
+        controls.addWidget(clear_btn)
         layout.addLayout(controls)
 
         self.status_label_compare = QLabel(
@@ -514,8 +515,11 @@ class CompareDialog(_ZoomedPages, ToolDialog):
 
         self.text_diff_view = QTextEdit()
         self.text_diff_view.setReadOnly(True)
-        self.text_diff_view.setFixedHeight(110)
-        layout.addWidget(self.text_diff_view)
+        layout.addWidget(self.text_diff_view, 1)
+
+    def build_preview(self, container: QWidget) -> None:
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         visual_container = QWidget()
         visual_container.setObjectName("pageCanvas")

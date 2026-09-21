@@ -104,6 +104,13 @@ QLabel#chooserHint { color: @MUTED_FOREGROUND@; }
 QFrame#sidePanel { background: @CARD@; border: 1px solid @BORDER@; border-radius: 10px; }
 QFrame#sidePanel QLabel { background: transparent; }
 QLabel#sidePanelTitle { font-size: 12px; font-weight: 600; color: @MUTED_FOREGROUND@; }
+QFrame#fileChip { background: @CARD@; border: 1px solid @BORDER@; border-radius: 8px; }
+QFrame#fileChip QLabel { background: transparent; }
+QPushButton#chipButton {
+    border: none; background: transparent; padding: 2px 6px; color: @MUTED_FOREGROUND@; font-size: 12px;
+}
+QPushButton#chipButton:hover { color: @FOREGROUND@; background: @MUTED@; }
+QPushButton#chipButton:disabled { color: #cbd5e1; }
 QPushButton#backButton {
     border: none; background: transparent; color: @MUTED_FOREGROUND@;
     padding: 4px 0; text-align: left;
