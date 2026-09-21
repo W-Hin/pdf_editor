@@ -223,15 +223,12 @@ class MainWindow(QMainWindow):
         tool.embed()
         self._current_tool = tool
         self._tool_title.setText(label)
-        compact = tool.fills_page
-        self._tool_header.setDirection(QBoxLayout.LeftToRight if compact else QBoxLayout.TopToBottom)
-        self._tool_header.setSpacing(20 if compact else 12)
-        self._tool_layout.setContentsMargins(*((24, 12, 24, 12) if compact else (32, 24, 32, 24)))
-        if tool.fills_page:
-            self._tool_holder.addWidget(tool, 1)
-        else:
-            self._tool_holder.addWidget(tool)
-            self._tool_holder.addStretch(1)
+        # Every tool is a workspace now: Back and the title share a line and the tool
+        # takes all the rest of the window.
+        self._tool_header.setDirection(QBoxLayout.LeftToRight)
+        self._tool_header.setSpacing(20)
+        self._tool_layout.setContentsMargins(24, 12, 24, 16)
+        self._tool_holder.addWidget(tool, 1)
         tool.show()
         self._stack.setCurrentWidget(self._tool_page)
 

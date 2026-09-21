@@ -96,6 +96,14 @@ QFrame#updateBanner { background: #eff6ff; border-bottom: 1px solid #bfdbfe; }
 QFrame#updateBanner QLabel { color: #1e3a8a; }
 QPushButton#bannerDismiss { border: none; background: transparent; color: #1e3a8a; }
 QPushButton#showMore { padding: 8px 20px; }
+QFrame#chooserCard {
+    background: @CARD@; border: 2px dashed #cbd5e1; border-radius: 16px;
+}
+QLabel#chooserTitle { font-size: 20px; font-weight: 600; }
+QLabel#chooserHint { color: @MUTED_FOREGROUND@; }
+QFrame#sidePanel { background: @CARD@; border: 1px solid @BORDER@; border-radius: 10px; }
+QFrame#sidePanel QLabel { background: transparent; }
+QLabel#sidePanelTitle { font-size: 12px; font-weight: 600; color: @MUTED_FOREGROUND@; }
 QPushButton#backButton {
     border: none; background: transparent; color: @MUTED_FOREGROUND@;
     padding: 4px 0; text-align: left;

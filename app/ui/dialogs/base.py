@@ -1,10 +1,13 @@
 import os
+import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QDialog,
+    QFrame,
+    QStackedWidget,
     QVBoxLayout,
     QHBoxLayout,
     QPushButton,
@@ -20,7 +23,7 @@ from PySide6.QtWidgets import (
 from app.core import history
 from app.core.errors import PDFError
 from app.core.pdf_ops import get_page_count, render_page_thumbnail
-from app.ui.theme import MUTED_FOREGROUND, icon
+from app.ui.theme import MUTED_FOREGROUND, icon, icon_pixmap
 from app.ui.workers import Worker
 
 
@@ -44,7 +47,7 @@ class ToolDialog(QDialog):
     file_filter = "PDF files (*.pdf)"
     allow_multiple_files = False
     dialog_size = (480, 360)
-    OPTIONS_MAX_WIDTH = 520
+    SIDE_PANEL_WIDTH = 320
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -54,69 +57,158 @@ class ToolDialog(QDialog):
         self._output_paths: list[str] = []
         self._embedded = False
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self._states = QStackedWidget()
+        outer.addWidget(self._states)
+        self.setAcceptDrops(True)
 
-        # Same as the web app: one wide "Choose a PDF file..." bar, then the
-        # chosen file(s) listed beneath it.
+        # ---- state 1: no file chosen yet - one big, obvious way to choose ----
         kind = "PDF " if self.file_filter.startswith("PDF") else ""
-        self._pick_default_text = f"Choose {kind}files…" if self.allow_multiple_files else f"Choose a {kind}file…"
+        self._pick_default_text = f"Choose {kind}files\u2026" if self.allow_multiple_files else f"Choose a {kind}file\u2026"
+        chooser = QWidget()
+        chooser_layout = QVBoxLayout(chooser)
+        chooser_layout.addStretch(2)
+        card = QFrame()
+        card.setObjectName("chooserCard")
+        card.setFixedWidth(520)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(32, 32, 32, 32)
+        card_layout.setSpacing(10)
+        card_icon = QLabel()
+        card_icon.setPixmap(icon_pixmap("upload-simple", MUTED_FOREGROUND, 44))
+        card_icon.setAlignment(Qt.AlignCenter)
+        card_layout.addWidget(card_icon)
+        card_title = QLabel(self._pick_default_text.rstrip("\u2026"))
+        card_title.setObjectName("chooserTitle")
+        card_title.setAlignment(Qt.AlignCenter)
+        card_layout.addWidget(card_title)
+        card_hint = QLabel("or drop " + ("them" if self.allow_multiple_files else "it") + " here")
+        card_hint.setObjectName("chooserHint")
+        card_hint.setAlignment(Qt.AlignCenter)
+        card_layout.addWidget(card_hint)
+        self.choose_button = QPushButton("Browse\u2026")
+        self.choose_button.setProperty("primary", True)
+        self.choose_button.setCursor(Qt.PointingHandCursor)
+        self.choose_button.clicked.connect(self._pick_files)
+        card_layout.addWidget(self.choose_button, 0, Qt.AlignHCenter)
+        chooser_layout.addWidget(card, 0, Qt.AlignHCenter)
+        chooser_layout.addStretch(3)
+        self._states.addWidget(chooser)
+
+        # ---- state 2: the workspace - the pages get the room, options sit beside them ----
+        workspace = QWidget()
+        work = QVBoxLayout(workspace)
+        work.setContentsMargins(0, 0, 0, 0)
+        work.setSpacing(10)
+        top = QHBoxLayout()
+        top.setSpacing(10)
         pick_btn = QPushButton(self._pick_default_text)
         self._pick_btn = pick_btn
         pick_btn.setObjectName("dropButton")
         pick_btn.setIcon(icon("upload-simple", MUTED_FOREGROUND, 18))
         pick_btn.setCursor(Qt.PointingHandCursor)
         pick_btn.clicked.connect(self._pick_files)
-        layout.addWidget(pick_btn)
-        self.file_list = QListWidget()
-        self.file_list.setMaximumHeight(160 if self.allow_multiple_files else 56)
-        self.file_list.setVisible(False)
-        layout.addWidget(self.file_list)
-        model = self.file_list.model()
-        for changed in (model.rowsInserted, model.rowsRemoved, model.modelReset):
-            changed.connect(self._sync_file_list_visibility)
-
-        self.preview_widget = QWidget()
-        self.build_preview(self.preview_widget)
-        # The default thumbnail strip has nothing to show until a file is chosen.
-        self.preview_widget.setVisible(not hasattr(self, "thumbnail_strip"))
-        # A tool whose preview IS the point (pages to look at) gets all the spare height.
-        layout.addWidget(self.preview_widget, 1 if self.fills_page else 0)
-
-        self.options_widget = QWidget()
-        self.build_options(self.options_widget)
-        if self.options_widget.layout() is not None:
-            self.options_widget.layout().setContentsMargins(0, 0, 0, 0)
-        if self.options_widget.layout() is None:
-            self.options_widget.setVisible(False)  # a tool with no options: no empty box either
-        if not self.fills_page:
-            # Like the web app: a form's controls are a comfortable width, not the
-            # whole window's (a short drop-down should not run 1100px across).
-            self.options_widget.setMaximumWidth(self.OPTIONS_MAX_WIDTH)
-        layout.addWidget(self.options_widget, 0, Qt.AlignLeft)
-
+        top.addWidget(pick_btn)
         self.status_label = _StatusLabel()
-        layout.addWidget(self.status_label)
-
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 0)
-        self.progress.setVisible(False)
-        layout.addWidget(self.progress)
-
-        button_row = QHBoxLayout()
-        button_row.setSpacing(8)
+        self.status_label.setWordWrap(True)
+        top.addWidget(self.status_label, 1)
+        top.addStretch(1)
         self.run_button = QPushButton("Run")
         self.run_button.setProperty("primary", True)
         self.run_button.setIcon(icon("play", "#ffffff", 16))
         self.run_button.clicked.connect(self._run)
-        button_row.addWidget(self.run_button)
+        top.addWidget(self.run_button)
         self.open_folder_button = QPushButton("Show in folder")
         self.open_folder_button.setEnabled(False)
         self.open_folder_button.clicked.connect(self._open_output_folder)
-        button_row.addWidget(self.open_folder_button)
-        button_row.addStretch(1)
-        layout.addLayout(button_row)
+        top.addWidget(self.open_folder_button)
+        work.addLayout(top)
+
+        self.file_list = QListWidget()
+        self.file_list.setMaximumHeight(84 if self.allow_multiple_files else 56)
+        self.file_list.setVisible(False)
+        work.addWidget(self.file_list)
+        model = self.file_list.model()
+        for changed in (model.rowsInserted, model.rowsRemoved, model.modelReset):
+            changed.connect(self._sync_file_list_visibility)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.setVisible(False)
+        work.addWidget(self.progress)
+
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        self.preview_widget = QWidget()
+        self.build_preview(self.preview_widget)
+        # The default thumbnail strip has nothing to show until a file is chosen.
+        self.preview_widget.setVisible(not hasattr(self, "thumbnail_strip"))
+        body.addWidget(self.preview_widget, 1)
+        self._body_layout = body
+
+        self.options_widget = QWidget()
+        self.build_options(self.options_widget)
+        self.side_panel = QFrame()
+        self.side_panel.setObjectName("sidePanel")
+        self.side_panel.setFixedWidth(self.SIDE_PANEL_WIDTH)
+        side = QVBoxLayout(self.side_panel)
+        side.setContentsMargins(16, 14, 16, 16)
+        side.setSpacing(10)
+        side_title = QLabel("Options")
+        side_title.setObjectName("sidePanelTitle")
+        side.addWidget(side_title)
+        if self.options_widget.layout() is not None:
+            self.options_widget.layout().setContentsMargins(0, 0, 0, 0)
+        side.addWidget(self.options_widget)
+        side.addStretch(1)
+        # A tool with no options (Edit PDF's controls live in its toolbar) gets no panel:
+        # its pages take the whole width.
+        has_options = self.options_widget.layout() is not None
+        self.options_widget.setVisible(has_options)
+        self.side_panel.setVisible(has_options)
+        body.addWidget(self.side_panel, 0, Qt.AlignTop)
+        work.addLayout(body, 1)
+        self._states.addWidget(workspace)
+
+    def _show_state(self, has_files: bool) -> None:
+        """Chooser until there is a file, then the workspace."""
+        self._states.setCurrentIndex(1 if has_files else 0)
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        own = cls.__dict__.get("on_files_changed")
+        if own is not None:
+            # However a tool learns of its files (the picker, a drop, or code), a
+            # tool that has files shows its workspace, and one without shows the chooser.
+            def on_files_changed(self, paths, _own=own):
+                self._show_state(bool(paths))
+                return _own(self, paths)
+
+            on_files_changed.__doc__ = own.__doc__
+            cls.on_files_changed = on_files_changed
+
+    def _accepted_suffixes(self) -> set[str]:
+        return {"." + ext.lower() for ext in re.findall(r"\*\.(\w+)", self.file_filter)}
+
+    def _droppable_paths(self, event) -> list[str]:
+        suffixes = self._accepted_suffixes()
+        paths = [u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()]
+        return [p for p in paths if not suffixes or Path(p).suffix.lower() in suffixes]
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasUrls() and self._droppable_paths(event):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dropEvent(self, event) -> None:
+        paths = self._droppable_paths(event)
+        if not paths:
+            return super().dropEvent(event)
+        event.acceptProposedAction()
+        self._add_files(paths if self.allow_multiple_files else paths[:1])
 
     def shutdown(self) -> None:
         """Called before the tool goes away; a tool with background work stops it."""
@@ -187,6 +279,7 @@ class ToolDialog(QDialog):
         # (now slim) choose bar instead, and only a multi-file tool lists its files.
         count = self.file_list.count()
         single = not self.allow_multiple_files
+        self._show_state(count > 0)
         self.file_list.setVisible(count > 0 and not single)
         chosen = single and count == 1
         if chosen:
@@ -201,14 +294,21 @@ class ToolDialog(QDialog):
 
     def _pick_files(self) -> None:
         if not self.allow_multiple_files:
-            self.file_list.clear()
             path, _ = QFileDialog.getOpenFileName(self, "Select file", "", self.file_filter)
-            if path:
-                self.file_list.addItem(path)
+            paths = [path] if path else []
         else:
             paths, _ = QFileDialog.getOpenFileNames(self, "Select file(s)", "", self.file_filter)
-            for path in paths:
-                self.file_list.addItem(path)
+        if not paths and not self.allow_multiple_files:
+            # Cancelling a change keeps the file that is already chosen.
+            return
+        self._add_files(paths)
+
+    def _add_files(self, paths: list[str]) -> None:
+        """Adds files (replacing the current one for a single-file tool) and tells the tool."""
+        if not self.allow_multiple_files:
+            self.file_list.clear()
+        for path in paths:
+            self.file_list.addItem(path)
         try:
             self.on_files_changed(self.selected_files())
         except PDFError as exc:

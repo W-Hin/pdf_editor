@@ -5291,6 +5291,16 @@ def test_toolbar_icon_buttons_do_not_take_keyboard_focus():
 # ---- Edit PDF: page fit, zoom, lazy rendering, slim file bar ----
 
 
+def _pump(seconds=0.2):
+    """Let the event loop run for a moment (layouts settle a beat after a state switch)."""
+    import time
+
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        _app.processEvents()
+        time.sleep(0.01)
+
+
 def _tall_pdf(tmp_path, pages, name="tall.pdf"):
     doc = fitz.open()
     for _ in range(pages):
@@ -5309,7 +5319,7 @@ def _shown_edit_dialog(tmp_path, pages=1, size=(1300, 800)):
     dlg.show()
     _app.processEvents()
     dlg.on_files_changed([_tall_pdf(tmp_path, pages)])
-    _app.processEvents()
+    _pump()
     return dlg
 
 
@@ -5463,16 +5473,15 @@ def test_multi_file_tools_still_list_their_files(tmp_path):
     assert dlg._pick_btn.property("compact") is False
 
 
-def test_a_canvas_tool_puts_back_and_title_on_one_line_and_other_tools_stack_them():
+def test_every_tool_puts_back_and_the_title_on_one_line():
     from PySide6.QtWidgets import QBoxLayout
 
     from app.ui.dialogs.edit_dialogs import EditPdfDialog
 
     window = _themed_main_window()
-    window.open_tool("Edit PDF", EditPdfDialog)
-    assert window._tool_header.direction() == QBoxLayout.LeftToRight
-    window.open_tool("Rotate PDF", RotateDialog)
-    assert window._tool_header.direction() == QBoxLayout.TopToBottom
+    for label, cls in (("Edit PDF", EditPdfDialog), ("Rotate PDF", RotateDialog)):
+        window.open_tool(label, cls)
+        assert window._tool_header.direction() == QBoxLayout.LeftToRight
 
 
 # ---- Page tools (Crop, Redact, Sign, PDF Forms, Compare): fit, zoom, lazy pages ----
@@ -5512,6 +5521,7 @@ def _settle(dlg):
         if bar.maximum() > 0:
             break
         time.sleep(0.02)
+    _pump(0.1)
 
 
 PAGE_TOOLS = ["crop", "redact", "sign", "forms"]
@@ -5644,7 +5654,9 @@ def test_compare_panes_fit_the_window_and_zoom(tmp_path):
     dlg.show()
     _app.processEvents()
     dlg.on_files_changed([a, b])
-    _app.processEvents()
+    _pump()
+    dlg._fit_width = dlg._compute_fit_width()
+    dlg._render_pages()
     fit = dlg._compute_fit_width()
     assert dlg.visual_a.width() == fit == dlg.visual_b.width()
     assert fit > 400  # was a fixed 400x560
@@ -5729,13 +5741,13 @@ def test_an_unchecked_checkbox_draws_a_visible_box_and_a_checked_one_a_tick():
     assert any(c.blue() > 200 and c.red() < 80 for c in blue)  # the accent fill of a checked box
 
 
-def test_form_tools_cap_their_option_width_but_canvas_tools_do_not():
+def test_options_sit_in_a_side_panel_and_a_tool_without_options_has_none():
     from app.ui.dialogs.edit_dialogs import CropDialog
-    from app.ui.dialogs.pages_dialogs import RemovePagesDialog
 
     form = RotateDialog()
-    assert form.options_widget.maximumWidth() == form.OPTIONS_MAX_WIDTH
-    assert CropDialog().options_widget.maximumWidth() > form.OPTIONS_MAX_WIDTH  # untouched
+    assert not form.side_panel.isHidden() and form.side_panel.width() == form.SIDE_PANEL_WIDTH
+    assert form.options_widget.parentWidget() is form.side_panel
+    assert CropDialog().side_panel.isHidden()  # nothing to set: its pages take the whole width
 
 
 def test_sign_first_screen_explains_what_to_do():
@@ -6069,14 +6081,13 @@ def test_a_tool_with_options_still_shows_them():
     assert not dlg.options_widget.isHidden() or dlg.options_widget.layout() is not None
 
 
-def test_a_page_tool_gives_its_preview_all_the_spare_height():
+def test_the_preview_takes_all_the_spare_room_beside_the_side_panel():
     from app.ui.dialogs.edit_dialogs import CompareDialog
 
     dlg = CompareDialog()
-    layout = dlg.layout()
-    index = layout.indexOf(dlg.preview_widget)
-    assert layout.stretch(index) == 1
-    assert layout.stretch(layout.indexOf(dlg.options_widget)) == 0
+    body = dlg._body_layout
+    assert body.stretch(body.indexOf(dlg.preview_widget)) == 1
+    assert body.stretch(body.indexOf(dlg.side_panel)) == 0
 
 
 def test_the_run_editor_is_as_wide_as_its_text_so_the_start_of_the_line_is_not_hidden(tmp_path):
