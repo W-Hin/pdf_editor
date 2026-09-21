@@ -372,3 +372,121 @@ def test_shutdown_is_safe_with_work_pending(tmp_path, monkeypatch):
     grid = _grid(tmp_path, pages=6)
     grid.shutdown()
     _pump(0.3)  # late results are ignored, nothing raises
+
+
+# ---- Remove / Extract / Reorder pages: the dialogs built on the grid ----
+
+
+def _dialog(cls, tmp_path, pages=5):
+    dlg = cls()
+    dlg.resize(1300, 800)
+    dlg.show()
+    _pump(0.05)
+    path = _pdf(tmp_path, pages)
+    dlg._add_files([path])
+    _pump()
+    return dlg, path
+
+
+def _out_texts(path):
+    with fitz.open(path) as doc:
+        return [page.get_text().strip() for page in doc]
+
+
+def test_remove_pages_click_pages_then_run_removes_exactly_those(tmp_path):
+    from app.ui.dialogs.pages_dialogs import RemovePagesDialog
+
+    dlg, path = _dialog(RemovePagesDialog, tmp_path)
+    assert dlg.summary_label.text() == "No pages marked yet." and not dlg.clear_button.isEnabled()
+    cells = dlg.page_grid.cells()
+    _click(cells[1])
+    _click(cells[3])
+    assert dlg.summary_label.text() == "2 pages will be removed: 2, 4"
+    _click(cells[1])
+    assert dlg.summary_label.text() == "1 page will be removed: 4"  # singular
+    _click(cells[1])
+    out = dlg.run_operation([path], dlg.gather_params())[0]
+    assert _out_texts(out) == ["Page 1", "Page 3", "Page 5"]
+    assert out.endswith("_removed.pdf")
+
+
+def test_remove_pages_uses_a_red_cross_and_extract_a_blue_tick(tmp_path):
+    from app.ui.dialogs.pages_dialogs import ExtractPagesDialog, RemovePagesDialog
+
+    remove, _ = _dialog(RemovePagesDialog, tmp_path)
+    extract, _ = _dialog(ExtractPagesDialog, tmp_path)
+    assert remove.page_grid.select_color == "#dc2626" and remove.page_grid.select_badge == "x"
+    assert extract.page_grid.select_color == "#2563eb" and extract.page_grid.select_badge == "check"
+
+
+def test_remove_pages_with_nothing_marked_says_what_to_do(tmp_path):
+    from app.core.errors import PDFError
+    from app.ui.dialogs.pages_dialogs import RemovePagesDialog
+
+    dlg, path = _dialog(RemovePagesDialog, tmp_path)
+    with pytest.raises(PDFError, match="Click at least one page"):
+        dlg.run_operation([path], dlg.gather_params())
+
+
+def test_extract_pages_click_pages_then_run_keeps_only_those(tmp_path):
+    from app.ui.dialogs.pages_dialogs import ExtractPagesDialog
+
+    dlg, path = _dialog(ExtractPagesDialog, tmp_path)
+    cells = dlg.page_grid.cells()
+    _click(cells[4])
+    _click(cells[0])
+    assert dlg.summary_label.text() == "2 pages will be extracted: 1, 5"
+    out = dlg.run_operation([path], dlg.gather_params())[0]
+    assert _out_texts(out) == ["Page 1", "Page 5"] and out.endswith("_extracted.pdf")
+
+
+def test_select_all_and_clear_buttons_and_a_long_selection_is_shortened(tmp_path):
+    from app.ui.dialogs.pages_dialogs import RemovePagesDialog
+
+    dlg, _ = _dialog(RemovePagesDialog, tmp_path, pages=20)
+    dlg.select_all_button.click()
+    assert len(dlg.page_grid.selected_pages()) == 20
+    assert dlg.summary_label.text().startswith("20 pages will be removed: 1, 2, 3") and "(+8 more)" in dlg.summary_label.text()
+    dlg.clear_button.click()
+    assert dlg.page_grid.selected_pages() == [] and not dlg.clear_button.isEnabled()
+
+
+def test_choosing_another_file_starts_with_nothing_marked(tmp_path):
+    from app.ui.dialogs.pages_dialogs import RemovePagesDialog
+
+    dlg, _ = _dialog(RemovePagesDialog, tmp_path)
+    _click(dlg.page_grid.cells()[0])
+    dlg._add_files([_pdf(tmp_path, 3, name="other.pdf")])
+    _pump()
+    assert dlg.page_grid.selected_pages() == [] and len(dlg.page_grid.cells()) == 3
+    assert dlg.summary_label.text() == "No pages marked yet."
+
+
+def test_reorder_pages_drag_then_run_writes_the_new_order(tmp_path):
+    from app.ui.dialogs.pages_dialogs import ReorderPagesDialog
+
+    dlg, path = _dialog(ReorderPagesDialog, tmp_path)
+    assert dlg.summary_label.text() == "The pages are in their original order." and not dlg.reset_button.isEnabled()
+    dlg.page_grid._move_page(5, 0)
+    dlg.page_grid._move_page(2, 5)
+    assert dlg.page_grid.order() == [5, 1, 3, 4, 2]
+    assert dlg.summary_label.text() == "New order: 5, 1, 3, 4, 2" and dlg.reset_button.isEnabled()
+    out = dlg.run_operation([path], dlg.gather_params())[0]
+    assert _out_texts(out) == ["Page 5", "Page 1", "Page 3", "Page 4", "Page 2"]
+
+
+def test_reorder_reset_restores_the_original_order(tmp_path):
+    from app.ui.dialogs.pages_dialogs import ReorderPagesDialog
+
+    dlg, _ = _dialog(ReorderPagesDialog, tmp_path)
+    dlg.page_grid._move_page(3, 0)
+    dlg.reset_button.click()
+    assert dlg.page_grid.order() == [1, 2, 3, 4, 5]
+    assert dlg.summary_label.text() == "The pages are in their original order."
+
+
+def test_these_tools_show_the_side_panel_and_the_grid_together(tmp_path):
+    from app.ui.dialogs.pages_dialogs import RemovePagesDialog
+
+    dlg, _ = _dialog(RemovePagesDialog, tmp_path)
+    assert not dlg.side_panel.isHidden() and dlg.preview_widget.width() > dlg.side_panel.width() * 2  # pages get the room

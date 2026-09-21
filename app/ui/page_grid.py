@@ -311,6 +311,8 @@ class PageGridWidget(QWidget):
         if self._sections:
             self._order = list(self._sections[0]["pages"])
         self._relayout()
+        self.selection_changed.emit()  # a new document: whoever summarises the marks or the order updates
+        self.order_changed.emit()
 
     def total_pages(self, section: int) -> int:
         return self._sections[section]["total"] if section < len(self._sections) else 0
@@ -372,6 +374,12 @@ class PageGridWidget(QWidget):
 
     def order(self) -> list[int]:
         return list(self._order)
+
+    def reset_order(self) -> None:
+        if self._sections and self._order != self._sections[0]["pages"]:
+            self._order = list(self._sections[0]["pages"])
+            self._relayout()
+            self.order_changed.emit()
 
     def _start_drag(self, cell: PageCell) -> None:
         if cell.section != 0:
