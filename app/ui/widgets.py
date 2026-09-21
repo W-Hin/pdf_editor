@@ -78,6 +78,7 @@ class RectangleOverlayWidget(PagePixmapMixin, QWidget):
                 if self._marker_rect(box).contains(pos):
                     del self.boxes[i]
                     self.update()
+                    self.box_changed.emit()
                     return
         point = self._point_from_pos(pos)
         if point is None:
@@ -208,6 +209,8 @@ class ImagePlacementWidget(PagePixmapMixin, QWidget):
     those hit - empty space, which creates a new placement centered on the
     click point."""
 
+    placements_changed = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.page_pixmap = None
@@ -230,6 +233,7 @@ class ImagePlacementWidget(PagePixmapMixin, QWidget):
     def set_placements(self, placements: list[dict]) -> None:
         self.placements = list(placements)
         self.update()
+        self.placements_changed.emit()
 
     def _point_from_pos(self, pos) -> tuple[float, float] | None:
         if self.width() == 0 or self.height() == 0:
@@ -273,6 +277,7 @@ class ImagePlacementWidget(PagePixmapMixin, QWidget):
             if self._marker_rect(p).contains(pos):
                 del self.placements[i]
                 self.update()
+                self.placements_changed.emit()
                 return
         for i in reversed(range(len(self.placements))):
             p = self.placements[i]
@@ -296,6 +301,7 @@ class ImagePlacementWidget(PagePixmapMixin, QWidget):
         y = min(max(point[1] - height / 2, 0), 1 - height)
         self.placements.append({"x": x, "y": y, "width": width, "height": height})
         self.update()
+        self.placements_changed.emit()
 
     def mouseMoveEvent(self, e) -> None:
         if self._drag is None:
@@ -322,6 +328,7 @@ class ImagePlacementWidget(PagePixmapMixin, QWidget):
 
     def mouseReleaseEvent(self, e) -> None:
         self._drag = None
+        self.placements_changed.emit()
 
     def paintEvent(self, e) -> None:
         painter = QPainter(self)

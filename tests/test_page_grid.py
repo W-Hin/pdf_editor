@@ -993,3 +993,101 @@ def test_compare_has_previous_and_next_page_buttons(tmp_path):
     assert dlg.page_spin.value() == 3
     dlg.prev_page_btn.click()
     assert dlg.page_spin.value() == 2
+
+
+# ---- side panels for Crop / Redact / Sign / Forms ----
+
+
+def _press(widget, x, y):
+    from PySide6.QtCore import QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+
+    for kind in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
+        widget.event(QMouseEvent(kind, QPointF(x, y), QPointF(x, y), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+
+
+def _drag_across(widget, a, b):
+    from PySide6.QtCore import QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+
+    def ev(kind, p):
+        return QMouseEvent(kind, QPointF(*p), QPointF(*p), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+
+    widget.event(ev(QEvent.MouseButtonPress, a))
+    widget.event(ev(QEvent.MouseMove, b))
+    widget.event(ev(QEvent.MouseButtonRelease, b))
+
+
+def test_crop_side_panel_summarises_and_clears_the_selection(tmp_path):
+    from app.ui.dialogs.edit_dialogs import CropDialog
+
+    dlg = CropDialog()
+    dlg.resize(1300, 800)
+    dlg.show()
+    dlg._add_files([_pdf(tmp_path, 2)])
+    _pump()
+    assert not dlg.side_panel.isHidden() and not dlg.clear_selection_btn.isEnabled()
+    dlg.overlay.set_boxes([{"x0": 0.1, "y0": 0.2, "x1": 0.6, "y1": 0.7}])
+    dlg.overlay.box_changed.emit()
+    assert "50%" in dlg.summary_label.text() and dlg.clear_selection_btn.isEnabled()
+    dlg.clear_selection_btn.click()
+    assert dlg.overlay.single_box() is None and not dlg.clear_selection_btn.isEnabled()
+
+
+def test_redact_side_panel_counts_areas_and_removes_them_all(tmp_path):
+    from app.ui.dialogs.edit_dialogs import RedactDialog
+
+    dlg = RedactDialog()
+    dlg.resize(1300, 800)
+    dlg.show()
+    dlg._add_files([_pdf(tmp_path, 3)])
+    _pump()
+    assert not dlg.remove_all_btn.isEnabled()
+    box = {"x0": 0.1, "y0": 0.1, "x1": 0.3, "y1": 0.2}
+    dlg._page_widgets[0].boxes.append(box)
+    dlg._page_widgets[0].box_changed.emit()
+    dlg._page_widgets[2].boxes.extend([box, box])
+    dlg._page_widgets[2].box_changed.emit()
+    assert "3 areas" in dlg.summary_label.text() and "2 pages" in dlg.summary_label.text()
+    dlg.remove_all_btn.click()
+    assert dlg.gather_params()["redactions"] == [] and not dlg.remove_all_btn.isEnabled()
+
+
+def test_sign_side_panel_counts_placements_and_remembers_the_signature(tmp_path, monkeypatch):
+    from app.ui.dialogs.edit_dialogs import SignDialog
+
+    monkeypatch.setenv("PDF_EDITOR_DATA_DIR", str(tmp_path / "data"))
+    sig = _png(tmp_path, "sig.png", (200, 80))
+    first = SignDialog()
+    assert first.saved_signature_btn.isHidden() and not os.path.exists(first._saved_signature_path())
+    first.resize(1300, 800)
+    first.show()
+    first._add_files([_pdf(tmp_path, 2)])
+    _pump()
+    first.use_signature_file(sig)
+    _pump()
+    assert "Click a page" in first.summary_label.text()
+    page = first._page_widgets[0]
+    _press(page, page.width() // 2, page.height() // 2)
+    assert "1 signature placed, on 1 page" in first.summary_label.text()
+    first.remove_all_btn.click()
+    assert first._page_widgets[0].placements == [] and not first.remove_all_btn.isEnabled()
+    assert os.path.exists(first._saved_signature_path())  # remembered for next time
+
+    second = SignDialog()  # a new session offers it straight away
+    second.show()
+    assert not second.saved_signature_btn.isHidden()
+    second.saved_signature_btn.click()
+    assert second.signature_path == second._saved_signature_path()
+    assert not second.signature_preview.isHidden()
+
+
+def test_forms_side_panel_counts_fields(tmp_path):
+    from app.ui.dialogs.edit_dialogs import FillFormDialog
+
+    dlg = FillFormDialog()
+    dlg.resize(1300, 800)
+    dlg.show()
+    dlg._add_files([_pdf(tmp_path, 1)])
+    _pump()
+    assert "no fillable fields" in dlg.summary_label.text()

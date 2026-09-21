@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, Q
 from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, get_page_size, get_page_sizes, get_page_rotation, extract_text_runs, extract_page_info, edit_pdf, extract_form_fields, fill_form
 from app.core.compare_pdf import extract_page_texts, diff_page_text, render_page_image, diff_page_visual
 from app.core.errors import PDFError
+from app.core.history import default_db_path
 from app.ui.dialogs.base import ToolDialog
 from app.ui.edit_canvas import EditElementsModel, EditPageWidget
 from app.ui.page_zoom import PageZoomMixin, PagePixmapMixin
@@ -141,6 +142,34 @@ class CropDialog(_ZoomedPages, ToolDialog):
     title = "Crop PDF"
     dialog_size = (650, 750)
 
+    def build_options(self, container: QWidget) -> None:
+        layout = QVBoxLayout(container)
+        self.summary_label = QLabel()
+        self.summary_label.setWordWrap(True)
+        layout.addWidget(self.summary_label)
+        self.clear_selection_btn = QPushButton("Clear selection")
+        self.clear_selection_btn.clicked.connect(self._clear_selection)
+        layout.addWidget(self.clear_selection_btn)
+        self._update_summary()
+
+    def _clear_selection(self) -> None:
+        self.overlay.set_boxes([])
+        self._propagate_box_to_mirrors()
+        self._update_summary()
+
+    def _update_summary(self) -> None:
+        if not hasattr(self, "summary_label"):
+            return  # the preview is built before the side panel
+        box = self.overlay.single_box()
+        if box is None:
+            self.summary_label.setText("Drag on page 1 to choose the area to keep.")
+        else:
+            self.summary_label.setText(
+                f"Keeping {round((box['x1'] - box['x0']) * 100)}% of the width and "
+                f"{round((box['y1'] - box['y0']) * 100)}% of the height, on every page."
+            )
+        self.clear_selection_btn.setEnabled(box is not None)
+
     def build_preview(self, container: QWidget) -> None:
         layout = QVBoxLayout(container)
         instruction = QLabel(
@@ -152,6 +181,8 @@ class CropDialog(_ZoomedPages, ToolDialog):
         self.overlay = RectangleOverlayWidget(multi=False)
         self.overlay.page_number = 1
         self.overlay.box_changed.connect(self._propagate_box_to_mirrors)
+        self.overlay.box_changed.connect(self._update_summary)
+        self._update_summary()
 
         self._mirror_scroll = QScrollArea()
         self._mirror_scroll.setObjectName("pageScroll")
@@ -183,6 +214,7 @@ class CropDialog(_ZoomedPages, ToolDialog):
 
     def on_files_changed(self, paths: list[str]) -> None:
         self.overlay.set_boxes([])
+        self._update_summary()
         # self.overlay is always the first widget in `_mirror_layout` (see
         # build_preview) - only remove entries AFTER it, so the interactive
         # overlay itself is never torn down and re-created.
@@ -227,6 +259,35 @@ class RedactDialog(_ZoomedPages, ToolDialog):
     title = "Redact PDF"
     dialog_size = (650, 780)
 
+    def build_options(self, container: QWidget) -> None:
+        layout = QVBoxLayout(container)
+        self.summary_label = QLabel()
+        self.summary_label.setWordWrap(True)
+        layout.addWidget(self.summary_label)
+        self.remove_all_btn = QPushButton("Remove all areas")
+        self.remove_all_btn.clicked.connect(self._remove_all)
+        layout.addWidget(self.remove_all_btn)
+        self._update_summary()
+
+    def _remove_all(self) -> None:
+        for overlay in self._page_widgets:
+            overlay.set_boxes([])
+        self._update_summary()
+
+    def _update_summary(self) -> None:
+        if not hasattr(self, "summary_label"):
+            return  # the preview is built before the side panel
+        counts = [len(o.boxes) for o in getattr(self, "_page_widgets", []) if o is not None]
+        total, pages = sum(counts), sum(1 for c in counts if c)
+        if total == 0:
+            self.summary_label.setText("No areas marked yet. Drag on a page to mark text or images to black out.")
+        else:
+            self.summary_label.setText(
+                f"{total} area{'s' if total != 1 else ''} will be redacted, on {pages} page{'s' if pages != 1 else ''}. "
+                "Redacted content is removed permanently."
+            )
+        self.remove_all_btn.setEnabled(total > 0)
+
     def build_preview(self, container: QWidget) -> None:
         layout = QVBoxLayout(container)
         instruction = QLabel("Drag to mark an area to redact; click the × on a box to remove it:")
@@ -267,8 +328,10 @@ class RedactDialog(_ZoomedPages, ToolDialog):
         for page_num in range(1, len(sizes) + 1):
             overlay = RectangleOverlayWidget(multi=True)
             overlay.page_number = page_num
+            overlay.box_changed.connect(self._update_summary)
             self._container_layout.addWidget(overlay, 0, Qt.AlignHCenter)
             self._page_widgets.append(overlay)
+        self._update_summary()
         self._fit_and_render()
 
     def gather_params(self) -> dict:
@@ -289,6 +352,61 @@ class RedactDialog(_ZoomedPages, ToolDialog):
 class SignDialog(_ZoomedPages, ToolDialog):
     title = "Sign PDF"
     dialog_size = (650, 780)
+
+    def build_options(self, container: QWidget) -> None:
+        layout = QVBoxLayout(container)
+        self.summary_label = QLabel()
+        self.summary_label.setWordWrap(True)
+        layout.addWidget(self.summary_label)
+        self.signature_preview = QLabel()
+        self.signature_preview.setAlignment(Qt.AlignCenter)
+        self.signature_preview.setVisible(False)
+        layout.addWidget(self.signature_preview)
+        self.remove_all_btn = QPushButton("Remove all placements")
+        self.remove_all_btn.clicked.connect(self._remove_all_placements)
+        layout.addWidget(self.remove_all_btn)
+        self.saved_signature_btn = QPushButton("Use saved signature")
+        self.saved_signature_btn.clicked.connect(lambda: self.use_signature_file(self._saved_signature_path()))
+        layout.addWidget(self.saved_signature_btn)
+        self.saved_signature_btn.setVisible(os.path.exists(self._saved_signature_path()))
+        self._update_summary()
+
+    @staticmethod
+    def _saved_signature_path() -> str:
+        """The last signature used, kept between sessions like the web app does."""
+        return str(default_db_path().parent / "signature.png")
+
+    def _remember_signature(self, path: str) -> None:
+        import shutil
+        target = self._saved_signature_path()
+        if os.path.abspath(path) == os.path.abspath(target):
+            return
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copyfile(path, target)
+        except OSError:
+            return  # not being able to remember it must never block signing
+        self.saved_signature_btn.setVisible(True)
+
+    def _remove_all_placements(self) -> None:
+        for widget in self._page_widgets:
+            widget.set_placements([])
+
+    def _update_summary(self) -> None:
+        if not hasattr(self, "summary_label"):
+            return  # the preview is built before the side panel
+        widgets = [w for w in getattr(self, "_page_widgets", []) if w is not None]
+        total = sum(len(w.placements) for w in widgets)
+        pages = sum(1 for w in widgets if w.placements)
+        if self.signature_path is None:
+            text = "Choose a signature first: draw one or upload a picture."
+        elif total == 0:
+            text = "Click a page to place your signature. You can place it more than once."
+        else:
+            text = f"{total} signature{'s' if total != 1 else ''} placed, on {pages} page{'s' if pages != 1 else ''}."
+        self.summary_label.setText(text)
+        self.remove_all_btn.setEnabled(total > 0)
+        self.remove_all_btn.setVisible(self.signature_path is not None)
 
     def build_preview(self, container: QWidget) -> None:
         layout = QVBoxLayout(container)
@@ -377,17 +495,24 @@ class SignDialog(_ZoomedPages, ToolDialog):
         placement phase - the single entry point both 'Draw new'/'Upload
         new' and tests use."""
         self.signature_path = path
+        self._remember_signature(path)
+        thumb = QPixmap(path)
+        if not thumb.isNull():
+            self.signature_preview.setPixmap(thumb.scaledToWidth(240, Qt.SmoothTransformation))
+            self.signature_preview.setVisible(True)
         self.source_panel.setVisible(False)
         self.placement_panel.setVisible(True)
         self._rebuild_page_widgets()
 
     def _use_different_signature(self) -> None:
         self.signature_path = None
+        self.signature_preview.setVisible(False)
         self.pad.clear()
         self.pad_panel.setVisible(False)
         self.placement_panel.setVisible(False)
         self.source_panel.setVisible(True)
         self._clear_page_widgets()
+        self._update_summary()
 
     def on_files_changed(self, paths: list[str]) -> None:
         self._input_path = paths[0] if paths else None
@@ -415,8 +540,10 @@ class SignDialog(_ZoomedPages, ToolDialog):
             widget = ImagePlacementWidget()
             widget.page_number = page_num
             widget.set_signature_pixmap(sig_pixmap)
+            widget.placements_changed.connect(self._update_summary)
             self._container_layout.addWidget(widget, 0, Qt.AlignHCenter)
             self._page_widgets.append(widget)
+        self._update_summary()
         self._fit_and_render()
 
     def gather_params(self) -> dict:
@@ -446,6 +573,25 @@ class SignDialog(_ZoomedPages, ToolDialog):
 class FillFormDialog(_ZoomedPages, ToolDialog):
     title = "PDF Forms"
     dialog_size = (650, 780)
+
+    def build_options(self, container: QWidget) -> None:
+        layout = QVBoxLayout(container)
+        self.summary_label = QLabel("Open a PDF to see its fillable fields.")
+        self.summary_label.setWordWrap(True)
+        layout.addWidget(self.summary_label)
+        self._update_summary()
+
+    def _update_summary(self) -> None:
+        if not hasattr(self, "summary_label"):
+            return  # the preview is built before the side panel
+        count = len(self.fields_widget.values()) if self.fields_widget.has_fields() else 0
+        if count == 0:
+            self.summary_label.setText("This document has no fillable fields.")
+        else:
+            self.summary_label.setText(
+                f"{count} fillable field{'s' if count != 1 else ''}. Type into the fields on the pages; "
+                "Run saves a filled copy."
+            )
 
     def build_preview(self, container: QWidget) -> None:
         layout = QVBoxLayout(container)
@@ -489,6 +635,7 @@ class FillFormDialog(_ZoomedPages, ToolDialog):
         self.fields_widget.set_pages(fields, [QSize(400, 566)] * len(sizes))
         self._fit_and_render()
         self.empty_label.setVisible(not self.fields_widget.has_fields())
+        self._update_summary()
 
     def gather_params(self) -> dict:
         return {"values": self.fields_widget.values()}

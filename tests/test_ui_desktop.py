@@ -5532,7 +5532,8 @@ PAGE_TOOLS = ["crop", "redact", "sign", "forms"]
 def test_page_tools_show_big_centred_pages_that_fit_the_window(kind, tmp_path):
     dlg = _shown_page_tool(kind, tmp_path)
     page = dlg._zoom_pages()[0]
-    assert page.width() == dlg._compute_fit_width() <= 900
+    # (a re-fit only happens past 16px of drift, so the side panel appearing may leave a few px)
+    assert page.width() == pytest.approx(dlg._compute_fit_width(), abs=16) and page.width() <= 900
     assert page.width() > 450  # was a fixed 450px-tall thumbnail
     assert page.height() == pytest.approx(page.width() * 842 / 595, abs=1)
     assert page.has_pixmap and page.rendered_width == page.width()
@@ -5743,12 +5744,15 @@ def test_an_unchecked_checkbox_draws_a_visible_box_and_a_checked_one_a_tick():
 
 
 def test_options_sit_in_a_side_panel_and_a_tool_without_options_has_none():
-    from app.ui.dialogs.edit_dialogs import CropDialog
+    from app.ui.dialogs.base import ToolDialog
+
+    class NoOptions(ToolDialog):
+        title = "No options"
 
     form = RotateDialog()
     assert not form.side_panel.isHidden() and form.side_panel.width() == form.SIDE_PANEL_WIDTH
     assert form.options_widget.parentWidget() is form.side_panel
-    assert CropDialog().side_panel.isHidden()  # nothing to set: its pages take the whole width
+    assert NoOptions().side_panel.isHidden()  # nothing to set: its pages take the whole width
 
 
 def test_sign_first_screen_explains_what_to_do():
