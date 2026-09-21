@@ -5,6 +5,19 @@ and the **desktop app** (PySide6) by `PDFEditorDesktopSetup.exe` (also runnable 
 source with `python -m app.main`). Both share the same PDF engine in `app/core/`, so a
 change to the engine lands in both.
 
+## 0.17.3 — 2026-09-21
+
+- **Fixed:** PDF to Markdown crashed on any PDF containing a picture when the temp folder's
+  path had a space or a bracket in it (for example a Windows user name with a space). The
+  zip now holds `document.md` plus `image-0001.png`, `image-0002.png`, ... with plain
+  relative links.
+- **Fixed:** in the desktop Edit PDF, Delete/Backspace no longer deletes the selected item
+  while a drop-down has focus.
+- **Web Recent Files** is now kept in a small SQLite database (`history.db` in the output
+  folder) instead of a JSON file that was rewritten on every save. An existing
+  `history.json` is imported automatically the first time, then kept as
+  `history.json.migrated`.
+
 ## 0.17.2 — 2026-09-21
 
 The desktop page tools get the same comfortable page view as Edit PDF.
