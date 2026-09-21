@@ -61,6 +61,15 @@ def _checks(work: Path, report: Path) -> list[tuple[str, object]]:
         tool.on_files_changed([str(text_pdf)])
         assert tool._page_widgets, "Edit PDF showed no pages"
         assert tool.undo_btn is not None and tool.select_btn is not None
+        # Pages are drawn on a background thread: prove that works in this build.
+        import time
+
+        deadline = time.monotonic() + 20
+        while not tool._page_widgets[0].has_pixmap and time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.01)
+        tool.shutdown()
+        assert tool._page_widgets[0].has_pixmap, "the background page renderer never delivered a picture"
 
     def history():
         from app.core import history

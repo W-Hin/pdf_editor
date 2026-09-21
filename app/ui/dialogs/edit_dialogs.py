@@ -6,7 +6,7 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction, QColor, QIcon, QPixmap, QShortcut, QKeySequence
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea, QTextEdit, QSpinBox, QCheckBox, QColorDialog, QFrame, QMenu
 
-from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, get_page_size, get_page_sizes, get_page_rotation, extract_text_runs, edit_pdf, extract_form_fields, fill_form
+from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, get_page_size, get_page_sizes, get_page_rotation, extract_text_runs, extract_page_info, edit_pdf, extract_form_fields, fill_form
 from app.core.compare_pdf import extract_page_texts, diff_page_text, render_page_image, diff_page_visual
 from app.core.errors import PDFError
 from app.ui.dialogs.base import ToolDialog
@@ -1247,13 +1247,17 @@ class EditPdfDialog(_ZoomedPages, ToolDialog):
             return
         self._fit_width = self._compute_fit_width()
         self._page_pt = {}
+        try:
+            # One pass over the file, not three reopenings per page.
+            infos = extract_page_info(self._input_path)
+        except PDFError:
+            infos = []
         for page_num in range(1, count + 1):
-            try:
-                runs = extract_text_runs(self._input_path, page_num)
-                width_pt, height_pt = get_page_size(self._input_path, page_num)
-                rotation = get_page_rotation(self._input_path, page_num)
-            except PDFError:
+            info = infos[page_num - 1] if page_num <= len(infos) else None
+            if info is None:
                 runs, width_pt, height_pt, rotation = [], 0.0, 0.0, 0
+            else:
+                runs, width_pt, height_pt, rotation = info["runs"], info["width_pt"], info["height_pt"], info["rotation"]
             self._page_pt[page_num] = (width_pt, height_pt)
             self.model.set_page_text_info(page_num, runs, rotation, width_pt, height_pt)
             widget = EditPageWidget(self.model, page_num)

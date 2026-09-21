@@ -245,5 +245,6 @@ class MainWindow(QMainWindow):
         if tool is not None:
             while self._tool_holder.count():
                 self._tool_holder.takeAt(0)
+            tool.shutdown()
             tool.hide()
             tool.deleteLater()

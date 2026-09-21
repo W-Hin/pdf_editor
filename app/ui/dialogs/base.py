@@ -97,6 +97,9 @@ class ToolDialog(QDialog):
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
+    def shutdown(self) -> None:
+        """Called before the tool goes away; a tool with background work stops it."""
+
     def embed(self) -> None:
         """Turn this from a pop-up window into a plain widget that the main window
         shows in a page. Esc / Enter then no longer close it (a closed embedded

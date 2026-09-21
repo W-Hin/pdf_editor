@@ -3457,17 +3457,17 @@ def test_edit_pdf_dialog_loads_each_pages_text_runs_and_scale_on_file_open(tmp_p
 
 
 def test_edit_pdf_dialog_a_page_whose_runs_cannot_be_read_still_loads_without_runs(tmp_path, monkeypatch):
-    from app.core.errors import PDFError
-    import app.ui.dialogs.edit_dialogs as mod
+    import app.core.pdf_ops as pdf_ops
     dlg, src = _dialog_with_text(tmp_path)
 
-    def boom(path, page):
-        raise PDFError("no text layer")
-    monkeypatch.setattr(mod, "extract_text_runs", boom)
+    def boom(page):
+        raise RuntimeError("no text layer")
+    monkeypatch.setattr(pdf_ops, "_runs_for_page", boom)
     dlg.on_files_changed([str(src)])
     assert len(dlg._page_widgets) == 1
     assert 1 in dlg.model.text_runs and dlg.model.text_runs[1] == []
-    assert dlg.model.page_info[1]["width_pt"] == 0
+    # The page keeps its real size and rotation; only its editable text is missing.
+    assert dlg.model.page_info[1]["width_pt"] == pytest.approx(595)
     widget = dlg._page_widgets[0]
     dlg._set_create_mode("text")
     QTest.mouseDClick(widget, Qt.LeftButton, Qt.NoModifier, QPoint(widget.width() // 2, widget.height() // 2))

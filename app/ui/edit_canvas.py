@@ -572,6 +572,7 @@ class EditPageWidget(QWidget):
         self.commit_other_editors = None
         self.image_cache: dict = {}
         self.rendered_width = 0
+        self.render_requested_width = 0  # a picture of this width is already being drawn
         # Clicking the page must give it the keyboard, or Delete / arrows / Esc
         # would go to whatever else had focus (they bubble up to the dialog).
         self.setFocusPolicy(Qt.ClickFocus)
@@ -619,6 +620,7 @@ class EditPageWidget(QWidget):
         zoom); the page keeps its size and shows blank white until redrawn."""
         self.page_pixmap = None
         self.rendered_width = 0
+        self.render_requested_width = 0
         self.update()
 
     @property

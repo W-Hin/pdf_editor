@@ -515,37 +515,66 @@ def _page_text_spans(page: fitz.Page) -> list[dict]:
     return spans
 
 
+def _runs_for_page(page) -> list[dict]:
+    rect = page.rect
+    runs = []
+    for index, span in enumerate(_page_text_spans(page)):
+        # span["bbox"] is raw/unrotated; page.rotation_matrix maps it into
+        # the *displayed* rect the frontend renders click targets over
+        # (finding #2 — the inverse of crop_pdf/redact_pdf's derotation step).
+        displayed = fitz.Rect(span["bbox"]) * page.rotation_matrix
+        flags = span["flags"]
+        runs.append(
+            {
+                "index": index,
+                "text": span["text"],
+                "font": span["font"],
+                "size": span["size"],
+                "bold": bool(flags & 16),
+                "italic": bool(flags & 2),
+                "bbox": {
+                    "top": (displayed.y0 - rect.y0) / rect.height,
+                    "left": (displayed.x0 - rect.x0) / rect.width,
+                    "right": (rect.x1 - displayed.x1) / rect.width,
+                    "bottom": (rect.y1 - displayed.y1) / rect.height,
+                },
+            }
+        )
+    return runs
+
+
 def extract_text_runs(input_path: str, page_number: int) -> list[dict]:
     doc = open_pdf(input_path)
     try:
         if page_number < 1 or page_number > doc.page_count:
             raise PDFError(f"Page {page_number} does not exist in this document ({doc.page_count} pages).")
-        page = doc[page_number - 1]
-        rect = page.rect
-        runs = []
-        for index, span in enumerate(_page_text_spans(page)):
-            # span["bbox"] is raw/unrotated; page.rotation_matrix maps it into
-            # the *displayed* rect the frontend renders click targets over
-            # (finding #2 — the inverse of crop_pdf/redact_pdf's derotation step).
-            displayed = fitz.Rect(span["bbox"]) * page.rotation_matrix
-            flags = span["flags"]
-            runs.append(
-                {
-                    "index": index,
-                    "text": span["text"],
-                    "font": span["font"],
-                    "size": span["size"],
-                    "bold": bool(flags & 16),
-                    "italic": bool(flags & 2),
-                    "bbox": {
-                        "top": (displayed.y0 - rect.y0) / rect.height,
-                        "left": (displayed.x0 - rect.x0) / rect.width,
-                        "right": (rect.x1 - displayed.x1) / rect.width,
-                        "bottom": (rect.y1 - displayed.y1) / rect.height,
-                    },
-                }
-            )
-        return runs
+        return _runs_for_page(doc[page_number - 1])
+    finally:
+        doc.close()
+
+
+def extract_page_info(input_path: str) -> list[dict]:
+    """Everything the Edit PDF tool needs to know about every page, in ONE pass
+    over the file: [{"runs", "width_pt", "height_pt", "rotation"}, ...]. Asking
+    extract_text_runs / get_page_size / get_page_rotation page by page reopens
+    the document three times per page, which is ten times slower or worse on a
+    long or large file. A page whose text cannot be read keeps its size and
+    rotation and just has no editable runs."""
+    doc = open_pdf(input_path)
+    try:
+        info = []
+        for page in doc:
+            try:
+                runs = _runs_for_page(page)
+            except Exception:
+                runs = []
+            info.append({
+                "runs": runs,
+                "width_pt": float(page.rect.width),
+                "height_pt": float(page.rect.height),
+                "rotation": page.rotation,
+            })
+        return info
     finally:
         doc.close()
 

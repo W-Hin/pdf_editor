@@ -3,6 +3,15 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def synchronous_page_rendering(monkeypatch):
+    """Page tools draw their pages on a background thread; tests draw them
+    straight away so they need not wait (the threaded path has its own tests)."""
+    from app.ui.page_zoom import PageZoomMixin
+
+    monkeypatch.setattr(PageZoomMixin, "_SYNC_RENDER", True)
+
+
+@pytest.fixture(autouse=True)
 def isolated_history_db(tmp_path, monkeypatch):
     """Tests must never write to the real Recent Files database."""
     monkeypatch.setenv("PDF_EDITOR_DATA_DIR", str(tmp_path / "appdata"))

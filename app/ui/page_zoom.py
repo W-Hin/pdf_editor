@@ -6,13 +6,38 @@ Two pieces:
   picture, shows blank white until one is attached, and can give the picture back.
 - PageZoomMixin: for the DIALOG that owns a column of such widgets in a scroll area.
 """
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QWidget
 
 from app.core.errors import PDFError
 from app.core.pdf_ops import render_page_thumbnail
 from app.ui.theme import MUTED_FOREGROUND, icon
+
+
+class _RenderSignals(QObject):
+    """Carries a finished picture from the render thread back to the GUI thread."""
+
+    done = Signal(int, int, int, bytes)  # token, page number, width it was drawn for, PNG bytes
+
+
+class _RenderJob(QRunnable):
+    def __init__(self, signals: _RenderSignals, render, token: int, page_number: int, width: int, long_side: int):
+        super().__init__()
+        self._signals = signals
+        self._render = render
+        self._args = (token, page_number, width, long_side)
+
+    def run(self) -> None:
+        token, page_number, width, long_side = self._args
+        try:
+            data = self._render(page_number, long_side)
+        except Exception:
+            data = b""  # an undrawable page stays blank white
+        try:
+            self._signals.done.emit(token, page_number, width, data)
+        except RuntimeError:
+            pass  # the dialog was closed while this was running
 
 
 class PagePixmapMixin:
@@ -23,6 +48,7 @@ class PagePixmapMixin:
     PIXMAP_ATTR = "pixmap"
     page_number = 0
     rendered_width = 0
+    render_requested_width = 0
 
     def set_page_size(self, size: QSize) -> None:
         self.setFixedSize(size)
@@ -37,6 +63,7 @@ class PagePixmapMixin:
     def release_pixmap(self) -> None:
         setattr(self, self.PIXMAP_ATTR, None)
         self.rendered_width = 0
+        self.render_requested_width = 0
         self.update()
 
     @property
@@ -72,6 +99,9 @@ class PageZoomMixin:
     # _init_page_zoom (which needs the scroll area to exist).
     _zoom_index = 2
     _fit_width = 400
+    # Pages are drawn on a background thread. Tests switch this on to draw them
+    # straight away instead, so they do not have to wait.
+    _SYNC_RENDER = False
 
     def _init_page_zoom(self) -> None:
         self._zoom_index = self._DEFAULT_ZOOM_INDEX
@@ -89,6 +119,13 @@ class PageZoomMixin:
         self._refit_timer.timeout.connect(self._refit)
         self._scroll.verticalScrollBar().valueChanged.connect(lambda _v: self._render_timer.start())
         self._scroll.viewport().installEventFilter(self)  # Ctrl+scroll zooms
+        # One background thread draws pages (MuPDF is not happy being driven from
+        # several threads at once), so scrolling never waits on a page render.
+        self._render_pool = QThreadPool(self)
+        self._render_pool.setMaxThreadCount(1)
+        self._render_signals = _RenderSignals(self)
+        self._render_signals.done.connect(self._on_page_rendered)
+        self._render_token = 0
 
     def _make_zoom_row(self) -> QWidget:
         """A small centred [-] 100% [+] control for tools with no toolbar of
@@ -146,14 +183,49 @@ class PageZoomMixin:
             return
         dpr = self.devicePixelRatioF()
         long_side = int(round(max(widget.width(), widget.height()) * dpr))
-        try:
-            thumb_bytes = self._render_page_bytes(widget.page_number, long_side)
-        except PDFError:
-            return  # leaves a blank white page; everything else still works
+        if self._SYNC_RENDER:
+            try:
+                data = self._render_page_bytes(widget.page_number, long_side)
+            except PDFError:
+                return  # leaves a blank white page; everything else still works
+            self._attach_rendered(widget, data)
+            return
+        if widget.render_requested_width == widget.width():
+            return  # already queued (or drawing) at this size
+        widget.render_requested_width = widget.width()
+        self._render_pool.start(
+            _RenderJob(self._render_signals, self._render_page_bytes, self._render_token,
+                       widget.page_number, widget.width(), long_side)
+        )
+
+    def _attach_rendered(self, widget, data: bytes) -> None:
         pixmap = QPixmap()
-        pixmap.loadFromData(thumb_bytes)
-        pixmap.setDevicePixelRatio(dpr)
+        if not data or not pixmap.loadFromData(data):
+            return
+        pixmap.setDevicePixelRatio(self.devicePixelRatioF())
         widget.attach_pixmap(pixmap)
+
+    def _on_page_rendered(self, token: int, page_number: int, width: int, data: bytes) -> None:
+        if token != self._render_token:
+            return  # a different document, or a different zoom, since this was asked for
+        for widget in self._zoom_pages():
+            if widget.page_number == page_number and widget.width() == width:
+                self._attach_rendered(widget, data)
+                return
+
+    def _invalidate_renders(self) -> None:
+        """Pages are about to change size (or the document changed): anything still
+        queued or drawing is for the wrong size, so its result must be ignored."""
+        self._render_token += 1
+        self._render_pool.clear()
+        for widget in self._zoom_pages():
+            widget.render_requested_width = 0
+
+    def shutdown(self) -> None:
+        """Stop drawing pages; called before the dialog goes away."""
+        self._render_token += 1
+        self._render_pool.clear()
+        self._render_pool.waitForDone(3000)
 
     # ---- the shared machinery ----
 
@@ -198,6 +270,7 @@ class PageZoomMixin:
                 widget.release_pixmap()
 
     def _fit_and_render(self) -> None:
+        self._invalidate_renders()
         self._fit_width = self._compute_fit_width()
         self._layout_pages()
         self._render_pages()
@@ -217,6 +290,7 @@ class PageZoomMixin:
         if index == self._zoom_index:
             return
         self._before_zoom()
+        self._invalidate_renders()
         bar = self._scroll.verticalScrollBar()
         position = bar.value() / bar.maximum() if bar.maximum() else 0.0
         self._zoom_index = index
@@ -232,6 +306,7 @@ class PageZoomMixin:
         fit = self._compute_fit_width()
         if abs(fit - self._fit_width) >= 16:
             self._before_zoom()
+            self._invalidate_renders()
             self._fit_width = fit
             self._layout_pages()
             self._render_pages()
@@ -239,6 +314,10 @@ class PageZoomMixin:
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
         self._refit_timer.start()
+
+    def closeEvent(self, e) -> None:
+        self.shutdown()
+        super().closeEvent(e)
 
     def eventFilter(self, obj, event) -> bool:
         if obj is self._scroll.viewport() and event.type() == QEvent.Wheel and event.modifiers() & Qt.ControlModifier:
