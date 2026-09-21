@@ -5,6 +5,24 @@ and the **desktop app** (PySide6) by `PDFEditorDesktopSetup.exe` (also runnable 
 source with `python -m app.main`). Both share the same PDF engine in `app/core/`, so a
 change to the engine lands in both.
 
+## 0.19.0 — 2026-09-22
+
+- **Desktop tools now open as a chooser, then a workspace:** pick a file, then work on
+  large, zoomable page thumbnails with the options in a side panel. Remove/Extract pages
+  by clicking pages, Reorder by dragging, Merge and Split show grouped previews, and
+  Rotate, Watermark and Page numbers preview live on the pages.
+- **Add watermark matches the web:** font size (10-120 pt) and rotation (0-360 degrees)
+  sliders alongside opacity, with a live preview that turns and scales like the export.
+- **Crop, Redact, Sign and PDF Forms side panels:** a live summary (kept area, marked
+  areas, placed signatures, field count) and clear/remove-all actions. Sign remembers
+  your last signature and offers "Use saved signature".
+- **Images to PDF** previews each image as the page it becomes (fit or fill) and lets you
+  reorder the images; **Compare** has Previous/Next page buttons.
+- **Matches the web app:** "PDF to Image" (JPG default), an explanation on the OCR PDF/A
+  option, and Unlock PDF asks for the password.
+- **Fixed:** hovering text in Edit PDF outlines what can be edited, and the Edit Text box
+  no longer shows only the bottom half of the text.
+
 ## 0.18.0 — 2026-09-21
 
 - **Desktop update banner:** the desktop app now tells you when a newer version is out
