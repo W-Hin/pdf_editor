@@ -5671,3 +5671,19 @@ def test_get_page_sizes_reads_every_page_in_one_pass(tmp_path):
     doc.save(str(path))
     doc.close()
     assert get_page_sizes(str(path)) == [(300.0, 400.0), (500.0, 200.0), (400.0, 300.0)]
+
+
+def test_delete_key_does_nothing_while_a_dropdown_has_focus_but_works_otherwise(tmp_path, monkeypatch):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+    from PySide6.QtWidgets import QApplication as App
+
+    dlg = EditPdfDialog()
+    dlg.on_files_changed([])
+    dlg.model.add(_shape_element(x0=0.2, y0=0.2, x1=0.5, y1=0.5))  # add() selects it
+    monkeypatch.setattr(App, "focusWidget", staticmethod(lambda: dlg.shape_type_combo))
+    QTest.keyClick(dlg, Qt.Key_Backspace)
+    QTest.keyClick(dlg, Qt.Key_Delete)
+    assert len(dlg.model.elements) == 1  # a drop-down's focus must not delete the element
+    monkeypatch.setattr(App, "focusWidget", staticmethod(lambda: dlg.select_btn))
+    QTest.keyClick(dlg, Qt.Key_Delete)
+    assert dlg.model.elements == []  # a focused toolbar button still lets Delete work

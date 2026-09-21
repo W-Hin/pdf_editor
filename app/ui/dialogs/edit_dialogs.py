@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction, QColor, QIcon, QPixmap, QShortcut, QKeySequence
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea, QTextEdit, QSpinBox, QCheckBox, QColorDialog, QFrame, QMenu
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QLineEdit, QSlider, QPushButton, QFileDialog, QMessageBox, QScrollArea, QTextEdit, QSpinBox, QCheckBox, QColorDialog, QFrame, QMenu
 
 from app.core.pdf_ops import rotate_pages, add_watermark, add_page_numbers, crop_pdf, redact_pdf, render_page_thumbnail, get_page_count, get_page_size, get_page_sizes, get_page_rotation, extract_text_runs, edit_pdf, extract_form_fields, fill_form
 from app.core.compare_pdf import extract_page_texts, diff_page_text, render_page_image, diff_page_visual
@@ -1216,7 +1216,9 @@ class EditPdfDialog(_ZoomedPages, ToolDialog):
             self.model.nudge(self.model.selected_id, dx * step, dy * step)
             e.accept()
             return
-        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and not self._any_text_editor_open():
+        # A focused drop-down does not consume Delete/Backspace itself, so the key
+        # would otherwise reach here and silently delete the selected element.
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and not self._any_text_editor_open()                 and not isinstance(QApplication.focusWidget(), QComboBox):
             self._handle_shortcut("delete")
             e.accept()
             return
