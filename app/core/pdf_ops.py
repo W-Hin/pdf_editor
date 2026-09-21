@@ -1,6 +1,6 @@
+import base64
 import math
-import os
-import tempfile
+import re
 import zipfile
 from pathlib import Path
 
@@ -330,52 +330,53 @@ def render_page_thumbnail(input_path: str, page_number: int, max_size: int = 100
         doc.close()
 
 
+# A picture pymupdf4llm embedded in the Markdown: ![alt](data:image/png;base64,...)
+_EMBEDDED_IMAGE = re.compile(r"!\[([^\]]*)\]\(data:image/([A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)\)")
+
+
 def pdf_to_markdown_zip(input_path: str, output_path: str) -> None:
-    with tempfile.TemporaryDirectory() as raw_image_dir:
-        # Canonical (long-name) spelling of the temp folder. pymupdf4llm
-        # writes image references using the RESOLVED path, but on a Windows
-        # account whose username is longer than 8 characters tempfile hands
-        # out the short 8.3 spelling (C:/Users/RUNNER~1/...) - so stripping
-        # the un-resolved prefix below silently matched nothing and the zip's
-        # markdown shipped absolute paths into a deleted temp folder. Passing
-        # the resolved path to BOTH pymupdf4llm and the prefix strip makes
-        # them agree by construction.
-        image_dir = os.path.realpath(raw_image_dir)
-        # KNOWN LIMITATION (investigated and confirmed unfixable this
-        # session): a page auto-rotated by this app's own OCR feature
-        # (app/core/ocr.py's ocr_pdf, which always passes rotate_pages=True)
-        # can come through with empty/missing text here. pymupdf4llm runs
-        # its own internal OCR-detection step before extraction (deciding,
-        # per page, whether to trust existing OCR text or re-OCR it itself),
-        # and that step counts "existing OCR spans" using a text-extraction
-        # call that misses the invisible OCR text on such a page - the same
-        # underlying MuPDF clipping issue fixed elsewhere in this codebase
-        # (see Compare PDF / PDF-to-PowerPoint's get_textpage(clip=
-        # fitz.INFINITE_RECT()) fix) - but here the detection lives in a
-        # private nested closure inside pymupdf4llm's own call chain, not an
-        # importable/patchable name. Confirmed NOT fixable via monkeypatching
-        # fitz.TEXT_MEDIABOX_CLIP=0, widening to_markdown()'s own margins=
-        # parameter, or passing use_ocr=OCRMode.NEVER - individually or all
-        # combined, each still produced 0 chars of text on a rotated-and-
-        # OCR'd fixture. Locked in by
-        # test_pdf_to_markdown_zip_on_rotated_ocred_page_documents_known_limitation
-        # in tests/test_pdf_ops.py; revisit if a future pymupdf4llm upgrade
-        # ever makes that test start failing.
-        markdown_text = pymupdf4llm.to_markdown(input_path, write_images=True, image_path=image_dir)
-        # pymupdf4llm embeds each image reference as an ABSOLUTE filesystem
-        # path into image_dir (verified empirically: "![](C:/Users/.../
-        # tmpXXXX/input.pdf-0001-01.png)" — images land FLAT directly inside
-        # image_dir, no subdirectory) — meaningless once this zip is
-        # extracted anywhere else. Images are stored FLAT at the zip's own
-        # root, next to document.md, so rewriting each reference down to
-        # just its filename makes the link correctly relative once
-        # extracted.
-        image_dir_prefix = Path(image_dir).as_posix() + "/"
-        markdown_text = markdown_text.replace(image_dir_prefix, "")
-        with zipfile.ZipFile(output_path, "w") as zf:
-            zf.writestr("document.md", markdown_text)
-            for image_path in Path(image_dir).iterdir():
-                zf.write(image_path, arcname=image_path.name)
+    # Pictures are embedded in the Markdown by pymupdf4llm and unpacked into the
+    # zip here, rather than letting pymupdf4llm write image files to a folder.
+    # Its image writer rewrites spaces and ()[] in the WHOLE image path (folder
+    # included) and then saves to the rewritten spelling, which does not exist -
+    # so a temp folder like C:/Users/Jane Doe/AppData/Local/Temp made any PDF
+    # with a picture fail. Doing the unpacking ourselves needs no folder at all.
+    # KNOWN LIMITATION (investigated and confirmed unfixable this
+    # session): a page auto-rotated by this app's own OCR feature
+    # (app/core/ocr.py's ocr_pdf, which always passes rotate_pages=True)
+    # can come through with empty/missing text here. pymupdf4llm runs
+    # its own internal OCR-detection step before extraction (deciding,
+    # per page, whether to trust existing OCR text or re-OCR it itself),
+    # and that step counts "existing OCR spans" using a text-extraction
+    # call that misses the invisible OCR text on such a page - the same
+    # underlying MuPDF clipping issue fixed elsewhere in this codebase
+    # (see Compare PDF / PDF-to-PowerPoint's get_textpage(clip=
+    # fitz.INFINITE_RECT()) fix) - but here the detection lives in a
+    # private nested closure inside pymupdf4llm's own call chain, not an
+    # importable/patchable name. Confirmed NOT fixable via monkeypatching
+    # fitz.TEXT_MEDIABOX_CLIP=0, widening to_markdown()'s own margins=
+    # parameter, or passing use_ocr=OCRMode.NEVER - individually or all
+    # combined, each still produced 0 chars of text on a rotated-and-
+    # OCR'd fixture. Locked in by
+    # test_pdf_to_markdown_zip_on_rotated_ocred_page_documents_known_limitation
+    # in tests/test_pdf_ops.py; revisit if a future pymupdf4llm upgrade
+    # ever makes that test start failing.
+    markdown_text = pymupdf4llm.to_markdown(input_path, embed_images=True)
+    with zipfile.ZipFile(output_path, "w") as zf:
+        count = 0
+
+        def unpack(match: re.Match) -> str:
+            nonlocal count
+            count += 1
+            kind = match.group(2).split("+")[0].lower()
+            name = f"image-{count:04d}.{'jpg' if kind == 'jpeg' else kind}"
+            zf.writestr(name, base64.b64decode(match.group(3)))
+            # Stored FLAT at the zip's root next to document.md, so the reference is
+            # just the (link-safe) file name and stays valid once extracted anywhere.
+            return f"![{match.group(1)}]({name})"
+
+        markdown_text = _EMBEDDED_IMAGE.sub(unpack, markdown_text)
+        zf.writestr("document.md", markdown_text)
 
 
 def render_to_images(

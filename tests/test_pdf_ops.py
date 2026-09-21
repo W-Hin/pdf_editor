@@ -2598,33 +2598,29 @@ def test_pdf_to_markdown_zip_contains_markdown_and_extracted_image(tmp_path):
         assert "A paragraph of body text follows here." in md_text
 
 
-def test_pdf_to_markdown_zip_rewrites_image_paths_when_the_temp_dir_has_two_spellings(tmp_path, monkeypatch):
-    # On a Windows account with a username longer than 8 characters (e.g. a
-    # GitHub runner: C:/Users/RUNNER~1 vs C:/Users/runneradmin) tempfile
-    # returns a different spelling of the SAME folder than pymupdf4llm reports
-    # in the markdown. Reproduce that on any machine by making tempfile hand
-    # back an un-normalised spelling of a real directory.
-    import contextlib
-
-    real_dir = tmp_path / "images_real"
-    real_dir.mkdir()
-    odd_spelling = str(real_dir / ".." / "images_real")
-
-    @contextlib.contextmanager
-    def fake_temporary_directory():
-        yield odd_spelling
-
-    import app.core.pdf_ops as pdf_ops_module
-    monkeypatch.setattr(pdf_ops_module.tempfile, "TemporaryDirectory", fake_temporary_directory)
-
+def _pdf_with_images(path, count=1):
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
-    img_pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 40), False)
-    img_pix.set_rect(img_pix.irect, (255, 0, 0))
-    page.insert_image(fitz.Rect(72, 400, 172, 500), pixmap=img_pix)
-    input_path = tmp_path / "input.pdf"
-    doc.save(str(input_path))
+    page.insert_text((72, 60), "A heading above the pictures", fontsize=18)
+    for i in range(count):
+        pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 40), False)
+        pix.set_rect(pix.irect, (255, 40 * i, 0))
+        page.insert_image(fitz.Rect(72, 120 + 140 * i, 272, 240 + 140 * i), pixmap=pix)
+    doc.save(str(path))
     doc.close()
+
+
+def test_pdf_to_markdown_zip_works_when_the_temp_folder_path_has_spaces_and_brackets(tmp_path, monkeypatch):
+    # pymupdf4llm rewrites spaces and ()[] in the WHOLE image path and then saves
+    # to the rewritten spelling, which does not exist - so a temp folder such as
+    # C:/Users/Jane Doe/AppData/Local/Temp used to crash any PDF with a picture.
+    import tempfile
+
+    hostile = tmp_path / "My Docs [v2] (final)"
+    hostile.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(hostile))
+    input_path = tmp_path / "input.pdf"
+    _pdf_with_images(input_path)
 
     output_path = tmp_path / "output.zip"
     pdf_to_markdown_zip(str(input_path), str(output_path))
@@ -2632,9 +2628,51 @@ def test_pdf_to_markdown_zip_rewrites_image_paths_when_the_temp_dir_has_two_spel
     with zipfile.ZipFile(output_path) as zf:
         md_text = zf.read("document.md").decode("utf-8")
         image_names = [n for n in zf.namelist() if n.lower().endswith(".png")]
-    assert image_names
+        assert image_names and zf.read(image_names[0]).startswith(b"\x89PNG")
     assert f"]({image_names[0]})" in md_text
-    assert "images_real" not in md_text  # no absolute path into the temp folder survives
+    assert "My Docs" not in md_text and "My_Docs" not in md_text  # no temp path leaks into the links
+
+
+def test_pdf_to_markdown_zip_links_stay_valid_for_an_input_name_with_spaces_and_brackets(tmp_path):
+    input_path = tmp_path / "my report [draft] (1).pdf"
+    _pdf_with_images(input_path)
+    output_path = tmp_path / "out.zip"
+    pdf_to_markdown_zip(str(input_path), str(output_path))
+    with zipfile.ZipFile(output_path) as zf:
+        md_text = zf.read("document.md").decode("utf-8")
+        image_names = [n for n in zf.namelist() if n.lower().endswith(".png")]
+    assert image_names
+    for name in image_names:
+        assert f"]({name})" in md_text
+        assert not any(c in name for c in " ()[]")  # safe to use unescaped in a Markdown link
+
+
+def test_pdf_to_markdown_zip_keeps_every_image_in_order(tmp_path):
+    input_path = tmp_path / "input.pdf"
+    _pdf_with_images(input_path, count=3)
+    output_path = tmp_path / "output.zip"
+    pdf_to_markdown_zip(str(input_path), str(output_path))
+    with zipfile.ZipFile(output_path) as zf:
+        md_text = zf.read("document.md").decode("utf-8")
+        names = sorted(n for n in zf.namelist() if n.lower().endswith(".png"))
+        assert len(names) == 3
+        assert all(zf.read(n).startswith(b"\x89PNG") for n in names)
+    positions = [md_text.index(f"]({n})") for n in names]
+    assert positions == sorted(positions)  # numbered in the order they appear
+    assert "base64" not in md_text  # nothing left embedded
+
+
+def test_pdf_to_markdown_zip_for_a_document_without_images_is_just_the_markdown(tmp_path):
+    doc = fitz.open()
+    doc.new_page(width=595, height=842).insert_text((72, 72), "Only text here")
+    input_path = tmp_path / "text.pdf"
+    doc.save(str(input_path))
+    doc.close()
+    output_path = tmp_path / "out.zip"
+    pdf_to_markdown_zip(str(input_path), str(output_path))
+    with zipfile.ZipFile(output_path) as zf:
+        assert zf.namelist() == ["document.md"]
+        assert "Only text here" in zf.read("document.md").decode("utf-8")
 
 
 def test_pdf_to_markdown_zip_rewrites_image_paths_as_relative(tmp_path):
