@@ -1,12 +1,13 @@
 import os
 import subprocess
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -19,21 +20,60 @@ from app.core.pdf_ops import render_page_thumbnail
 from app.ui.theme import MUTED_FOREGROUND, icon, icon_pixmap
 
 THUMB_SIZE = 56
+PAGE_SIZE = 50  # entries shown at a time; "Show more" adds another page
 
 
-class RecentFilesPage(QScrollArea):
-    """Files the tools have produced, newest first (the desktop Recent Files)."""
+class RecentFilesPage(QWidget):
+    """Files the tools have produced, newest first (the desktop Recent Files),
+    with a search box and "Show more" paging."""
 
     def __init__(self):
         super().__init__()
-        self.setWidgetResizable(True)
-        self.setFrameShape(QFrame.NoFrame)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(12)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search by file name, tool or folder\u2026")
+        self.search.setClearButtonEnabled(True)
+        self.search.setMinimumWidth(340)
+        self.search.setMaximumWidth(420)
+        outer.addWidget(self.search, 0, Qt.AlignLeft)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
         self._content = QWidget()
         self._content.setObjectName("page")
         self._layout = QVBoxLayout(self._content)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(8)
-        self.setWidget(self._content)
+        self._scroll.setWidget(self._content)
+        outer.addWidget(self._scroll, 1)
+        self._limit = PAGE_SIZE
+        # Typing searches a moment after the last keystroke, not on every key.
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(200)
+        self._search_timer.timeout.connect(self._search_changed)
+        self.search.textChanged.connect(lambda _text: self._search_timer.start())
+
+    def reset(self) -> None:
+        """Back to a fresh, unfiltered first page (each time the page is opened)."""
+        self.search.blockSignals(True)
+        self.search.clear()
+        self.search.blockSignals(False)
+        self._limit = PAGE_SIZE
+        self.refresh()
+
+    def _search_changed(self) -> None:
+        self._limit = PAGE_SIZE
+        self.refresh()
+
+    def show_more(self) -> None:
+        self._limit += PAGE_SIZE
+        bar = self._scroll.verticalScrollBar()
+        position = bar.value()
+        self.refresh()
+        bar.setValue(position)  # stay where you were; the new rows are below
 
     def refresh(self) -> None:
         while self._layout.count():
@@ -42,14 +82,23 @@ class RecentFilesPage(QScrollArea):
             if widget is not None:
                 widget.setParent(None)  # gone now, not whenever the event loop gets to deleteLater
                 widget.deleteLater()
-        entries = history.list_entries()
+        query = self.search.text().strip()
+        entries = history.list_entries(limit=self._limit, query=query)
+        total = history.count_entries(query=query)
         if not entries:
-            empty = QLabel("No files produced yet.")
+            message = f"No files match \u201c{query}\u201d." if query else "No files produced yet."
+            empty = QLabel(message)
             empty.setObjectName("emptyState")
             empty.setAlignment(Qt.AlignCenter)
             self._layout.addWidget(empty)
         for entry in entries:
             self._layout.addWidget(self._row(entry))
+        if total > len(entries):
+            more = QPushButton(f"Show more ({total - len(entries)} more)")
+            more.setObjectName("showMore")
+            more.setCursor(Qt.PointingHandCursor)
+            more.clicked.connect(self.show_more)
+            self._layout.addWidget(more, 0, Qt.AlignHCenter)
         self._layout.addStretch(1)
 
     def _row(self, entry: dict) -> QFrame:

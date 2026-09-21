@@ -5746,3 +5746,204 @@ def test_sign_first_screen_explains_what_to_do():
     dlg = SignDialog()
     texts = [lbl.text() for lbl in dlg.source_panel.findChildren(QLabel)]
     assert any("signature" in t.lower() and "place" in t.lower() for t in texts)
+
+
+# ---- Recent Files: search and paging ----
+
+
+def _add_history(tmp_path, names_and_tools):
+    from app.core import history
+
+    for name, tool in names_and_tools:
+        history.add_entry(str(tmp_path / name), tool)
+
+
+def test_history_search_matches_every_word_across_name_tool_and_folder(tmp_path):
+    from app.core import history
+
+    _add_history(tmp_path, [("Quarterly Report.pdf", "Merge PDF"), ("invoice.pdf", "Compress PDF"), ("notes.pdf", "Merge PDF")])
+    names = lambda q: sorted(e["filename"] for e in history.list_entries(query=q))
+    assert names("report") == ["Quarterly Report.pdf"]
+    assert names("MERGE") == ["Quarterly Report.pdf", "notes.pdf"]  # by tool, any case
+    assert names("merge report") == ["Quarterly Report.pdf"]  # every word must match
+    assert names(tmp_path.name) == ["Quarterly Report.pdf", "invoice.pdf", "notes.pdf"]  # by folder
+    assert names("nothing like this") == []
+    assert history.count_entries(query="merge") == 2 and history.count_entries() == 3
+
+
+def test_history_search_treats_percent_underscore_and_quotes_literally(tmp_path):
+    from app.core import history
+
+    _add_history(tmp_path, [("100%_done.pdf", "Merge PDF"), ("100 done.pdf", "Merge PDF"), ("o'neil.pdf", "Merge PDF")])
+    assert [e["filename"] for e in history.list_entries(query="100%_")] == ["100%_done.pdf"]
+    assert [e["filename"] for e in history.list_entries(query="o'neil")] == ["o'neil.pdf"]
+    assert len(history.list_entries(query="%")) == 1  # a bare % is a character, not "match everything"
+
+
+def test_history_offset_pages_through_the_list(tmp_path):
+    from app.core import history
+
+    _add_history(tmp_path, [(f"f{i}.pdf", "Merge PDF") for i in range(7)])
+    first = history.list_entries(limit=3)
+    second = history.list_entries(limit=3, offset=3)
+    third = history.list_entries(limit=3, offset=6)
+    assert [e["filename"] for e in first + second + third] == [f"f{i}.pdf" for i in reversed(range(7))]
+
+
+def _recent_rows(window):
+    from PySide6.QtWidgets import QFrame, QLabel
+
+    return [r.findChild(QLabel, "historyName").text() for r in window._recent_list.findChildren(QFrame, "historyRow")]
+
+
+def test_recent_files_search_filters_the_list_and_shows_a_no_match_message(tmp_path):
+    from PySide6.QtWidgets import QLabel
+
+    _add_history(tmp_path, [("alpha.pdf", "Merge PDF"), ("beta.pdf", "Rotate PDF")])
+    window = _themed_main_window()
+    window.show_recent()
+    assert _recent_rows(window) == ["beta.pdf", "alpha.pdf"]
+    window._recent_list.search.setText("alp")
+    window._recent_list._search_changed()  # what the typing delay does
+    assert _recent_rows(window) == ["alpha.pdf"]
+    window._recent_list.search.setText("zzz")
+    window._recent_list._search_changed()
+    assert _recent_rows(window) == []
+    assert "zzz" in window._recent_list.findChild(QLabel, "emptyState").text()
+
+
+def test_recent_files_typing_waits_a_moment_before_searching(tmp_path):
+    _add_history(tmp_path, [("alpha.pdf", "Merge PDF"), ("beta.pdf", "Rotate PDF")])
+    window = _themed_main_window()
+    window.show_recent()
+    window._recent_list.search.setText("alp")
+    assert _recent_rows(window) == ["beta.pdf", "alpha.pdf"]  # not yet: the timer has not fired
+    assert window._recent_list._search_timer.isActive()
+    import time
+
+    time.sleep(0.3)
+    _app.processEvents()
+    assert _recent_rows(window) == ["alpha.pdf"]
+
+
+def test_recent_files_shows_a_page_at_a_time_with_show_more(tmp_path):
+    from PySide6.QtWidgets import QPushButton
+
+    from app.ui import recent_files
+
+    _add_history(tmp_path, [(f"f{i:03d}.pdf", "Merge PDF") for i in range(recent_files.PAGE_SIZE + 12)])
+    window = _themed_main_window()
+    window.show_recent()
+    assert len(_recent_rows(window)) == recent_files.PAGE_SIZE
+    more = window._recent_list.findChild(QPushButton, "showMore")
+    assert more is not None and "12 more" in more.text()
+    more.click()
+    assert len(_recent_rows(window)) == recent_files.PAGE_SIZE + 12
+    assert window._recent_list.findChild(QPushButton, "showMore") is None  # nothing left
+
+
+def test_opening_recent_files_again_starts_unfiltered(tmp_path):
+    _add_history(tmp_path, [("alpha.pdf", "Merge PDF"), ("beta.pdf", "Rotate PDF")])
+    window = _themed_main_window()
+    window.show_recent()
+    window._recent_list.search.setText("alp")
+    window._recent_list._search_changed()
+    window.show_home()
+    window.show_recent()
+    assert window._recent_list.search.text() == "" and len(_recent_rows(window)) == 2
+
+
+# ---- update banner ----
+
+
+def _fake_check(latest="9.9.9", update=True, url="https://example.test/release"):
+    def check(current):
+        return {"version": current, "latest": latest, "release_url": url, "update_available": update}
+
+    return check
+
+
+def _wait(cond, timeout=3.0):
+    import time
+
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        _app.processEvents()
+        if cond():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_update_banner_is_hidden_until_a_newer_release_is_found(monkeypatch):
+    from app.ui.update_banner import UpdateBanner
+
+    monkeypatch.delenv("PDF_EDITOR_NO_UPDATE_CHECK", raising=False)
+    banner = UpdateBanner(check=_fake_check(), current_version="1.0.0")
+    assert banner.isHidden()
+    banner.start()
+    assert _wait(lambda: not banner.isHidden())
+    assert "9.9.9" in banner._label.text() and "1.0.0" in banner._label.text()
+
+
+def test_update_banner_stays_invisible_when_there_is_no_update_or_the_check_fails(monkeypatch):
+    from app.ui.update_banner import UpdateBanner
+
+    monkeypatch.delenv("PDF_EDITOR_NO_UPDATE_CHECK", raising=False)
+
+    def boom(current):
+        raise OSError("offline")
+
+    for check in (_fake_check(update=False), boom, lambda current: {}):
+        banner = UpdateBanner(check=check, current_version="1.0.0")
+        banner.start()
+        _wait(lambda: False, timeout=0.3)
+        assert banner.isHidden()
+
+
+def test_update_banner_dismiss_and_download(monkeypatch):
+    from PySide6.QtGui import QDesktopServices
+
+    from app.ui.update_banner import UpdateBanner
+
+    monkeypatch.delenv("PDF_EDITOR_NO_UPDATE_CHECK", raising=False)
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", staticmethod(lambda url: opened.append(url.toString())))
+    banner = UpdateBanner(check=_fake_check(), current_version="1.0.0")
+    banner.start()
+    assert _wait(lambda: not banner.isHidden())
+    banner.download_button.click()
+    assert opened == ["https://example.test/release"]
+    banner.dismiss_button.click()
+    assert banner.isHidden()
+
+
+def test_update_check_never_blocks_the_window_and_can_be_switched_off(monkeypatch):
+    import time
+
+    from app.ui.update_banner import UpdateBanner
+
+    monkeypatch.delenv("PDF_EDITOR_NO_UPDATE_CHECK", raising=False)
+
+    def slow(current):
+        time.sleep(0.5)
+        return {"version": current, "latest": "9.9.9", "release_url": "u", "update_available": True}
+
+    banner = UpdateBanner(check=slow, current_version="1.0.0")
+    started = time.perf_counter()
+    banner.start()
+    assert time.perf_counter() - started < 0.2  # returns at once; the wait happens on another thread
+    assert _wait(lambda: not banner.isHidden())
+
+    monkeypatch.setenv("PDF_EDITOR_NO_UPDATE_CHECK", "1")
+    calls = []
+    off = UpdateBanner(check=lambda c: calls.append(c) or {}, current_version="1.0.0")
+    off.start()
+    _wait(lambda: False, timeout=0.2)
+    assert calls == [] and off.isHidden()
+
+
+def test_main_window_carries_the_banner_between_header_and_pages():
+    window = _themed_main_window()
+    assert window.update_banner.isHidden()
+    assert hasattr(window, "check_for_updates")

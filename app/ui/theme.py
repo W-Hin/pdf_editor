@@ -92,6 +92,10 @@ QPushButton#dropButton[compact="true"] {
 }
 QScrollArea#pageScroll, #pageCanvas { background: #e9eef5; border-radius: 8px; }
 QScrollArea#pageScroll > QWidget > QWidget { background: #e9eef5; }
+QFrame#updateBanner { background: #eff6ff; border-bottom: 1px solid #bfdbfe; }
+QFrame#updateBanner QLabel { color: #1e3a8a; }
+QPushButton#bannerDismiss { border: none; background: transparent; color: #1e3a8a; }
+QPushButton#showMore { padding: 8px 20px; }
 QPushButton#backButton {
     border: none; background: transparent; color: @MUTED_FOREGROUND@;
     padding: 4px 0; text-align: left;

@@ -49,6 +49,7 @@ def main() -> int:
     apply_theme(app)
     window = build_main_window()
     window.show()
+    window.check_for_updates()
     return app.exec()
 
 

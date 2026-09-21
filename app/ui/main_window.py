@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from app.ui.recent_files import RecentFilesPage
 from app.ui.theme import MUTED_FOREGROUND, icon, icon_pixmap
+from app.ui.update_banner import UpdateBanner
 
 APP_TITLE = "PDF Editor (Desktop)"
 
@@ -143,6 +144,9 @@ class MainWindow(QMainWindow):
         header_row.addWidget(self._recent_link)
         layout.addWidget(header)
 
+        self.update_banner = UpdateBanner()
+        layout.addWidget(self.update_banner)
+
         self._stack = QStackedWidget()
         layout.addWidget(self._stack, 1)
 
@@ -187,6 +191,10 @@ class MainWindow(QMainWindow):
 
         self._current_tool = None
 
+    def check_for_updates(self) -> None:
+        """Ask GitHub, in the background, whether a newer release exists."""
+        self.update_banner.start()
+
     def _make_back_button(self) -> QPushButton:
         button = QPushButton("Back")
         button.setObjectName("backButton")
@@ -199,7 +207,7 @@ class MainWindow(QMainWindow):
     def show_recent(self) -> None:
         if not self._leave_current_tool():
             return
-        self._recent_list.refresh()
+        self._recent_list.reset()
         self._stack.setCurrentWidget(self._recent_page)
 
     def add_tool(self, category: str, label: str, dialog_cls, icon_name: str = "file") -> None:

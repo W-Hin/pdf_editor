@@ -57,14 +57,39 @@ def add_entry(path: str, tool: str, page_count: int | None = None, db_path: Path
         )
 
 
-def list_entries(limit: int = 100, db_path: Path | None = None) -> list[dict]:
-    """Newest first. Each entry gains `exists`: whether the file is still there."""
+def _search_clause(query: str) -> tuple[str, list[str]]:
+    """Every word of the query must appear in the file name, the tool or the
+    folder (case-insensitively), so "merge report" finds Merge PDF's report.pdf."""
+    words = query.split()
+    if not words:
+        return "", []
+    one = "(filename LIKE ? ESCAPE '\\' OR tool LIKE ? ESCAPE '\\' OR path LIKE ? ESCAPE '\\')"
+    params: list[str] = []
+    for word in words:
+        like = "%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        params += [like, like, like]
+    return " WHERE " + " AND ".join([one] * len(words)), params
+
+
+def list_entries(limit: int = 100, db_path: Path | None = None, query: str = "", offset: int = 0) -> list[dict]:
+    """Newest first, optionally only those matching `query`. Each entry gains
+    `exists`: whether the file is still there."""
+    where, params = _search_clause(query)
     with closing(_connect(db_path or default_db_path())) as conn:
-        rows = conn.execute("SELECT * FROM history ORDER BY created_at DESC, id DESC LIMIT ?", (limit,)).fetchall()
+        rows = conn.execute(
+            "SELECT * FROM history" + where + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        ).fetchall()
     entries = [dict(row) for row in rows]
     for entry in entries:
         entry["exists"] = Path(entry["path"]).is_file()
     return entries
+
+
+def count_entries(query: str = "", db_path: Path | None = None) -> int:
+    where, params = _search_clause(query)
+    with closing(_connect(db_path or default_db_path())) as conn:
+        return conn.execute("SELECT COUNT(*) FROM history" + where, params).fetchone()[0]
 
 
 def remove_entry(entry_id: int, db_path: Path | None = None) -> bool:

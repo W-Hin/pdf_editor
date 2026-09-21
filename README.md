@@ -16,6 +16,15 @@ There are two ways to use it:
 Every release on the Releases page has both installers; pick whichever you prefer. They
 can be installed side by side.
 
+**Windows may warn about the installer.** The installers are not code-signed (a signing
+certificate costs money and this is a free, open project), so Windows SmartScreen can show
+"Windows protected your PC" the first time you run one. Choose **More info** then **Run
+anyway**. To be sure the file is genuine, download it only from this repository's Releases
+page and check that the release was built by its GitHub Actions run (each release links
+the run). Both apps check GitHub for a newer version at start-up (the only network call
+they make, silent if you are offline); the desktop app shows a banner when one is out.
+Set the environment variable `PDF_EDITOR_NO_UPDATE_CHECK=1` to turn the desktop check off.
+
 Both share the same underlying PDF engine (`app/core/`), so results are identical
 either way — they just differ in the UI. See [CHANGELOG.md](CHANGELOG.md) for what
 changed in each release.
@@ -135,7 +144,8 @@ with `PDFEditorDesktopSetup.exe`). Tools are grouped Organize / Edit / Optimize 
 on the home screen, matching the web app, and open inside the same window with a Back
 link. **Recent Files** (top-right) lists every file the tools have produced, kept in a
 small local SQLite database (`%LOCALAPPDATA%\PDFEditor\history.db`); it stores only
-names and paths, never the PDFs themselves, and Remove only forgets an entry.
+names and paths, never the PDFs themselves, and Remove only forgets an entry. It has a
+search box (file name, tool or folder) and shows 50 at a time with **Show more**.
 
 **Edit PDF** works on all pages at once (scroll through them). Pick a mode, then work
 directly on the page:
