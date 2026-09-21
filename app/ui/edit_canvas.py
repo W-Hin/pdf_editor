@@ -573,6 +573,10 @@ class EditPageWidget(QWidget):
         self.image_cache: dict = {}
         self.rendered_width = 0
         self.render_requested_width = 0  # a picture of this width is already being drawn
+        # Edit Text mode: the detected run under the mouse, outlined so you can see
+        # what is editable (like the web app).
+        self._hover_run: dict | None = None
+        self.setMouseTracking(True)
         # Clicking the page must give it the keyboard, or Delete / arrows / Esc
         # would go to whatever else had focus (they bubble up to the dialog).
         self.setFocusPolicy(Qt.ClickFocus)
@@ -965,7 +969,24 @@ class EditPageWidget(QWidget):
                 picked.append(el["id"])
         self.model.select_many(picked)
 
+    def _update_hover(self, pos) -> None:
+        run = None
+        if self.create_mode == "text" and self._run_editor is None and self._drag is None:
+            run = self._run_at(pos)
+        if run is not self._hover_run:
+            self._hover_run = run
+            self.setCursor(Qt.PointingHandCursor if run is not None else Qt.ArrowCursor)
+            self.update()
+
+    def leaveEvent(self, e) -> None:
+        if self._hover_run is not None:
+            self._hover_run = None
+            self.setCursor(Qt.ArrowCursor)
+            self.update()
+        super().leaveEvent(e)
+
     def mouseMoveEvent(self, e) -> None:
+        self._update_hover(e.position().toPoint())
         if self._group_drag is not None:
             point = self._point_from_pos(e.position().toPoint())
             if point is not None:
@@ -1242,8 +1263,15 @@ class EditPageWidget(QWidget):
         # (export already falls back to that same style for a format-less
         # fragment, see segments_from_document).
         self._apply_default_font(doc, default)
+        # Qt pads a document by 4px on every side. Beside a run of ~20px that padding
+        # pushed the text past the box, the editor scrolled to keep the cursor in
+        # view, and only the bottom half of the line showed.
+        doc.setDocumentMargin(1)
         editor.setDocument(doc)
-        editor.setStyleSheet("QTextEdit { background: white; color: #1f2937; }")
+        # The app theme pads every text box by 6px top and bottom and draws a border
+        # (right for a form field, wrong for an editor that must sit exactly over one
+        # line of text): squeezing the line into the padding is what clipped it.
+        editor.setStyleSheet("QTextEdit { background: white; color: #1f2937; padding: 0px; border: none; }")
         # typing continues in the style of the last segment (or the run's default)
         cursor = editor.textCursor()
         cursor.movePosition(QTextCursor.End)
@@ -1251,8 +1279,17 @@ class EditPageWidget(QWidget):
         editor.setCurrentCharFormat(_segment_format(segments[-1] if segments else {**default, "text": ""}, self.px_per_pt))
         rect = self._element_rect_px(pending) if pending else self._run_bbox_rect_px(run)
         # never narrower than a usable input, never past the page's right edge
-        width = min(max(rect.width() + 8, 120), max(self.width() - rect.x(), 40))
-        editor.setGeometry(rect.x(), rect.y(), width, max(rect.height() + 6, 20))
+        doc.setTextWidth(-1)
+        # As wide as the text itself needs (the preview font can be wider than the
+        # original's), or a longer line would scroll sideways and hide its start.
+        text_width = int(math.ceil(doc.idealWidth())) + 8
+        width = min(max(rect.width() + 8, text_width, 120), max(self.width() - rect.x(), 40))
+        needed = int(math.ceil(doc.size().height())) + 4  # the text's own height, whatever the run's box says
+        height = max(rect.height() + 6, needed, 20)
+        top = max(0, rect.y() - (height - rect.height()) // 2)  # centred on the text it replaces
+        editor.setGeometry(rect.x(), top, width, height)
+        editor.verticalScrollBar().setValue(0)
+        editor.horizontalScrollBar().setValue(0)
         editor.show()
         editor.setFocus()
         self._run_editor = editor
@@ -1392,6 +1429,7 @@ class EditPageWidget(QWidget):
                 continue  # a drawing shows no selection chrome outside the Select tool
             self._paint_chrome(painter, el)
         self._paint_group_selection(painter)
+        self._paint_hover_run(painter)
         self._paint_create_preview(painter)
 
     def _paint_new_text(self, painter: QPainter, el: dict) -> None:
@@ -1522,6 +1560,18 @@ class EditPageWidget(QWidget):
         painter.drawPolygon(QPolygon([
             QPoint(int(x1), int(y1)), QPoint(int(h1x), int(h1y)), QPoint(int(h2x), int(h2y)),
         ]))
+
+    def _paint_hover_run(self, painter: QPainter) -> None:
+        """A dashed outline and a light tint over the editable text under the mouse."""
+        if self._hover_run is None or self.create_mode != "text" or self._run_editor is not None:
+            return
+        rect = self._run_bbox_rect_px(self._hover_run).adjusted(-2, -2, 2, 2)
+        pen = QPen(QColor(37, 99, 235), 1)
+        pen.setStyle(Qt.DashLine)
+        painter.setPen(pen)
+        painter.setBrush(QColor(37, 99, 235, 30))
+        painter.drawRect(rect)
+        painter.setBrush(Qt.NoBrush)
 
     def _paint_group_selection(self, painter: QPainter) -> None:
         """Outlines each group-selected element, and the marquee being dragged."""

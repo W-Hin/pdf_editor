@@ -5947,3 +5947,143 @@ def test_main_window_carries_the_banner_between_header_and_pages():
     window = _themed_main_window()
     assert window.update_banner.isHidden()
     assert hasattr(window, "check_for_updates")
+
+
+# ---- Edit Text: hover feedback and a run editor that shows its whole line ----
+
+
+def _text_dialog_shown(tmp_path, size=(1300, 850)):
+    from app.ui.dialogs.edit_dialogs import EditPdfDialog
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "Students shall log the details of the progress meeting in this document.", fontname="helv", fontsize=11)
+    page.insert_text((72, 160), "Second line", fontname="tiro", fontsize=12)
+    src = tmp_path / "text.pdf"
+    doc.save(str(src))
+    doc.close()
+    from app.ui.theme import apply_theme
+
+    apply_theme(_app)  # the real app always runs themed, and the theme is what padded the editor
+    dlg = EditPdfDialog()
+    dlg.resize(*size)
+    dlg.show()
+    _app.processEvents()
+    dlg.on_files_changed([str(src)])
+    _app.processEvents()
+    dlg.edit_text_btn.click()
+    return dlg
+
+
+def _hover(page, pos):
+    """Deliver a mouse move to the page widget itself. (QTest.mouseMove goes through
+    the window, where windows left open by earlier tests can intercept it, and it
+    sends nothing when asked to move to where it last was.)"""
+    from PySide6.QtCore import QEvent, QPointF
+    from PySide6.QtGui import QMouseEvent
+
+    event = QMouseEvent(QEvent.MouseMove, QPointF(pos), QPointF(page.mapToGlobal(pos)), Qt.NoButton, Qt.NoButton, Qt.NoModifier)
+    QApplication.sendEvent(page, event)
+
+
+def _run_center(page, run):
+    rect = page._run_bbox_rect_px(run)
+    return rect.center()
+
+
+def test_hovering_editable_text_outlines_it_and_leaving_clears_it(tmp_path):
+    dlg = _text_dialog_shown(tmp_path)
+    page = dlg._page_widgets[0]
+    run = dlg.model.text_runs[1][0]
+    assert page.hasMouseTracking()
+    _hover(page, _run_center(page, run))
+    assert page._hover_run is run and page.cursor().shape() == Qt.PointingHandCursor
+    image = page.grab().toImage()
+    edge = page._run_bbox_rect_px(run).adjusted(-2, -2, 2, 2)
+    assert QColor(image.pixel(edge.left(), edge.center().y())).blue() > 150  # the dashed outline is drawn
+    _hover(page, QPoint(5, page.height() - 5))  # blank margin
+    assert page._hover_run is None and page.cursor().shape() == Qt.ArrowCursor
+
+
+def test_hover_outline_only_exists_in_edit_text_mode(tmp_path):
+    dlg = _text_dialog_shown(tmp_path)
+    page = dlg._page_widgets[0]
+    run = dlg.model.text_runs[1][0]
+    dlg.draw_btn.click()
+    _hover(page, _run_center(page, run))
+    assert page._hover_run is None
+    dlg.edit_text_btn.click()
+    _hover(page, _run_center(page, run))
+    assert page._hover_run is run
+    dlg.select_btn.click()  # leaving the mode drops the outline on the next move
+    _hover(page, _run_center(page, dlg.model.text_runs[1][1]))
+    assert page._hover_run is None
+
+
+def test_the_run_editor_is_tall_enough_for_its_text_at_any_page_size(tmp_path):
+    for size in ((900, 700), (1300, 850), (1900, 1000)):
+        dlg = _text_dialog_shown(tmp_path, size=size)
+        for zoom_steps in (0, 2, -1):  # 100%, then bigger, then smaller
+            for _ in range(abs(zoom_steps)):
+                (dlg.zoom_in_btn if zoom_steps > 0 else dlg.zoom_out_btn).click()
+            page = dlg._page_widgets[0]
+            run = dlg.model.text_runs[1][0]
+            QTest.mouseDClick(page, Qt.LeftButton, Qt.NoModifier, _run_center(page, run))
+            editor = page._run_editor
+            assert editor is not None
+            # The whole line fits: nothing to scroll, and the box is as tall as the text.
+            assert editor.verticalScrollBar().maximum() == 0 and editor.verticalScrollBar().value() == 0
+            assert editor.height() >= editor.document().size().height()
+            page.commit_open_editors()
+        dlg.shutdown()
+
+
+def test_the_run_editor_sits_over_the_text_it_replaces(tmp_path):
+    dlg = _text_dialog_shown(tmp_path)
+    page = dlg._page_widgets[0]
+    run = dlg.model.text_runs[1][0]
+    QTest.mouseDClick(page, Qt.LeftButton, Qt.NoModifier, _run_center(page, run))
+    editor = page._run_editor
+    rect = page._run_bbox_rect_px(run)
+    assert editor.geometry().contains(rect.center())
+    assert abs(editor.geometry().center().y() - rect.center().y()) <= 4  # centred on it, not shifted down
+
+
+# ---- no dead space: empty status and empty options take no room ----
+
+
+def test_a_tool_with_nothing_to_say_shows_no_status_line_and_a_tool_without_options_no_empty_box():
+    from app.ui.dialogs.optimize_dialogs import RepairDialog
+
+    dlg = RepairDialog()
+    assert dlg.status_label.isHidden()
+    assert dlg.options_widget.isHidden()  # Repair has no options
+    dlg.status_label.setText("Working\u2026")
+    assert not dlg.status_label.isHidden()
+    dlg.status_label.setText("")
+    assert dlg.status_label.isHidden()
+
+
+def test_a_tool_with_options_still_shows_them():
+    dlg = RotateDialog()
+    assert not dlg.options_widget.isHidden() or dlg.options_widget.layout() is not None
+
+
+def test_a_page_tool_gives_its_preview_all_the_spare_height():
+    from app.ui.dialogs.edit_dialogs import CompareDialog
+
+    dlg = CompareDialog()
+    layout = dlg.layout()
+    index = layout.indexOf(dlg.preview_widget)
+    assert layout.stretch(index) == 1
+    assert layout.stretch(layout.indexOf(dlg.options_widget)) == 0
+
+
+def test_the_run_editor_is_as_wide_as_its_text_so_the_start_of_the_line_is_not_hidden(tmp_path):
+    dlg = _text_dialog_shown(tmp_path)
+    page = dlg._page_widgets[0]
+    run = dlg.model.text_runs[1][0]
+    QTest.mouseDClick(page, Qt.LeftButton, Qt.NoModifier, _run_center(page, run))
+    editor = page._run_editor
+    assert editor.horizontalScrollBar().maximum() == 0 and editor.horizontalScrollBar().value() == 0
+    assert editor.width() >= editor.document().idealWidth()

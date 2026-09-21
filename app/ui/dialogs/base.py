@@ -24,6 +24,19 @@ from app.ui.theme import MUTED_FOREGROUND, icon
 from app.ui.workers import Worker
 
 
+class _StatusLabel(QLabel):
+    """Takes no room while it has nothing to say (an empty label still costs its
+    height plus the layout spacing, which showed as a gap above the Run button)."""
+
+    def __init__(self):
+        super().__init__("")
+        self.setVisible(False)
+
+    def setText(self, text: str) -> None:
+        super().setText(text)
+        self.setVisible(bool(text))
+
+
 class ToolDialog(QDialog):
     """Base dialog: input file picker + subclass-provided options + run button + progress."""
 
@@ -68,19 +81,22 @@ class ToolDialog(QDialog):
         self.build_preview(self.preview_widget)
         # The default thumbnail strip has nothing to show until a file is chosen.
         self.preview_widget.setVisible(not hasattr(self, "thumbnail_strip"))
-        layout.addWidget(self.preview_widget)
+        # A tool whose preview IS the point (pages to look at) gets all the spare height.
+        layout.addWidget(self.preview_widget, 1 if self.fills_page else 0)
 
         self.options_widget = QWidget()
         self.build_options(self.options_widget)
         if self.options_widget.layout() is not None:
             self.options_widget.layout().setContentsMargins(0, 0, 0, 0)
+        if self.options_widget.layout() is None:
+            self.options_widget.setVisible(False)  # a tool with no options: no empty box either
         if not self.fills_page:
             # Like the web app: a form's controls are a comfortable width, not the
             # whole window's (a short drop-down should not run 1100px across).
             self.options_widget.setMaximumWidth(self.OPTIONS_MAX_WIDTH)
         layout.addWidget(self.options_widget, 0, Qt.AlignLeft)
 
-        self.status_label = QLabel("")
+        self.status_label = _StatusLabel()
         layout.addWidget(self.status_label)
 
         self.progress = QProgressBar()
