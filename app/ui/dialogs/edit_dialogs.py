@@ -263,6 +263,11 @@ class SignDialog(_ZoomedPages, ToolDialog):
 
         self.source_panel = QWidget()
         source_layout = QVBoxLayout(self.source_panel)
+        source_layout.setContentsMargins(0, 0, 0, 0)
+        intro = QLabel("Add your signature: draw one with the mouse, or upload a picture of it. "
+                       "You then click on the page to place it.")
+        intro.setWordWrap(True)
+        source_layout.addWidget(intro)
         draw_row = QHBoxLayout()
         draw_btn = QPushButton("Draw new")
         draw_btn.clicked.connect(self._toggle_draw_pad)
@@ -286,7 +291,8 @@ class SignDialog(_ZoomedPages, ToolDialog):
         pad_layout.addLayout(pad_button_row)
         self.pad_panel.setVisible(False)
         source_layout.addWidget(self.pad_panel)
-        layout.addWidget(self.source_panel)
+        source_layout.addStretch(1)
+        layout.addWidget(self.source_panel, 1)
 
         self.placement_panel = QWidget()
         placement_layout = QVBoxLayout(self.placement_panel)
@@ -309,7 +315,7 @@ class SignDialog(_ZoomedPages, ToolDialog):
         different_btn.clicked.connect(self._use_different_signature)
         placement_layout.addWidget(different_btn)
         self.placement_panel.setVisible(False)
-        layout.addWidget(self.placement_panel)
+        layout.addWidget(self.placement_panel, 1)
 
         self.signature_path: str | None = None
         self._input_path: str | None = None

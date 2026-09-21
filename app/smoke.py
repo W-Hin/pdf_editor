@@ -41,6 +41,13 @@ def _checks(work: Path, report: Path) -> list[tuple[str, object]]:
 
         apply_theme(QApplication.instance())
         assert "Inter" in QFontDatabase.families(), "the bundled Inter font did not load"
+        import re
+        from pathlib import Path
+
+        from app.ui.theme import stylesheet
+
+        missing = [p for p in re.findall(r'url\("([^"]+)"\)', stylesheet()) if not Path(p).is_file()]
+        assert not missing, f"stylesheet images missing from this build: {missing}"
         win = build_main_window()
         win.show()
         QApplication.processEvents()

@@ -113,7 +113,18 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QPlainTextEdit {
 }
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus,
 QTextEdit:focus, QPlainTextEdit:focus { border-color: @ACCENT@; }
-QComboBox::drop-down { border: none; width: 22px; }
+QComboBox { padding-right: 26px; }
+QComboBox::drop-down { border: none; width: 24px; subcontrol-origin: padding; subcontrol-position: center right; }
+QComboBox::down-arrow { image: url("@ICON_CARET_DOWN@"); width: 12px; height: 12px; }
+QSpinBox, QDoubleSpinBox { padding-right: 26px; }
+QSpinBox::up-button, QDoubleSpinBox::up-button {
+    subcontrol-origin: border; subcontrol-position: top right; width: 22px; border: none; background: transparent;
+}
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    subcontrol-origin: border; subcontrol-position: bottom right; width: 22px; border: none; background: transparent;
+}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow { image: url("@ICON_CARET_UP@"); width: 10px; height: 10px; }
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow { image: url("@ICON_CARET_DOWN@"); width: 10px; height: 10px; }
 QComboBox QAbstractItemView {
     background: @CARD@; border: 1px solid @BORDER@;
     selection-background-color: @MUTED@; selection-color: @FOREGROUND@;
@@ -133,6 +144,18 @@ QGroupBox {
 QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; }
 
 QCheckBox, QRadioButton { spacing: 8px; background: transparent; }
+QCheckBox::indicator {
+    width: 16px; height: 16px; border: 1px solid #94a3b8; border-radius: 4px; background: @CARD@;
+}
+QCheckBox::indicator:hover { border-color: @ACCENT@; }
+QCheckBox::indicator:checked {
+    background: @ACCENT@; border-color: @ACCENT@; image: url("@ICON_CHECK@");
+}
+QCheckBox::indicator:disabled { background: @MUTED@; border-color: @BORDER@; }
+QRadioButton::indicator {
+    width: 16px; height: 16px; border: 1px solid #94a3b8; border-radius: 9px; background: @CARD@;
+}
+QRadioButton::indicator:checked { border: 5px solid @ACCENT@; background: @CARD@; }
 
 QSlider::groove:horizontal { height: 4px; background: @BORDER@; border-radius: 2px; }
 QSlider::sub-page:horizontal { background: @ACCENT@; border-radius: 2px; }
@@ -168,6 +191,14 @@ def stylesheet() -> str:
         "MUTED_FOREGROUND": MUTED_FOREGROUND, "MUTED": MUTED, "BORDER": BORDER,
     }.items():
         text = text.replace(f"@{name}@", value)
+    # Images a stylesheet draws (control arrows, the tick in a checked box) are
+    # files, not palette colours. The path is quoted in the stylesheet because the
+    # install folder has spaces and brackets in it.
+    for name, file in (
+        ("ICON_CARET_DOWN", "control-caret-down.svg"), ("ICON_CARET_UP", "control-caret-up.svg"),
+        ("ICON_CHECK", "control-check-white.svg"),
+    ):
+        text = text.replace(f"@{name}@", (ASSETS / "icons" / file).as_posix())
     return text
 
 

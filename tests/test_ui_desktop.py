@@ -5687,3 +5687,62 @@ def test_delete_key_does_nothing_while_a_dropdown_has_focus_but_works_otherwise(
     monkeypatch.setattr(App, "focusWidget", staticmethod(lambda: dlg.select_btn))
     QTest.keyClick(dlg, Qt.Key_Delete)
     assert dlg.model.elements == []  # a focused toolbar button still lets Delete work
+
+
+# ---- theme: controls that must be visibly controls ----
+
+
+def test_stylesheet_gives_checkboxes_drop_downs_and_spinners_visible_indicators():
+    from pathlib import Path
+
+    from app.ui.theme import stylesheet
+
+    css = stylesheet()
+    for needle in ("QCheckBox::indicator", "QCheckBox::indicator:checked", "QComboBox::down-arrow",
+                   "QSpinBox::up-arrow", "QSpinBox::down-arrow"):
+        assert needle in css
+    assert "@" not in css  # every placeholder was filled in
+    # Every image the stylesheet points at exists.
+    import re
+
+    images = re.findall(r'url\("([^"]+)"\)', css)
+    assert len(images) >= 4 and all(Path(p).is_file() for p in images)
+
+
+def test_an_unchecked_checkbox_draws_a_visible_box_and_a_checked_one_a_tick():
+    from PySide6.QtWidgets import QCheckBox
+
+    _themed_main_window()  # applies the app theme
+    box = QCheckBox("Option")
+    box.resize(160, 30)
+    box.show()
+    _app.processEvents()
+    unchecked = box.grab().toImage()
+    box.setChecked(True)
+    _app.processEvents()
+    checked = box.grab().toImage()
+    # A visible box: some pixel in the indicator area is not the page background.
+    background = unchecked.pixelColor(150, 5)
+    indicator = [unchecked.pixelColor(x, y) for x in range(2, 20) for y in range(6, 24)]
+    assert any(c != background for c in indicator)
+    blue = [checked.pixelColor(x, y) for x in range(2, 20) for y in range(6, 24)]
+    assert any(c.blue() > 200 and c.red() < 80 for c in blue)  # the accent fill of a checked box
+
+
+def test_form_tools_cap_their_option_width_but_canvas_tools_do_not():
+    from app.ui.dialogs.edit_dialogs import CropDialog
+    from app.ui.dialogs.pages_dialogs import RemovePagesDialog
+
+    form = RotateDialog()
+    assert form.options_widget.maximumWidth() == form.OPTIONS_MAX_WIDTH
+    assert CropDialog().options_widget.maximumWidth() > form.OPTIONS_MAX_WIDTH  # untouched
+
+
+def test_sign_first_screen_explains_what_to_do():
+    from PySide6.QtWidgets import QLabel
+
+    from app.ui.dialogs.edit_dialogs import SignDialog
+
+    dlg = SignDialog()
+    texts = [lbl.text() for lbl in dlg.source_panel.findChildren(QLabel)]
+    assert any("signature" in t.lower() and "place" in t.lower() for t in texts)

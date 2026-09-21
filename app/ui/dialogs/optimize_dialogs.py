@@ -108,6 +108,8 @@ class OcrDialog(ToolDialog):
         layout = QVBoxLayout(container)
         layout.addWidget(QLabel("Language(s):"))
         grid = QGridLayout()
+        grid.setHorizontalSpacing(28)
+        grid.setVerticalSpacing(6)
         self.language_checks: dict[str, QCheckBox] = {}
         for i, (code, label) in enumerate(_OCR_LANGUAGES):
             box = QCheckBox(label)

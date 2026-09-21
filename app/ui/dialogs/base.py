@@ -31,6 +31,7 @@ class ToolDialog(QDialog):
     file_filter = "PDF files (*.pdf)"
     allow_multiple_files = False
     dialog_size = (480, 360)
+    OPTIONS_MAX_WIDTH = 520
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -73,7 +74,11 @@ class ToolDialog(QDialog):
         self.build_options(self.options_widget)
         if self.options_widget.layout() is not None:
             self.options_widget.layout().setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.options_widget)
+        if not self.fills_page:
+            # Like the web app: a form's controls are a comfortable width, not the
+            # whole window's (a short drop-down should not run 1100px across).
+            self.options_widget.setMaximumWidth(self.OPTIONS_MAX_WIDTH)
+        layout.addWidget(self.options_widget, 0, Qt.AlignLeft)
 
         self.status_label = QLabel("")
         layout.addWidget(self.status_label)
