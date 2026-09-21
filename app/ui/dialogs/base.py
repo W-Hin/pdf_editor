@@ -269,6 +269,8 @@ class ToolDialog(QDialog):
         count = self.file_list.count()
         single = not self.allow_multiple_files
         self._show_state(count > 0)
+        if count == 0:
+            self._refresh_thumbnails()  # nothing chosen: nothing to preview
         self.file_list.setVisible(count > 0 and not single)
         chosen = single and count == 1
         if chosen:

@@ -314,6 +314,11 @@ class PageGridWidget(QWidget):
         self.selection_changed.emit()  # a new document: whoever summarises the marks or the order updates
         self.order_changed.emit()
 
+    def page_size_pt(self, section: int, page: int) -> tuple[float, float]:
+        """The page's size in PDF points (an overlay scales its drawing by it)."""
+        sizes = self._sections[section]["sizes"] if section < len(self._sections) else []
+        return sizes[page - 1] if 0 < page <= len(sizes) else (595.0, 842.0)
+
     def total_pages(self, section: int) -> int:
         return self._sections[section]["total"] if section < len(self._sections) else 0
 

@@ -12,6 +12,7 @@ from app.core.errors import PDFError
 from app.ui.dialogs.base import ToolDialog
 from app.ui.edit_canvas import EditElementsModel, EditPageWidget
 from app.ui.page_zoom import PageZoomMixin, PagePixmapMixin
+from app.ui.previews import page_number_overlay, watermark_overlay
 from app.ui.theme import ACCENT, MUTED_FOREGROUND, icon_pixmap
 from app.ui.widgets import RectangleOverlayWidget, box_to_insets, insets_to_box, SignaturePadWidget, ImagePlacementWidget, FormFieldsWidget, DiffPreviewWidget
 
@@ -32,6 +33,9 @@ class RotateDialog(ToolDialog):
         self.angle_box = QComboBox()
         self.angle_box.addItems(["90", "180", "270"])
         layout.addWidget(self.angle_box)
+        # Live preview: the thumbnails turn as you choose (like the web app).
+        self.angle_box.currentTextChanged.connect(lambda text: self.page_grid.set_rotation(int(text)))
+        self.page_grid.set_rotation(int(self.angle_box.currentText()))
 
     def gather_params(self) -> dict:
         return {"angle": int(self.angle_box.currentText())}
@@ -57,6 +61,10 @@ class WatermarkDialog(ToolDialog):
         self.opacity_slider.setRange(10, 100)
         self.opacity_slider.setValue(30)
         layout.addWidget(self.opacity_slider)
+        # Live preview: the text appears on every page as you type.
+        self.page_grid.set_overlay(watermark_overlay(self.page_grid, self.text_input.text, lambda: self.opacity_slider.value() / 100))
+        self.text_input.textChanged.connect(lambda _t: self.page_grid.refresh())
+        self.opacity_slider.valueChanged.connect(lambda _v: self.page_grid.refresh())
 
     def gather_params(self) -> dict:
         return {
@@ -91,6 +99,10 @@ class AddPageNumbersDialog(ToolDialog):
         self.format_box.addItem("3 / 12", "number-of-total")
         self.format_box.addItem("Page 3 of 12", "page-x-of-y")
         layout.addWidget(self.format_box)
+        # Live preview: each page shows the number exactly where and how it will land.
+        self.page_grid.set_overlay(page_number_overlay(self.page_grid, self.position_box.currentData, self.format_box.currentData))
+        self.position_box.currentIndexChanged.connect(lambda _i: self.page_grid.refresh())
+        self.format_box.currentIndexChanged.connect(lambda _i: self.page_grid.refresh())
 
     def gather_params(self) -> dict:
         return {

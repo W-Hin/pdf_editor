@@ -490,3 +490,132 @@ def test_these_tools_show_the_side_panel_and_the_grid_together(tmp_path):
 
     dlg, _ = _dialog(RemovePagesDialog, tmp_path)
     assert not dlg.side_panel.isHidden() and dlg.preview_widget.width() > dlg.side_panel.width() * 2  # pages get the room
+
+
+# ---- live previews and grouped views (Rotate, Watermark, Page numbers, Merge, Split) ----
+
+
+def test_rotate_previews_the_turn_as_the_angle_changes(tmp_path):
+    from app.ui.dialogs.edit_dialogs import RotateDialog
+
+    dlg, path = _dialog(RotateDialog, tmp_path, pages=3)
+    assert dlg.page_grid.rotation == 90  # the default angle is already shown
+    dlg.angle_box.setCurrentText("180")
+    assert dlg.page_grid.rotation == 180
+    dlg.angle_box.setCurrentText("270")
+    assert dlg.page_grid.rotation == 270
+    cell = dlg.page_grid.cells()[0]
+    assert cell._page_rect().width() > cell._page_rect().height()  # 270 turns a portrait page sideways
+    out = dlg.run_operation([path], dlg.gather_params())[0]
+    with fitz.open(out) as doc:
+        assert all(p.rotation == 270 for p in doc)  # what was previewed is what was written
+
+
+def test_watermark_text_appears_on_every_page_as_you_type_and_follows_opacity(tmp_path):
+    from app.ui.dialogs.edit_dialogs import WatermarkDialog
+
+    dlg, _ = _dialog(WatermarkDialog, tmp_path, pages=2)
+    cell = dlg.page_grid.cells()[0]
+    rect = cell._page_rect()
+    centre = (int(rect.center().x()), int(rect.center().y()))
+
+    def ink():
+        image = cell.grab().toImage()
+        return sum(1 for x in range(int(rect.left()), int(rect.right())) for y in range(int(rect.top() + rect.height() * 0.4), int(rect.top() + rect.height() * 0.6))
+                   if image.pixelColor(x, y).green() < 240)
+
+    empty = ink()
+    dlg.text_input.setText("CONFIDENTIAL")
+    faint = ink()
+    assert faint > empty  # the text is on the page
+    dlg.opacity_slider.setValue(100)
+    assert ink() >= faint  # stronger opacity darkens it
+    dlg.text_input.setText("   ")
+    assert ink() == empty  # blank text draws nothing
+    assert all(c.width() > 0 for c in dlg.page_grid.cells())
+
+
+def test_page_numbers_preview_position_and_format_match_the_output(tmp_path):
+    from app.ui.dialogs.edit_dialogs import AddPageNumbersDialog
+
+    dlg, path = _dialog(AddPageNumbersDialog, tmp_path, pages=3)
+    cell = dlg.page_grid.cells()[1]
+    rect = cell._page_rect()
+
+    def dark_pixels(where):
+        image = cell.grab().toImage()
+        x0, x1 = int(rect.left()), int(rect.right())
+        y0, y1 = int(rect.top()), int(rect.bottom())
+        if where == "bottom":
+            y0 = y1 - int(rect.height() * 0.15)
+        else:
+            y1 = y0 + int(rect.height() * 0.15)
+        return [(x, y) for x in range(x0, x1) for y in range(y0, y1) if image.pixelColor(x, y).lightness() < 170]
+
+    bottom = dark_pixels("bottom")
+    assert bottom, "the number should be drawn in the bottom band"
+    assert abs(sum(x for x, _ in bottom) / len(bottom) - rect.center().x()) < rect.width() * 0.12  # centred
+    dlg.position_box.setCurrentIndex(dlg.position_box.findData("top-center"))
+    assert not dark_pixels("bottom")  # moved out of the bottom band
+    dlg.position_box.setCurrentIndex(dlg.position_box.findData("bottom-right"))
+    xs = [x for x, _ in dark_pixels("bottom")]
+    assert xs and min(xs) > rect.center().x()  # right-aligned
+    dlg.format_box.setCurrentIndex(dlg.format_box.findData("page-x-of-y"))
+    assert len(dark_pixels("bottom")) > len(xs)  # "Page 2 of 3" is longer than "2"
+    out = dlg.run_operation([path], dlg.gather_params())[0]
+    with fitz.open(out) as doc:
+        assert "Page 2 of 3" in doc[1].get_text()
+
+
+def test_merge_shows_each_file_as_its_own_titled_block_in_merge_order(tmp_path):
+    from app.ui.dialogs.organize_dialogs import MergeDialog
+
+    dlg = MergeDialog()
+    dlg.resize(1300, 800)
+    dlg.show()
+    _pump(0.05)
+    a = _pdf(tmp_path, 3, name="first.pdf")
+    b = _pdf(tmp_path, 2, name="second.pdf")
+    dlg._add_files([a, b])
+    _pump()
+    grid = dlg.page_grid
+    assert [t.text() for t in grid._titles] == [
+        "1. first.pdf \u2014 where its pages land in the merged file",
+        "2. second.pdf \u2014 where its pages land in the merged file",
+    ]
+    assert [(c.section, c.page) for c in grid.cells()] == [(0, 1), (0, 2), (0, 3), (1, 1), (1, 2)]
+    assert all(c.has_pixmap() for c in grid.cells())
+    dlg.file_list.clear()
+    assert grid.cells() == []
+    out = dlg.run_operation([a, b], {"filename": "merged.pdf"})[0]
+    with fitz.open(out) as doc:
+        assert doc.page_count == 5  # the preview showed exactly five pages
+
+
+def test_split_groups_the_pages_by_output_file_and_follows_the_setting(tmp_path):
+    from app.ui.dialogs.organize_dialogs import SplitDialog
+
+    dlg, path = _dialog(SplitDialog, tmp_path, pages=5)
+    grid = dlg.page_grid
+    assert [t.text() for t in grid._titles] == [f"Output file {i} \u2014 page {i}" for i in range(1, 6)]
+    dlg.pages_per_file.setValue(2)
+    assert [t.text() for t in grid._titles] == [
+        "Output file 1 \u2014 pages 1\u20132", "Output file 2 \u2014 pages 3\u20134", "Output file 3 \u2014 page 5",
+    ]
+    assert [(c.section, c.page) for c in grid.cells()] == [(0, 1), (0, 2), (1, 3), (1, 4), (2, 5)]
+    dlg.pages_per_file.setValue(9999)
+    assert [t.text() for t in grid._titles] == ["Output file 1 \u2014 pages 1\u20135"]
+    dlg.pages_per_file.setValue(2)
+    outs = dlg.run_operation([path], dlg.gather_params())
+    assert len(outs) == 3  # the preview promised three files
+
+
+def test_split_with_a_broken_file_shows_an_empty_grid(tmp_path):
+    from app.ui.dialogs.organize_dialogs import SplitDialog
+
+    dlg = SplitDialog()
+    bad = tmp_path / "bad.pdf"
+    bad.write_bytes(b"not a pdf")
+    dlg.file_list.addItem(str(bad))
+    dlg._refresh_thumbnails()
+    assert dlg.page_grid.cells() == []

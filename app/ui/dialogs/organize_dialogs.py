@@ -22,6 +22,14 @@ class MergeDialog(ToolDialog):
             default_name = Path(paths[0]).stem + "_merged.pdf"
             self.filename_input.setText(default_name)
 
+    def _refresh_thumbnails(self) -> None:
+        """One titled block per file, in merge order: where its pages land."""
+        paths = self.selected_files()
+        self.page_grid.set_sections([
+            {"title": f"{i}. {Path(p).name} \u2014 where its pages land in the merged file", "path": p, "pages": None}
+            for i, p in enumerate(paths, start=1)
+        ])
+
     def gather_params(self) -> dict:
         return {"filename": self.filename_input.text().strip()}
 
@@ -51,6 +59,26 @@ class SplitDialog(ToolDialog):
         self.pages_per_file.setRange(1, 9999)
         self.pages_per_file.setValue(1)
         layout.addWidget(self.pages_per_file)
+        # Live preview: the pages grouped by the output file each will end up in.
+        self.pages_per_file.valueChanged.connect(lambda _v: self._refresh_thumbnails())
+
+    def _refresh_thumbnails(self) -> None:
+        paths = self.selected_files()
+        if not paths:
+            self.page_grid.set_document(None)
+            return
+        try:
+            total = get_page_count(paths[0])
+        except PDFError:
+            self.page_grid.set_document(None)
+            return
+        step = self.pages_per_file.value()
+        sections = []
+        for number, start in enumerate(range(1, total + 1, step), start=1):
+            end = min(start + step - 1, total)
+            span = f"page {start}" if start == end else f"pages {start}\u2013{end}"
+            sections.append({"title": f"Output file {number} \u2014 {span}", "path": paths[0], "pages": list(range(start, end + 1))})
+        self.page_grid.set_sections(sections)
 
     def gather_params(self) -> dict:
         return {"pages_per_file": self.pages_per_file.value()}
