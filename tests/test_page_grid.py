@@ -951,3 +951,45 @@ def test_unlock_needs_a_password_like_the_web(tmp_path):
     path = _pdf(tmp_path, 1)
     with pytest.raises(PDFError, match="password"):
         dlg.run_operation([path], {"password": ""})
+
+
+def _png(tmp_path, name, size):
+    from PySide6.QtGui import QColor, QImage
+
+    image = QImage(size[0], size[1], QImage.Format_RGB32)
+    image.fill(QColor(200, 30, 30))
+    path = tmp_path / name
+    image.save(str(path))
+    return str(path)
+
+
+def test_images_to_pdf_previews_each_image_as_the_page_it_becomes(tmp_path):
+    from app.ui.dialogs.convert_dialogs import ImagesToPdfDialog
+
+    dlg = ImagesToPdfDialog()
+    dlg.resize(1300, 800)
+    dlg.show()
+    _pump(0.05)
+    dlg._add_files([_png(tmp_path, "wide.png", (400, 200)), _png(tmp_path, "tall.png", (200, 400))])
+    _pump()
+    cells = dlg.page_grid.cells()
+    assert len(cells) == 2
+    assert cells[0].aspect < 1 < cells[1].aspect  # landscape image -> landscape page, portrait -> portrait
+    dlg._move_file(0, 1)  # the arrows reorder the pages
+    _pump()
+    cells = dlg.page_grid.cells()
+    assert cells[0].aspect > 1 > cells[1].aspect
+    dlg.shutdown()
+
+
+def test_compare_has_previous_and_next_page_buttons(tmp_path):
+    from app.ui.dialogs.edit_dialogs import CompareDialog
+
+    dlg = CompareDialog()
+    dlg.page_spin.setMaximum(3)
+    dlg.next_page_btn.click()
+    dlg.next_page_btn.click()
+    dlg.next_page_btn.click()  # stops at the last page
+    assert dlg.page_spin.value() == 3
+    dlg.prev_page_btn.click()
+    assert dlg.page_spin.value() == 2

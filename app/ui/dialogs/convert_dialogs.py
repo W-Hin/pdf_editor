@@ -1,3 +1,5 @@
+import os
+import tempfile
 from pathlib import Path
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QComboBox, QLineEdit
@@ -76,6 +78,7 @@ class ImagesToPdfDialog(ToolDialog):
     title = "Images to PDF"
     allow_multiple_files = True
     file_filter = "Image files (*.jpg *.jpeg *.png)"
+    allow_file_reorder = True  # the order of the images is the order of the pages
 
     def build_options(self, container: QWidget) -> None:
         layout = QVBoxLayout(container)
@@ -87,6 +90,41 @@ class ImagesToPdfDialog(ToolDialog):
         self.fit_mode_box.addItem("Fit (show the whole image)", "fit")
         self.fit_mode_box.addItem("Fill (crop to fill the page)", "fill")
         layout.addWidget(self.fit_mode_box)
+        self.fit_mode_box.currentIndexChanged.connect(lambda _i: self._refresh_thumbnails())
+
+    def _refresh_thumbnails(self) -> None:
+        """Preview the real result: every image as the page it will become, in the chosen fit mode."""
+        grid = getattr(self, "page_grid", None)
+        if grid is None:
+            return
+        paths = self.selected_files()
+        self._drop_preview_file()
+        if not paths:
+            grid.set_document(None)
+            return
+        handle, preview = tempfile.mkstemp(suffix=".pdf", prefix="images_preview_")
+        os.close(handle)
+        try:
+            images_to_pdf(paths, preview, self.fit_mode_box.currentData())
+        except PDFError:
+            os.unlink(preview)
+            grid.set_document(None)
+            return
+        self._preview_file = preview
+        grid.set_document(preview)
+
+    def _drop_preview_file(self) -> None:
+        preview = getattr(self, "_preview_file", None)
+        self._preview_file = None
+        if preview:
+            try:
+                os.unlink(preview)
+            except OSError:
+                pass  # still open by a render in flight; the temp folder cleans it up
+
+    def shutdown(self) -> None:
+        super().shutdown()
+        self._drop_preview_file()
 
     def on_files_changed(self, paths: list[str]) -> None:
         if paths and not self.filename_input.text().strip():
