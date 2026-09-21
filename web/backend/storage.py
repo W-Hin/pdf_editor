@@ -1,11 +1,16 @@
 import json
+import sqlite3
 import tempfile
 import time
 import uuid
+from contextlib import closing
 from pathlib import Path
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "pdf_editor_web_uploads"
 OUTPUT_DIR = Path.home() / "Documents" / "PDF Editor Output"
+# The old flat-file history. It is only READ, once, to import an existing history
+# into the database (see _connect), and then renamed out of the way. The database
+# lives beside it.
 HISTORY_FILE = OUTPUT_DIR / "history.json"
 
 _uploads: dict[str, dict] = {}
@@ -22,18 +27,80 @@ def save_upload(filename: str, content: bytes) -> dict:
     return record
 
 
-def load_history() -> list[dict]:
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS history (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    filename TEXT NOT NULL,
+    path TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    source_filenames TEXT NOT NULL DEFAULT '[]',
+    page_count INTEGER
+);
+"""
+
+
+def _db_path() -> Path:
+    return HISTORY_FILE.with_name("history.db")
+
+
+def _row_to_record(row: sqlite3.Row) -> dict:
+    record = dict(row)
+    del record["seq"]
+    record["source_filenames"] = json.loads(record["source_filenames"] or "[]")
+    return record
+
+
+def _import_legacy_history(conn: sqlite3.Connection) -> None:
+    """One-time import of the old history.json (newest first there, so it is
+    inserted oldest first to keep the same order). The file is renamed rather
+    than deleted, as a backup; an unreadable one is left alone and ignored."""
     if not HISTORY_FILE.exists():
-        return []
+        return
     try:
-        return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return []
+        records = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        rows = [
+            (
+                r["id"], r["filename"], r["path"], r["tool"], r["created_at"],
+                json.dumps(r.get("source_filenames") or []), r.get("page_count"),
+            )
+            for r in reversed(records)
+        ]
+    except (json.JSONDecodeError, OSError, KeyError, TypeError):
+        return
+    conn.executemany(
+        "INSERT OR IGNORE INTO history (id, filename, path, tool, created_at, source_filenames, page_count) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    try:
+        HISTORY_FILE.replace(HISTORY_FILE.with_name(HISTORY_FILE.name + ".migrated"))
+    except OSError:
+        pass  # the rows are in; INSERT OR IGNORE makes a re-import harmless
 
 
-def _save_history(records: list[dict]) -> None:
-    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    HISTORY_FILE.write_text(json.dumps(records, indent=2), encoding="utf-8")
+def _connect() -> sqlite3.Connection:
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(_SCHEMA)
+    if conn.execute("PRAGMA user_version").fetchone()[0] == 0:
+        with conn:
+            _import_legacy_history(conn)
+            conn.execute("PRAGMA user_version = 1")
+    return conn
+
+
+def load_history() -> list[dict]:
+    """Newest first."""
+    try:
+        with closing(_connect()) as conn:
+            rows = conn.execute("SELECT * FROM history ORDER BY seq DESC").fetchall()
+    except sqlite3.DatabaseError:
+        return []  # an unreadable database shows an empty list rather than an error page
+    return [_row_to_record(row) for row in rows]
 
 
 def record_output(path: Path, tool: str, source_filenames: list[str], page_count: int | None = None) -> dict:
@@ -46,20 +113,25 @@ def record_output(path: Path, tool: str, source_filenames: list[str], page_count
         "source_filenames": source_filenames,
         "page_count": page_count,
     }
-    records = load_history()
-    records.insert(0, record)
-    _save_history(records)
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "INSERT INTO history (id, filename, path, tool, created_at, source_filenames, page_count) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                record["id"], record["filename"], record["path"], record["tool"], record["created_at"],
+                json.dumps(source_filenames), page_count,
+            ),
+        )
     return record
 
 
 def delete_output(file_id: str) -> bool:
-    records = load_history()
-    remaining = [r for r in records if r["id"] != file_id]
-    if len(remaining) == len(records):
-        return False
-    deleted = next(r for r in records if r["id"] == file_id)
-    _save_history(remaining)
-    deleted_path = Path(deleted["path"])
+    with closing(_connect()) as conn, conn:
+        row = conn.execute("SELECT * FROM history WHERE id = ?", (file_id,)).fetchone()
+        if row is None:
+            return False
+        conn.execute("DELETE FROM history WHERE id = ?", (file_id,))
+    deleted_path = Path(row["path"])
     deleted_path.unlink(missing_ok=True)
     parent = deleted_path.parent
     try:
@@ -73,9 +145,13 @@ def delete_output(file_id: str) -> bool:
 def resolve_file(file_id: str) -> Path:
     if file_id in _uploads:
         return Path(_uploads[file_id]["path"])
-    for record in load_history():
-        if record["id"] == file_id:
-            return Path(record["path"])
+    try:
+        with closing(_connect()) as conn:
+            row = conn.execute("SELECT path FROM history WHERE id = ?", (file_id,)).fetchone()
+    except sqlite3.DatabaseError:
+        row = None
+    if row is not None:
+        return Path(row["path"])
     raise FileNotFoundError(f"No file found for id '{file_id}'")
 
 
